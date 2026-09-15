@@ -1,20 +1,20 @@
 ---
 id: ADR-017
 type: adr
-status: proposed
+status: accepted
 state: target
 owner: platform-team
 reviewed: 2026-09-15
 review_by: 2027-03-15
 review_trigger: "the 'head untestable' alert fires more than once a month, or neutral retries use a noticeable share of Actions minutes"
 sources: [FR-2, FR-4, CQ-5, ADR-003, ADR-009, ADR-010, ADR-013, ADR-014]
-confidence: assumed
+confidence: confirmed
 amends: [ADR-003, ADR-010]
 ---
 
 # ADR-017 — A head whose newest result is neutral is tested again after a wait (amends ADR-003 and ADR-010)
 
-**Deciders:** platform team; requester confirmation pending (CQ-14) · **Consulted:** —
+**Deciders:** requester (confirmed 2026-09-15, CQ-14), platform team · **Consulted:** —
 
 ## Context
 
@@ -40,7 +40,7 @@ Main Watcher check runs on the head commit. A head is **eligible** for a test wh
 - it has no check run, and the target's last test started more than `poll_interval` ago
   (unchanged from ADR-010); or
 - its newest check run completed as `neutral` more than `poll_interval` ago, and the head
-  has fewer than 3 `neutral` check runs `[unconfirmed]`.
+  has fewer than 3 `neutral` check runs.
 
 A head whose newest check run is `in_progress`, `success` or `failure` is not eligible.
 

@@ -1,20 +1,20 @@
 ---
 id: ADR-014
 type: adr
-status: proposed
+status: accepted
 state: target
 owner: platform-team
 reviewed: 2026-09-15
 review_by: 2027-03-15
 review_trigger: "a lock lapses more than once a quarter, or the requester prefers enforcing locks through watcher outages"
 sources: [FR-4, NFR-3, ADR-002, ADR-004, ADR-008, ADR-010]
-confidence: assumed
+confidence: confirmed
 amends: [ADR-002, ADR-008, ADR-010]
 ---
 
 # ADR-014 — A lock is enforced only while the watcher keeps renewing its lease (amends ADR-002, ADR-008 and ADR-010)
 
-**Deciders:** platform team; requester confirmation pending (CQ-11) · **Consulted:** —
+**Deciders:** requester (confirmed 2026-09-15, CQ-11), platform team · **Consulted:** —
 
 ## Context
 
@@ -36,7 +36,7 @@ that began with no lock.
 
 **1. Lease marker.** Each App-authored lock issue carries `lease_until=<UTC timestamp>` in
 its hidden marker. The Reporter sets it to now + `lock_lease` when it creates the issue.
-`lock_lease` is set once in the `targets.yml` defaults: 4 hours `[unconfirmed]`.
+`lock_lease` is set once in the `targets.yml` defaults: 4 hours.
 
 **2. Renewal.**
 - Every `watch.yml` run that processes a locked target sets `lease_until` to now +

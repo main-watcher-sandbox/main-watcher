@@ -18,12 +18,12 @@ amends: ADR-002
 > trigger worker starts a watcher run whenever `main` moves, and every merge moves `main`, so
 > reconciliation still sees every merge.
 
-> **Proposed amendments, 2026-09-15, awaiting confirmation:**
-> - [ADR-014](ADR-014-lock-lease.md): the gate would also fail open when a lock's lease,
->   renewed by the watcher, has expired.
-> - [ADR-015](ADR-015-reconcile-through-closure.md): reconciliation would cover every lock
->   until merges up to its closure are checked, not only locks that are still open. It
->   would also judge each merged PR by its labels at merge time, from label events.
+> **Amended on 2026-09-15 by:**
+> - [ADR-014](ADR-014-lock-lease.md): the gate also fails open when a lock's lease, renewed
+>   by the watcher, has expired.
+> - [ADR-015](ADR-015-reconcile-through-closure.md): reconciliation covers every lock until
+>   merges up to its closure are checked, not only locks that are still open. It also
+>   judges each merged PR by its labels at merge time, from label events.
 
 **Deciders:** requester, platform team · **Consulted:** —
 

@@ -1,20 +1,20 @@
 ---
 id: ADR-016
 type: adr
-status: proposed
+status: accepted
 state: target
 owner: platform-team
 reviewed: 2026-09-15
 review_by: 2027-03-15
 review_trigger: "sandbox test TS-S17 disproves A-7, or reconciliation reports a merge group that merged after its lock opened more than once a quarter"
 sources: [FR-4, C-1, A-7, ADR-002, ADR-008, ADR-009, ADR-014, ADR-015]
-confidence: assumed
+confidence: confirmed
 amends: ADR-002
 ---
 
 # ADR-016 — Opening a lock re-runs the gate for merge groups already in the queue (amends ADR-002)
 
-**Deciders:** platform team; requester confirmation pending (CQ-13) · **Consulted:** security
+**Deciders:** requester (confirmed 2026-09-15, CQ-13), platform team · **Consulted:** security
 (a new use of `actions: write`)
 
 ## Context
@@ -62,15 +62,15 @@ completion was not enough: a lease renewed just before a crash would leave an ol
 - **The obligation is written with its cause.** `sweep_required=<T>` goes into the same
   issue write that creates the lock, or that renews an expired lease (ADR-014). Ordinary
   renewals never change it.
-- **The cut-off.** The sweep covers gate runs that started before T plus 5 minutes
-  `[unconfirmed]`. The margin absorbs clock differences and the delay before a new lock
+- **The cut-off.** The sweep covers gate runs that started before T plus 5 minutes.
+  The margin absorbs clock differences and the delay before a new lock
   becomes visible; re-running a gate that already saw the lock is harmless.
 - **Completion.** `queue_swept=<T>` is written, with the same T, only when no queued group
   still has an unhandled gate run before that cut-off.
 - **What is owed.** A sweep is owed whenever `queue_swept` is missing or earlier than
   `sweep_required`, so a crash at any point leaves it visible. While it is owed, the worker
   flags work for the target (it can read the marker, ADR-014) and each watcher run
-  continues the sweep. If it is still owed after 15 minutes `[unconfirmed]`, the worker
+  continues the sweep. If it is still owed after 15 minutes, the worker
   raises a `watcher-infra` alert, "queue sweep unfinished".
 - **A newer generation**, from a second lapse, replaces an unfinished older one. Its later
   cut-off covers the older generation's gate runs as well.
@@ -84,7 +84,7 @@ happen before rollout. If it proves false, Option B or Option D replaces this de
 opening and its gate re-run taking effect. That is normally seconds, and at most one
 `check_period` for a gate that was still running. Such merges are not prevented; they fall
 inside the lock window, so reconciliation reports them (ADR-008, ADR-015). FR-4 therefore
-becomes `[unconfirmed]` (CQ-13):
+becomes, as the requester confirmed on 2026-09-15 (CQ-13):
 
 > While a lock is open, no group whose gate ran after the lock opened merges unless every
 > PR in it is a fix. Groups already queued when the lock opened are re-checked, and any that

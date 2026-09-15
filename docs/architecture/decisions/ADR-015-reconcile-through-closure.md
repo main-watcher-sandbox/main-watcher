@@ -1,20 +1,20 @@
 ---
 id: ADR-015
 type: adr
-status: proposed
+status: accepted
 state: target
 owner: platform-team
 reviewed: 2026-09-15
 review_by: 2027-03-15
 review_trigger: "a closed lock is found unreconciled more than 24 h after closing, or a watcher outage lasts longer than reconcile_lookback"
 sources: [NFR-4, ADR-003, ADR-004, ADR-008]
-confidence: assumed
+confidence: confirmed
 amends: ADR-008
 ---
 
 # ADR-015 — Reconciliation follows each lock through its closure, and judges labels as they were at merge time (amends ADR-008)
 
-**Deciders:** platform team; requester confirmation pending (CQ-12) · **Consulted:** —
+**Deciders:** requester (confirmed 2026-09-15, CQ-12), platform team · **Consulted:** —
 
 ## Context
 
@@ -43,7 +43,7 @@ now while it is open. Every unlabelled PR merged inside the window is reported.
 
 **2. Discovery that does not depend on the issue being open.** Each watcher run lists
 App-authored `main-broken` issues in any state, updated within `reconcile_lookback`
-(30 days `[unconfirmed]`). It processes every issue whose marker does not yet say
+(30 days). It processes every issue whose marker does not yet say
 `reconciled=complete`.
 
 **3. A cursor per incident.** `last_reconciled` remains the activity cursor in each issue's

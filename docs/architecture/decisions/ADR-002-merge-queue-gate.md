@@ -17,14 +17,14 @@ confidence: confirmed
 > On GitHub API errors the gate now fails **open**, and the watcher reconciles afterwards.
 > The rest of this decision stands.
 
-> **Proposed amendment: [ADR-014](ADR-014-lock-lease.md), 2026-09-15, awaiting
-> confirmation.** The gate would enforce a lock only while its lease, renewed by the
-> watcher, has not expired. With an expired lease it would fail open with a warning.
+> **Amended by [ADR-014](ADR-014-lock-lease.md) on 2026-09-15.** The gate enforces a lock
+> only while its lease, renewed by the watcher, has not expired. With an expired lease it
+> fails open with a warning.
 
-> **Proposed amendment: [ADR-016](ADR-016-recheck-queued-groups-on-lock.md), 2026-09-15,
-> awaiting confirmation.** When a lock opens, the watcher would re-run the gate for merge
-> groups still in the queue whose gate started before the lock, and FR-4 would be narrowed
-> to report groups that merge before that re-check takes effect.
+> **Amended by [ADR-016](ADR-016-recheck-queued-groups-on-lock.md) on 2026-09-15.** When a
+> lock opens, the watcher re-runs the gate for merge groups still in the queue whose gate
+> started before the lock. FR-4 is narrowed: groups that merge before that re-check takes
+> effect are reported.
 
 **Deciders:** requester, platform team · **Consulted:** security (App permissions)
 

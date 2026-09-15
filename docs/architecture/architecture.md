@@ -16,8 +16,8 @@ confidence: assumed
 ## Confirmation queue
 
 These items started as defaults chosen during design. The requester settled CQ-1 to CQ-9
-on 2026-09-15. CQ-10 to CQ-14 came from adversarial reviews of the architecture on
-2026-09-15 and are awaiting confirmation.
+on 2026-09-15. CQ-10 to CQ-14 came from adversarial reviews of the architecture on the
+same day, and the requester confirmed all of them as proposed.
 
 | # | Item | Section | Why it matters | Settled by |
 |---|---|---|---|---|
@@ -30,11 +30,11 @@ on 2026-09-15. CQ-10 to CQ-14 came from adversarial reviews of the architecture 
 | CQ-7 | The gate fails **open** on API errors; the watcher reports it afterwards (ADR-008). Confirmed | 5.2, 11 | Merge availability | Requester |
 | CQ-8 | The platform team owns the watcher repo, the trigger worker and all three GitHub Apps. Confirmed | 14 | Key custody | Requester |
 | CQ-9 | Anyone with triage rights may apply `fixes-main`. Confirmed | 8, R-4 | The lock bypass | Requester |
-| CQ-10 | The Reporter writes the lock issue before completing the check run, and replays an interrupted report without re-locking a commit a human overrode; a "reporting pending" alert after 15 min. The test outcome comes from the `main-watcher-test` step (build and tests), so a failure stays red without CTRF; checkout and restore failures, and tests that do not finish (deadline, timeout, cancellation), are infrastructure errors; a test run that waits over 30 min for a runner, or overruns its job timeout, is cancelled and its steps read before it is judged (ADR-013) `[unconfirmed]` | 5.1 | A crash or a failed upload must not leave a red `main` unlocked, and a replay must not undo an override | Awaiting requester |
-| CQ-11 | A lock lapses when the watcher has not renewed it for `lock_lease` (default 4 h), and the gate then fails open with a warning. With a lock open, NFR-3 therefore holds only after up to `lock_lease`. `mw-observer` gains Issues: read (ADR-014) `[unconfirmed]` | 5.2, 8 | Merge availability vs. enforcing a red `main` through a long watcher outage | Awaiting requester |
-| CQ-12 | Reconciliation continues after a lock closes, until merges up to its closure are checked; closures older than 30 days are not revisited; each merge is judged by the PR's labels at merge time (ADR-015) `[unconfirmed]` | 5.2 | NFR-4 must hold when a human closes the lock first, or a label changes after the merge | Awaiting requester |
-| CQ-13 | When a lock opens, or a lapsed lock is renewed, the watcher re-runs the gate for merge groups still in the queue whose gate started earlier. FR-4 is narrowed: a group that merges in the seconds before its re-run takes effect is reported, not blocked (ADR-016) `[unconfirmed]` | 2, 5.2 | Otherwise groups that passed the gate just before a lock merge onto a red `main`, with no outage involved | Awaiting requester |
-| CQ-14 | A head whose newest result is `neutral` is tested again once `poll_interval` has passed, up to 3 neutral results per head; after that, a "head untestable" alert, and a push or a forced dispatch is needed (ADR-017) `[unconfirmed]` | 5.1 | A setup failure must not leave `main` untested, and a lock wrongly open or closed | Awaiting requester |
+| CQ-10 | The Reporter writes the lock issue before completing the check run, and replays an interrupted report without re-locking a commit a human overrode; a "reporting pending" alert after 15 min. The test outcome comes from the `main-watcher-test` step (build and tests), so a failure stays red without CTRF; checkout and restore failures, and tests that do not finish (deadline, timeout, cancellation), are infrastructure errors; a test run that waits over 30 min for a runner, or overruns its job timeout, is cancelled and its steps read before it is judged (ADR-013). Confirmed | 5.1 | A crash or a failed upload must not leave a red `main` unlocked, and a replay must not undo an override | Requester |
+| CQ-11 | A lock lapses when the watcher has not renewed it for `lock_lease` (default 4 h), and the gate then fails open with a warning. With a lock open, NFR-3 therefore holds only after up to `lock_lease`. `mw-observer` gains Issues: read (ADR-014). Confirmed | 5.2, 8 | Merge availability vs. enforcing a red `main` through a long watcher outage | Requester |
+| CQ-12 | Reconciliation continues after a lock closes, until merges up to its closure are checked; closures older than 30 days are not revisited; each merge is judged by the PR's labels at merge time (ADR-015). Confirmed | 5.2 | NFR-4 must hold when a human closes the lock first, or a label changes after the merge | Requester |
+| CQ-13 | When a lock opens, or a lapsed lock is renewed, the watcher re-runs the gate for merge groups still in the queue whose gate started earlier. FR-4 is narrowed: a group that merges in the seconds before its re-run takes effect is reported, not blocked (ADR-016). Confirmed | 2, 5.2 | Otherwise groups that passed the gate just before a lock merge onto a red `main`, with no outage involved | Requester |
+| CQ-14 | A head whose newest result is `neutral` is tested again once `poll_interval` has passed, up to 3 neutral results per head; after that, a "head untestable" alert, and a push or a forced dispatch is needed (ADR-017). Confirmed | 5.1 | A setup failure must not leave `main` untested, and a lock wrongly open or closed | Requester |
 
 ---
 
@@ -669,22 +669,22 @@ team subscribes to that label.
 | ADR | Decision | Status | Review trigger |
 |---|---|---|---|
 | ADR-001 | Central watcher tests only the newest `main` commit | Accepted, amended by ADR-009 and ADR-010 | More than 20 targets |
-| ADR-002 | Pause the merge queue with a gate workflow in each target repo, bypassed by `fixes-main` | Accepted, amended by ADR-008; amendments ADR-014 and ADR-016 proposed | GitHub ships a native queue pause |
-| ADR-003 | No datastore; check runs and the lock issue hold all state | Accepted; amendments ADR-013 and ADR-017 proposed | Walk-back above ~50 calls |
+| ADR-002 | Pause the merge queue with a gate workflow in each target repo, bypassed by `fixes-main` | Accepted, amended by ADR-008, ADR-014 and ADR-016 | GitHub ships a native queue pause |
+| ADR-003 | No datastore; check runs and the lock issue hold all state | Accepted, amended by ADR-013 and ADR-017 | Walk-back above ~50 calls |
 | ADR-004 | Green run closes the lock automatically; a human close is an override | Accepted | Frequent overrides |
 | ADR-005 | Test script contract: exit code plus JUnit XML | Superseded by ADR-007 | — |
 | ADR-006 | GitHub App identity with split tokens | Superseded by ADR-009 | — |
 | ADR-007 | Test script contract: exit code plus CTRF JSON | Accepted | A non-xUnit-v3 target appears |
-| ADR-008 | Gate fails open on API errors; the watcher reconciles merges made during a lock | Accepted; amendments ADR-014 and ADR-015 proposed | More than one unlabelled merge during a lock per quarter |
+| ADR-008 | Gate fails open on API errors; the watcher reconciles merges made during a lock | Accepted, amended by ADR-014 and ADR-015 | More than one unlabelled merge during a lock per quarter |
 | ADR-009 | Tests run as a workflow in each target repo, started by the watcher | Accepted | Security rejects `actions: write` on targets |
-| ADR-010 | Self-hosted .NET trigger worker; GitHub schedule only as an hourly backup | Accepted, amended by ADR-012; amendments ADR-013, ADR-014 and ADR-017 proposed | Webhook hosting becomes available |
+| ADR-010 | Self-hosted .NET trigger worker; GitHub schedule only as an hourly backup | Accepted, amended by ADR-012, ADR-013, ADR-014 and ADR-017 | Webhook hosting becomes available |
 | ADR-011 | Test-duration metrics phase 1 in GitHub (job summary, check run, `timings.json`); own store deferred | Accepted | Need for cross-repo views or alerts |
 | ADR-012 | The worker alerts through `watcher-infra` GitHub issues | Accepted | A monitoring stack is adopted |
-| ADR-013 | The Reporter completes the check run last; an interrupted report is replayed | Proposed (CQ-10) | "Reporting pending" alert more than once a month |
-| ADR-014 | A lock is enforced only while the watcher renews its lease | Proposed (CQ-11) | A lock lapses more than once a quarter |
-| ADR-015 | Reconciliation follows each lock through its closure, judging labels at merge time | Proposed (CQ-12) | A closed lock unreconciled 24 h after closing |
-| ADR-016 | Opening a lock re-runs the gate for merge groups already in the queue; FR-4 narrowed to report a race of seconds | Proposed (CQ-13) | TS-S17 disproves A-7 |
-| ADR-017 | A head whose newest result is neutral is tested again after a wait, up to 3 times | Proposed (CQ-14) | "Head untestable" more than once a month |
+| ADR-013 | The Reporter completes the check run last; an interrupted report is replayed | Accepted (CQ-10) | "Reporting pending" alert more than once a month |
+| ADR-014 | A lock is enforced only while the watcher renews its lease | Accepted (CQ-11) | A lock lapses more than once a quarter |
+| ADR-015 | Reconciliation follows each lock through its closure, judging labels at merge time | Accepted (CQ-12) | A closed lock unreconciled 24 h after closing |
+| ADR-016 | Opening a lock re-runs the gate for merge groups already in the queue; FR-4 narrowed to report a race of seconds | Accepted (CQ-13); depends on A-7 until TS-S17 | TS-S17 disproves A-7 |
+| ADR-017 | A head whose newest result is neutral is tested again after a wait, up to 3 times | Accepted (CQ-14) | "Head untestable" more than once a month |
 
 ## 16. Risks and open questions
 
@@ -763,3 +763,4 @@ team subscribes to that label.
 | 2026-09-15 | Seventh adversarial review: reporting and staleness follow the target run's `main-watcher` job, not the whole run, so a stuck `report` job cannot discard a proven failure; past the stale threshold, a succeeded finished-marker step is reported, not marked stale. TS-S16, TS-U5 and TS-U11 extended | Platform team with Claude | ADR-013 (revised while proposed) |
 | 2026-09-15 | Eighth adversarial review: separate queue and run deadlines, the run deadline counted from the job's start; a stale run is cancelled, force-cancelled if needed, and judged from its steps once stopped, with no retest meanwhile. TS-U15 added; TS-S16 and TS-U5 extended | Platform team with Claude | ADR-013 (revised while proposed) |
 | 2026-09-15 | Ninth adversarial review: a target run that cannot be stopped keeps its check run `in_progress`, blocking all testing on that target until it stops or is deleted; TS-U5 no longer exempts unfinished jobs with a succeeded marker from the deadlines. R-24 added; TS-S16, TS-U5 and TS-U15 extended. Not re-reviewed | Platform team with Claude | ADR-013 (revised while proposed) |
+| 2026-09-15 | The requester confirmed CQ-10 to CQ-14 as proposed. A-7 stays an assumption until sandbox test TS-S17 | Requester; platform team with Claude | ADR-013, ADR-014, ADR-015, ADR-016 and ADR-017 accepted |

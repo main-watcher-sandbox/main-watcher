@@ -13,7 +13,7 @@ durations and the slowest tests.
 - `docs/architecture/architecture.md` — the main document (ARCH-001). Start here.
 - `docs/architecture/decisions/` — ADR-001 to ADR-017.
   - ADR-005 is superseded by ADR-007; ADR-006 is superseded by ADR-009.
-  - ADR-013 to ADR-017 are **proposed**, not accepted (CQ-10 to CQ-14). They amend
+  - ADR-013 to ADR-017 were accepted on 2026-09-15 (CQ-10 to CQ-14). They amend
     ADR-002, ADR-003, ADR-008 and ADR-010, which carry a note saying so.
   - Accepted ADRs are never edited. A changed decision gets a new ADR that supersedes or
     amends the old one, plus a note at the top of the old one.
@@ -46,7 +46,7 @@ is work, it starts `watch.yml` in the watcher repo through the `mw-doorbell` App
 - The results contract is exit code plus CTRF JSON (ADR-007).
 - A gate workflow in each target is a required merge-queue check. It fails merge groups
   while an App-authored lock is open, unless every PR in the group is labelled
-  `fixes-main`, and it fails open on API errors (ADR-002, ADR-008). Proposed: it also
+  `fixes-main`, and it fails open on API errors (ADR-002, ADR-008). It also
   fails open when the lock's lease has expired (ADR-014). When a lock opens, the
   watcher re-runs the gate for merge groups queued before it (ADR-016).
 
@@ -54,7 +54,7 @@ is work, it starts `watch.yml` in the watcher repo through the `mw-doorbell` App
 - All state lives in GitHub: check runs, the lock issue, and hidden markers (ADR-003).
 - A green run auto-closes the lock; a human close counts as an override (ADR-004).
 - An hourly GitHub schedule is only a backup sweep.
-- Proposed recovery rules:
+- Recovery rules:
   - the Reporter completes the check run only after writing the lock issue, and replays
     interrupted reports without undoing a human override. The test outcome comes from the
     `main-watcher-test` step, counted only when the `main-watcher-tests-finished` marker
@@ -74,20 +74,18 @@ metrics store (PostgreSQL + Grafana) is deferred.
 
 ## Open items before building
 
-1. Get the requester's decision on CQ-10 to CQ-14 (ADR-013 to ADR-017). Two are real
-   trade-offs:
-   - CQ-11: a lock lapsing during a long watcher outage, against a lock that stays in
-     force until someone closes it;
-   - CQ-13: narrowing FR-4 so that a group merging in the seconds after a lock opens is
-     reported, not blocked.
-2. Confirm the cluster has outbound HTTPS to `api.github.com` and a secret store (A-6).
-3. Get security approval for `actions: write` on target repos for the `main-watcher` App
-   (R-11), and for Issues: read on `mw-observer` (ADR-014).
-4. Run sandbox tests early: TS-S5, batched merge groups and the gate (A-5, R-3); and
-   TS-S17, gate re-runs for groups queued before a lock (A-7).
-5. Verify team @-mentions from an App notify the team (TS-S10, R-10).
-6. Verify CTRF duration units shown by the reporter action (TS-S13, R-17).
-7. Remaining `[assumption]` tags: worker resource sizing, .NET and Node versions, sandbox
+1. Confirm the cluster has outbound HTTPS to `api.github.com` and a secret store (A-6).
+2. Get security approval for `actions: write` on target repos for the `main-watcher` App
+   (R-11), which now also cancels stale runs and re-runs the gate, and for Issues: read on
+   `mw-observer` (ADR-014).
+3. Run sandbox tests early:
+   - TS-S5: batched merge groups and the gate (A-5, R-3);
+   - TS-S17: gate re-runs for groups queued before a lock (A-7, which ADR-016 depends on);
+   - TS-S14, TS-S16 and TS-S18: the reporting, cancel and retry lifecycle (ADR-013,
+     ADR-017), which relies on GitHub's job, step and timeout behaviour.
+4. Verify team @-mentions from an App notify the team (TS-S10, R-10).
+5. Verify CTRF duration units shown by the reporter action (TS-S13, R-17).
+6. Remaining `[assumption]` tags: worker resource sizing, .NET and Node versions, sandbox
    organisation name.
 
 ## Suggested next steps
@@ -112,14 +110,14 @@ python .claude/skills/architecture-design/scripts/render_diagrams.py docs/archit
 ```
 
 Expected output: four "cites superseded ADR" notices for ADR-005 and ADR-006. They are
-intentional history references. Until CQ-10 to CQ-14 are settled, `check_freshness.py`
-also lists their `[unconfirmed]` items and exits 1.
+intentional history references. `check_freshness.py` should report nothing awaiting
+confirmation.
 
 ## Conventions
 
 - **IDs:**
   - FR / NFR / C (constraints) / A (assumptions) / R (risks) / Q;
-  - CQ = confirmation-queue items (CQ-1 to CQ-9 settled; CQ-10 to CQ-14 pending);
+  - CQ = confirmation-queue items (CQ-1 to CQ-14, all settled);
   - TS-S = scenario tests, TS-U = unit tests.
 - **Front matter:** every doc has an owner, reviewed date and review-by date. Update
   `reviewed` and the change log in `architecture.md` §20 when you edit.

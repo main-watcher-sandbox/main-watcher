@@ -13,17 +13,16 @@ confidence: confirmed
 
 # ADR-003 — No datastore: check runs and the lock issue hold all state
 
-> **Proposed amendment: [ADR-013](ADR-013-reporter-completes-check-run-last.md),
-> 2026-09-15, awaiting confirmation.** A check run would be completed only after the lock
-> issue is written. An in-progress check run whose target run's `main-watcher` job has completed would mean
-> "reporting pending". The test outcome would be read from the target run's
-> `main-watcher-test` step. The lock issue's hidden markers would gain `reported_check` and
-> `reported_sha`, plus `lease_until` (ADR-014) and `reconciled` (ADR-015).
+> **Amended by [ADR-013](ADR-013-reporter-completes-check-run-last.md) on 2026-09-15.** A
+> check run is completed only after the lock issue is written. An in-progress check run
+> whose target run's `main-watcher` job has completed means "reporting pending". The test
+> outcome is read from the target run's `main-watcher-test` step. The lock issue's hidden
+> markers gain `reported_check` and `reported_sha`, plus `lease_until` (ADR-014) and
+> `reconciled` (ADR-015).
 
-> **Proposed amendment: [ADR-017](ADR-017-retry-neutral-results.md), 2026-09-15, awaiting
-> confirmation.** A `neutral` check run would not count as "tested": the head could be
-> tested again after `poll_interval`, up to 3 neutral results. The newest check run on a
-> commit would be its result.
+> **Amended by [ADR-017](ADR-017-retry-neutral-results.md) on 2026-09-15.** A `neutral`
+> check run does not count as "tested": the head can be tested again after
+> `poll_interval`, up to 3 neutral results. The newest check run on a commit is its result.
 
 **Deciders:** platform team · **Consulted:** —
 

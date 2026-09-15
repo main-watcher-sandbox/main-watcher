@@ -1,20 +1,20 @@
 ---
 id: ADR-013
 type: adr
-status: proposed
+status: accepted
 state: target
 owner: platform-team
 reviewed: 2026-09-15
 review_by: 2027-03-15
 review_trigger: "the 'reporting pending' alert fires more than once a month, duplicate lock issues or comments are seen, or a real failure is reported as neutral"
 sources: [FR-3, FR-4, ADR-003, ADR-004, ADR-007, ADR-009, ADR-010, ADR-015]
-confidence: assumed
+confidence: confirmed
 amends: [ADR-003, ADR-010]
 ---
 
 # ADR-013 — The Reporter completes the check run last, so an interrupted report is replayed (amends ADR-003 and ADR-010)
 
-**Deciders:** platform team; requester confirmation pending (CQ-10) · **Consulted:** —
+**Deciders:** requester (confirmed 2026-09-15, CQ-10), platform team · **Consulted:** —
 
 ## Context
 
@@ -67,7 +67,7 @@ to use state that GitHub already holds.
 - sets the job's `timeout-minutes` to the target's `timeout` plus a margin for setup and
   upload, so the wrapper's deadline is reached before the job's.
 
-Restore counts as setup and build counts as test `[unconfirmed]`: a package-feed outage
+Restore counts as setup and build counts as test: a package-feed outage
 should not lock the queue, but a compile break on `main` should.
 
 **Finding the steps.** The Actions jobs API returns each step's name, number and
@@ -164,7 +164,7 @@ are doing.
 for a runner is not running. An eighth review on 2026-09-15 found that a single deadline
 counted from the check run's creation could abandon a job that started late and was still
 testing.
-- **Queue deadline:** the job has not started 30 minutes `[unconfirmed]` after the check run
+- **Queue deadline:** the job has not started 30 minutes after the check run
   was created.
 - **Run deadline:** the job started, and its `started_at` plus its `timeout-minutes` plus 10
   minutes has passed. GitHub's own job timeout normally ends the job well before this.
@@ -176,7 +176,7 @@ run yet:
    idempotent, so a later run simply asks again.
 2. The check run stays `in_progress` until the run has stopped, so ADR-017 starts no second
    test meanwhile.
-3. If the run has not stopped 15 minutes `[unconfirmed]` after `cancel_requested`, it writes
+3. If the run has not stopped 15 minutes after `cancel_requested`, it writes
    `force_cancel_requested=<time>` and calls GitHub's force-cancel endpoint.
 4. Once the `main-watcher` job has completed, it goes through the table in point 1 like any
    other job: reported from the test step if `main-watcher-tests-finished` succeeded,
@@ -205,8 +205,8 @@ All of this state is in GitHub: the check run's creation time and output, and th
 A missing CTRF artifact never makes a result neutral, and a pending report is never
 discarded as stale.
 
-**6. Stuck reporting is visible.** When reporting has been pending for more than 15 minutes
-`[unconfirmed]`, the worker raises a `watcher-infra` alert, "reporting pending" (ADR-012).
+**6. Stuck reporting is visible.** When reporting has been pending for more than 15 minutes,
+the worker raises a `watcher-infra` alert, "reporting pending" (ADR-012).
 No newer head is tested while a report is pending, so this alert also covers stalled
 detection.
 
