@@ -121,9 +121,21 @@ run last:
 - **Infrastructure error:** raise the de-duplicated `watcher-infra` alert, then complete
   the check run as `neutral`.
 
-**3. Reporting pending.** A check run that is still `in_progress` while its target run
-(`external_id`) has completed means **reporting pending**. The worker already flags this as
-work (ADR-010), so a Reporter that stopped part-way runs again on the next cycle.
+**3. Reporting pending, tied to the test job.** A check run that is still `in_progress`
+while the `main-watcher` job of its target run (`external_id`) has completed means
+**reporting pending**.
+- **Only that job matters.** It holds the test step, the marker step and the CTRF upload,
+  and the upload steps have short timeouts, so it ends soon after the tests. Other jobs in
+  the run, such as the `report` job that publishes the timing summary (ADR-011), are
+  ignored. A seventh review on 2026-09-15 found that waiting for the whole run let a stuck
+  `report` job turn a proven failure neutral.
+- **Why the job, not just the marker step.** The Reporter waits for the job to complete so
+  the CTRF upload has finished or timed out before it reads the artifact. Point 5 covers a
+  job that never completes.
+- **Detection.** The worker reads the job through the Actions jobs API (`mw-observer`
+  already has Actions: read) and flags a pending report as work (ADR-010), so a Reporter
+  that stopped part-way runs again on the next cycle. If the job cannot be read because of
+  an API error, nothing changes, and it is read again on the next cycle.
 
 **4. Idempotent replay that respects overrides.**
 - The issue body's hidden marker records `reported_check=<id>` and `reported_sha=<commit>`.
@@ -144,11 +156,22 @@ work (ADR-010), so a Reporter that stopped part-way runs again on the next cycle
 - If the Reporter ever finds two open locks, it keeps the older one and closes the newer as
   a duplicate.
 
-**5. Narrower stale-run rule (amends ADR-010).** An in-progress check run is marked
-`neutral` as stale only when its target run has not completed within the target's timeout
-plus 10 minutes, or no longer exists. A completed target run always goes through the table
-in point 1. A missing CTRF artifact never makes a result neutral, and a pending report is
-never discarded as stale.
+**5. Narrower stale-run rule (amends ADR-010).** A completed `main-watcher` job always goes
+through the table in point 1, whatever other jobs in the run are doing. An in-progress check
+run whose `main-watcher` job has **not** completed is checked once the job's own
+`timeout-minutes` plus 10 minutes have passed since the check run was created:
+- **If `main-watcher-tests-finished` succeeded,** the tests did finish, so the run is not
+  stale. The table in point 1 is applied now, with whatever CTRF is available; at worst a
+  real failure is red with "failing tests unknown".
+- **Otherwise the run is stale:** `neutral`, with an alert. This includes a job that never
+  got a runner.
+- **If the job's steps cannot be read** because of an API error, the check run stays
+  pending and is checked again on the next cycle.
+- **If the run no longer exists** (404), the result is `neutral` with "outcome unknown", as
+  in point 1.
+
+A missing CTRF artifact never makes a result neutral, and a pending report is never
+discarded as stale.
 
 **6. Stuck reporting is visible.** When reporting has been pending for more than 15 minutes
 `[unconfirmed]`, the worker raises a `watcher-infra` alert, "reporting pending" (ADR-012).
@@ -213,6 +236,8 @@ hung test into a red lock.
   infrastructure errors and do not lock. They alert after two in a row.
 - **More Reporter logic and API calls:** a jobs API read per report, a list of issues in
   any state before writing, marker checks, and duplicate handling.
+- **The worker makes one Actions jobs API call** per running test on every cycle, to see
+  whether the `main-watcher` job has completed (R-13).
 - **It relies on the marker step's condition.** That GitHub skips the marker step when
   `finished` was never set, including after a cancellation or a lost runner, is
   `[assumption]`. TS-S16 checks it.

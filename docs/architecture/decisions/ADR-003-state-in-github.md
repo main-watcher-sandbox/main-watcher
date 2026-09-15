@@ -15,7 +15,7 @@ confidence: confirmed
 
 > **Proposed amendment: [ADR-013](ADR-013-reporter-completes-check-run-last.md),
 > 2026-09-15, awaiting confirmation.** A check run would be completed only after the lock
-> issue is written. An in-progress check run whose target run has completed would mean
+> issue is written. An in-progress check run whose target run's `main-watcher` job has completed would mean
 > "reporting pending". The test outcome would be read from the target run's
 > `main-watcher-test` step. The lock issue's hidden markers would gain `reported_check` and
 > `reported_sha`, plus `lease_until` (ADR-014) and `reconciled` (ADR-015).

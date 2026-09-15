@@ -37,7 +37,7 @@ is work, it starts `watch.yml` in the watcher repo through the `mw-doorbell` App
 - creates a check run on the target commit;
 - starts the target repo's `main-watcher-tests.yml` with `return_run_details`, and stores
   the run ID in the check run's `external_id`;
-- when that run finishes, reads its CTRF artifact and opens, updates or closes the
+- when that run's `main-watcher` job finishes, reads its CTRF artifact and opens, updates or closes the
   `main-broken` lock issue.
 
 **Target repos.**
