@@ -77,15 +77,26 @@ pointed out. So the contract is the step **name**:
 GitHub records the step's conclusion whether or not any upload worked. What the Reporter
 concludes:
 
-| Target run | `main-watcher-test` step | CTRF | Result |
-|---|---|---|---|
-| Cancelled, or stopped by the job timeout | Any | Any | Infrastructure error: `neutral`, alert |
-| Completed | Not run, because a setup step failed | — | Infrastructure error: `neutral`, alert |
-| Completed | No step named `main-watcher-test`, or more than one | — | Contract error: `neutral`, alert "outcome contract broken" |
-| Completed | `failure` | Valid | Red; failing tests listed |
-| Completed | `failure` | Missing, invalid, or not downloadable after retries | Red; "failing tests unknown", with a link to the run |
-| Completed | `success` | Any | Green; a warning if CTRF is missing or lists failures |
-| Deleted after completing (the API returns 404) | — | — | `neutral`, alert "outcome unknown" |
+**The test step decides, whatever happens after it.** A run can still be cancelled, or hit
+its job timeout, after `main-watcher-test` has finished, for example while uploading the
+artifact. A fifth review on 2026-09-15 found that an earlier version of this table made any
+cancelled or timed-out run neutral, so a hung upload could hide a real failure. The step's
+own conclusion now takes precedence, and the run's conclusion is used only when the test
+step did not finish. The upload steps also have their own short `timeout-minutes`, so a hung
+upload ends without waiting for the job timeout.
+
+Rows are checked from top to bottom:
+
+| `main-watcher-test` step | CTRF | Result |
+|---|---|---|
+| Found more than once | — | Contract error: `neutral`, alert "outcome contract broken" |
+| `failure`, whatever the run's conclusion | Valid | Red; failing tests listed |
+| `failure`, whatever the run's conclusion | Missing, invalid, or not downloadable after retries | Red; "failing tests unknown", with a link to the run |
+| `success`, whatever the run's conclusion | Any | Green; a warning if CTRF is missing or lists failures |
+| Did not finish: cancelled or timed out while running, or skipped because a setup step failed | — | Infrastructure error: `neutral`, alert |
+| Not found, in a run that was cancelled, timed out or failed before reaching it | — | Infrastructure error: `neutral`, alert |
+| Not found, in a run that otherwise completed | — | Contract error: `neutral`, alert "outcome contract broken" |
+| Run deleted after completing (the API returns 404) | — | `neutral`, alert "outcome unknown" |
 
 Any other error reading the jobs API leaves the report pending, to be retried (point 3).
 
@@ -180,6 +191,9 @@ CTRF upload, while GitHub records the step conclusion itself.
   infrastructure errors and do not lock. They alert after two in a row.
 - **More Reporter logic and API calls:** a jobs API read per report, a list of issues in
   any state before writing, marker checks, and duplicate handling.
+- **It trusts GitHub's step conclusion.** If GitHub ever reported an interrupted test step
+  as `failure`, for example after losing the runner, it would read as red `[assumption]`.
+  TS-S16 checks the conclusions GitHub gives for a cancelled and a timed-out step.
 - **Duplicate detection assumes the issues list shows a just-created issue.** If the list
   lags, a replay could create a second issue; the duplicate rule closes it on the next
   pass.
@@ -199,5 +213,5 @@ CTRF upload, while GitHub records the step conclusion itself.
 
 - The "reporting pending" alert fires more than once a month.
 - Duplicate lock issues or comments are seen in practice.
-- A real failure is reported as neutral, or a restore failure caused by the code goes
-  unnoticed.
+- A real failure is reported as neutral, including after a cancellation or timeout later
+  in the run, or a restore failure caused by the code goes unnoticed.

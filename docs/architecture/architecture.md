@@ -270,7 +270,7 @@ sequenceDiagram
     W->>GH: dispatch watch.yml, targets
     GH->>WA: start run
     WA->>GH: read main-watcher-test step outcome, download CTRF
-    alt setup error, timeout, cancelled, or run deleted
+    alt setup error, test step interrupted, or run deleted
         WA->>GH: infra alert
         WA->>GH: check run neutral
     else test step failed, with or without CTRF
@@ -323,7 +323,8 @@ is raised (ADR-017).
 - **No green run exists yet, or the green commit was force-pushed away.** The push list
   falls back to activity after the green check run's timestamp, or to the last 100
   pushes. The issue says which fallback was used.
-- **Test step failed without valid CTRF**, including when the upload or download failed.
+- **Test step failed without valid CTRF**, including when the upload or download failed or
+  timed out, or the run was cancelled after the test step finished.
   The result is still red, because the outcome comes from the `main-watcher-test` step's
   conclusion, not from the artifact. The issue says "failing tests unknown" and links to
   the target run (ADR-007, ADR-013).
@@ -747,3 +748,4 @@ team subscribes to that label.
 | 2026-09-15 | Second adversarial review: the test outcome is read from the `main-watcher-test` step, so a lost artifact no longer turns a failure neutral; replay checks closed locks and keeps human overrides. TS-S16 and TS-U11 added; TS-S14, TS-U5 and TS-U8 extended | Platform team with Claude | ADR-013 (revised while proposed) |
 | 2026-09-15 | Third adversarial review: the test step is found by name, not step ID, with an explicit contract error; reconciliation judges labels at merge time; opening a lock re-runs the gate for groups already queued, with FR-4 narrowed to report a race of seconds. CQ-13, A-7, R-22, TS-S17 and TS-U12 added; TS-S15, TS-S16, TS-U10 and TS-U11 extended | Platform team with Claude | ADR-013 and ADR-015 (revised while proposed); ADR-016 (amends ADR-002) |
 | 2026-09-15 | Fourth adversarial review: neutral results stay eligible for a retest after `poll_interval`, up to 3 per head; the queue-sweep obligation and the lease lapse are written in the same issue update as the lock or lease renewal. CQ-14, R-23, TS-S18 and TS-U13 added; TS-S12, TS-S17, TS-U5 and TS-U12 extended | Platform team with Claude | ADR-017 (amends ADR-003, ADR-010); ADR-014 and ADR-016 (revised while proposed) |
+| 2026-09-15 | Fifth adversarial review: the test step's own conclusion takes precedence over a later cancellation or timeout, so a hung upload cannot hide a failure; upload steps get their own timeout. TS-S16 and TS-U11 extended | Platform team with Claude | ADR-013 (revised while proposed) |
