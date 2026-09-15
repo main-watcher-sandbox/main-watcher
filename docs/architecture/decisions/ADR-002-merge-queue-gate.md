@@ -17,6 +17,10 @@ confidence: confirmed
 > On GitHub API errors the gate now fails **open**, and the watcher reconciles afterwards.
 > The rest of this decision stands.
 
+> **Proposed amendment: [ADR-014](ADR-014-lock-lease.md), 2026-09-15, awaiting
+> confirmation.** The gate would enforce a lock only while its lease, renewed by the
+> watcher, has not expired. With an expired lease it would fail open with a warning.
+
 **Deciders:** requester, platform team · **Consulted:** security (App permissions)
 
 ## Context

@@ -6,7 +6,7 @@ state: target
 owner: platform-team
 reviewed: 2026-09-15
 review_by: 2027-03-15
-sources: [ARCH-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012]
+sources: [ARCH-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015]
 confidence: assumed
 ---
 
@@ -26,9 +26,9 @@ confidence: assumed
 | Test type | Owner | Runs where | Gate | Notes |
 |---|---|---|---|---|
 | Unit: worker change detection | Platform team | Worker repo CI (`dotnet test`, xUnit v3) | Merge | `GitHubGateway` faked |
-| Unit: Planner, Reporter, CTRF reader, push-range logic, gate decision, reconciliation | Platform team | Watcher repo CI | Merge | GitHub API fixtures |
+| Unit: Planner, Reporter (including replay), CTRF reader, push-range logic, gate decision (including lease), reconciliation (including closed locks) | Platform team | Watcher repo CI | Merge | GitHub API fixtures |
 | Container smoke test | Platform team | Worker CI | Image publish | Starts the image; `/healthz` responds; config errors fail fast |
-| Scenario TS-S1–S12 | Platform team | Sandbox org + a sandbox namespace in the cluster | Release of the worker, a new workflow tag, or a new gate template | Real GitHub, about 30 min |
+| Scenario TS-S1–S12, TS-S14, TS-S15 | Platform team | Sandbox org + a sandbox namespace in the cluster | Release of the worker, a new workflow tag, or a new gate template | Real GitHub, about 30 min |
 | Workflow security review | Platform team + security | PR review | Any change to `.github/workflows` or App permissions | Checklist in §6 |
 | Onboarding dry run | Target owner | Target repo | Before the gate becomes required | Onboarding step 5 |
 
@@ -51,7 +51,7 @@ confidence: assumed
 | Gate | Must pass | Who may override | Override recorded where |
 |---|---|---|---|
 | Watcher repo or worker merge | Unit tests, workflow lint | Platform lead | PR comment |
-| New workflow tag, gate template or worker image | TS-S1–S12 | No one | — |
+| New workflow tag, gate template or worker image | TS-S1–S12, TS-S14, TS-S15 | No one | — |
 
 ## 6. Testing the architecture itself
 
@@ -63,20 +63,25 @@ confidence: assumed
 | TS-S4: while locked, an unlabelled PR is removed from the queue and a `fixes-main` PR merges | FR-4, C-2 | Queue both | Release |
 | TS-S5: a batched group mixing a fix and a non-fix PR fails the gate | R-3, A-5 | Merge limit 2 | Release, and at onboarding |
 | TS-S6: a hand-made `main-broken` issue does not lock | R-2 | Issue created by a user | Release |
-| TS-S7: with the worker scaled to 0 and the sweep disabled, merges still proceed | NFR-3 | Queue a PR | Release |
+| TS-S7: with the worker scaled to 0 and the sweep disabled, merges still proceed: (a) with no lock open, at once; (b) starting from an open lock, once `lock_lease` has passed, with the gate warning "LOCK LEASE EXPIRED". After the watcher is restored, the lease is renewed, the lock is enforced again, a "lock lapsed" alert is raised, and the merge from (b) is reported | NFR-3, ADR-014 | Queue a PR in each case; sandbox `lock_lease` of 10 min | Release |
 | TS-S8: credential scope. `mw-observer` cannot write or dispatch; `mw-doorbell` cannot touch targets; a target test run has no access to any Main Watcher key | ADR-009, ADR-010 | API calls with each token must return 403; the test run inspects its own environment | Release |
 | TS-S9: when the gate cannot reach the API, it fails open with a warning, and the next watcher run reports the unlabelled merge | NFR-3, NFR-4, ADR-008 | Invalid-token override in the gate, lock open, unlabelled PR | Release |
 | TS-S10: the lock issue notifies the `notify` team, and falls back to CODEOWNERS | CQ-6, R-10 | Sandbox team member checks their notifications | Release |
 | TS-S11: with the worker scaled to 0, a push is tested by the next hourly sweep and a "worker appears down" alert is raised | ADR-010, R-5 | Scale down, push, wait | Release |
 | TS-S13: the job summary lists the slowest tests with correct units, compared to xUnit v3's own CTRF values; the check run shows suite time, the 5 slowest tests and the retry flag | FR-6, ADR-011, R-17 | Sandbox suite with tests of known duration (e.g. 50 ms, 2 s, 20 s) | Release, and on each reporter pin update |
 | TS-S12: cancelling a target test run marks its check run neutral, raises an alert, and retests the head | ADR-009 | Cancel the run by hand | Release |
+| TS-S14: a Reporter stopped (a) after creating the lock issue and (b) after updating it, but before completing the check run, is replayed on the next cycle: the check run completes, no duplicate issue or comment appears, and the check run is never marked stale. (c) With issue writes failing for 20 min, a "reporting pending" alert is raised, and the lock appears once writes succeed | FR-4, ADR-013 | Fault-injection switch in the sandbox Reporter that exits after the chosen write; revoked Issues permission for (c) | Release |
+| TS-S15: an unlabelled PR merged during a lock, followed by a human closing the lock issue before the watcher recovers, is reported on recovery: on the closed issue, as a comment, and as a `watcher-infra` alert; the issue is then marked `reconciled=complete` | NFR-4, ADR-015 | Worker scaled to 0 and sweep disabled; gate forced open (invalid token or expired lease); merge, close the issue, restore | Release |
 | TS-U1: the CTRF reader merges several projects' reports, lists failed tests, and treats missing or schema-invalid files as "unknown" | ADR-007 | xUnit v3-produced fixtures | Every commit |
 | TS-U2: the reusable workflow's retry passes failing names to `--filter-method` and records the retry count | ADR-007, CQ-4 | Fixture reports | Every commit |
 | TS-U3: no new test starts while a check run is in progress, or within `poll_interval` of the last start | CQ-1, FR-2 | Timestamped fixtures | Every commit |
 | TS-U4: reconciliation reports each unlabelled merge during a lock exactly once across runs | ADR-008 | Activity fixtures + marker | Every commit |
 | TS-U6: `timings.json` separates wall-clock time from summed per-test time, and carries the retry flag | ADR-011 | Fixture CTRF with parallel tests and a retry | Every commit |
 | TS-U7: worker alerts de-duplicate: a repeated condition comments on the open issue instead of creating a new one | ADR-012 | Faked gateway | Every commit |
-| TS-U5: the worker flags work for (a) a new head, (b) a completed target run, (c) a stale run, and nothing otherwise; it dispatches at most once per cycle | ADR-010 | Faked gateway | Every commit |
+| TS-U5: the worker flags work for (a) a new head, (b) a completed target run, (c) a stale run, (d) a lock lease last renewed more than 1 h ago, (e) a closed lock not yet reconciled, and nothing otherwise; it dispatches at most once per cycle; a completed target run with an artifact is never treated as stale | ADR-010, ADR-013, ADR-014, ADR-015 | Faked gateway | Every commit |
+| TS-U8: Reporter replay is idempotent: stopping after any write in the create, update or close sequence and replaying for the same check run gives one issue, one comment and a completed check run; two open locks lead to the newer being closed | ADR-013 | Faked gateway that fails after each write | Every commit |
+| TS-U9: the gate enforces a lock only when `lease_until` is in the future and at most 24 h ahead; a missing, unreadable, expired or too-distant lease fails open with the "LOCK LEASE EXPIRED" warning | ADR-014 | Marker fixtures, fixed clock | Every commit |
+| TS-U10: reconciliation covers merges up to a lock's `closed_at` for App-closed and human-closed issues, ignores merges after closure, writes `reconciled=complete` only after every report succeeds, and skips issues already complete | ADR-015 | Activity and issue fixtures | Every commit |
 
 **Workflow and deployment review checklist:**
 - no `pull_request_target`;
@@ -99,10 +104,10 @@ detection stalled becomes a scenario or unit test. Owner: platform lead.
 |---|---|
 | FR-2 | TS-S1, TS-S2, TS-U3, TS-U5 |
 | FR-3 | TS-S2, TS-U1 |
-| FR-4 | TS-S3, TS-S4, TS-S5 |
+| FR-4 | TS-S3, TS-S4, TS-S5, TS-S14, TS-U8 |
 | FR-5 | TS-S8 |
 | C-2 | TS-S4 |
 | C-7 | TS-S11 |
-| NFR-3 | TS-S7, TS-S9 |
-| NFR-4 | TS-S9, TS-U4 |
+| NFR-3 | TS-S7, TS-S9, TS-U9 |
+| NFR-4 | TS-S9, TS-S15, TS-U4, TS-U10 |
 | FR-6 | TS-S13, TS-U6 |

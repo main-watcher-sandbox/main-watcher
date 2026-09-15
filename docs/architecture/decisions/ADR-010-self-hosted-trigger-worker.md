@@ -18,6 +18,14 @@ amends: ADR-001
 > alerting stack exists, so the worker raises its alerts as `watcher-infra` GitHub issues, and
 > `mw-doorbell` gains Issues: write on the watcher repo. The `/metrics` endpoint is dropped.
 
+> **Proposed amendments, 2026-09-15, awaiting confirmation:**
+> - [ADR-013](ADR-013-reporter-completes-check-run-last.md): an in-progress check run whose
+>   target run completed with an artifact is "reporting pending", is never marked stale,
+>   and raises an alert after 15 minutes.
+> - [ADR-014](ADR-014-lock-lease.md): `mw-observer` gains Issues: read on targets. The
+>   worker also flags work when a lock lease is due for renewal, or when a closed lock is
+>   not yet reconciled (ADR-015).
+
 **Deciders:** requester, platform team · **Consulted:** —
 
 ## Context
