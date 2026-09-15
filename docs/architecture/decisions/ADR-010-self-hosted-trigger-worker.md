@@ -20,8 +20,9 @@ amends: ADR-001
 
 > **Proposed amendments, 2026-09-15, awaiting confirmation:**
 > - [ADR-013](ADR-013-reporter-completes-check-run-last.md): an in-progress check run whose
->   target run completed with an artifact is "reporting pending", is never marked stale,
->   and raises an alert after 15 minutes.
+>   target run has completed is "reporting pending", with or without an artifact. It is
+>   never marked stale, and raises an alert after 15 minutes. Only a target run that has
+>   not completed within its timeout + 10 min, or no longer exists, is stale.
 > - [ADR-014](ADR-014-lock-lease.md): `mw-observer` gains Issues: read on targets. The
 >   worker also flags work when a lock lease is due for renewal, or when a closed lock is
 >   not yet reconciled (ADR-015).

@@ -17,8 +17,8 @@ durations and the slowest tests.
     ADR-002, ADR-003, ADR-008 and ADR-010, which carry a note saying so.
   - Accepted ADRs are never edited. A changed decision gets a new ADR that supersedes or
     amends the old one, plus a note at the top of the old one.
-- `docs/architecture/test-strategy.md` — TS-001: scenario tests TS-S1–S15, unit tests
-  TS-U1–U10.
+- `docs/architecture/test-strategy.md` — TS-001: scenario tests TS-S1–S16, unit tests
+  TS-U1–U11.
 - `docs/architecture/artifact-index.md` — what exists, what was deliberately not produced,
   and why.
 - `docs/architecture/diagrams/` — PNG renders. The Mermaid sources inside the markdown are
@@ -55,7 +55,8 @@ is work, it starts `watch.yml` in the watcher repo through the `mw-doorbell` App
 - An hourly GitHub schedule is only a backup sweep.
 - Proposed recovery rules:
   - the Reporter completes the check run only after writing the lock issue, and replays
-    interrupted reports (ADR-013);
+    interrupted reports without undoing a human override. The test outcome comes from the
+    `main-watcher-test` step, so a failure stays red even without CTRF (ADR-013);
   - the watcher renews a 4 h lease on each open lock (ADR-014);
   - reconciliation continues after a lock closes, until merges up to its closure are
     checked (ADR-015).
