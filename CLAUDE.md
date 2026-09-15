@@ -11,14 +11,14 @@ durations and the slowest tests.
 ## Where things are
 
 - `docs/architecture/architecture.md` — the main document (ARCH-001). Start here.
-- `docs/architecture/decisions/` — ADR-001 to ADR-015.
+- `docs/architecture/decisions/` — ADR-001 to ADR-016.
   - ADR-005 is superseded by ADR-007; ADR-006 is superseded by ADR-009.
-  - ADR-013 to ADR-015 are **proposed**, not accepted (CQ-10 to CQ-12). They amend
+  - ADR-013 to ADR-016 are **proposed**, not accepted (CQ-10 to CQ-13). They amend
     ADR-002, ADR-003, ADR-008 and ADR-010, which carry a note saying so.
   - Accepted ADRs are never edited. A changed decision gets a new ADR that supersedes or
     amends the old one, plus a note at the top of the old one.
-- `docs/architecture/test-strategy.md` — TS-001: scenario tests TS-S1–S16, unit tests
-  TS-U1–U11.
+- `docs/architecture/test-strategy.md` — TS-001: scenario tests TS-S1–S17, unit tests
+  TS-U1–U12.
 - `docs/architecture/artifact-index.md` — what exists, what was deliberately not produced,
   and why.
 - `docs/architecture/diagrams/` — PNG renders. The Mermaid sources inside the markdown are
@@ -47,7 +47,8 @@ is work, it starts `watch.yml` in the watcher repo through the `mw-doorbell` App
 - A gate workflow in each target is a required merge-queue check. It fails merge groups
   while an App-authored lock is open, unless every PR in the group is labelled
   `fixes-main`, and it fails open on API errors (ADR-002, ADR-008). Proposed: it also
-  fails open when the lock's lease has expired (ADR-014).
+  fails open when the lock's lease has expired (ADR-014). When a lock opens, the
+  watcher re-runs the gate for merge groups queued before it (ADR-016).
 
 **State and scheduling.**
 - All state lives in GitHub: check runs, the lock issue, and hidden markers (ADR-003).
@@ -59,7 +60,8 @@ is work, it starts `watch.yml` in the watcher repo through the `mw-doorbell` App
     `main-watcher-test` step, so a failure stays red even without CTRF (ADR-013);
   - the watcher renews a 4 h lease on each open lock (ADR-014);
   - reconciliation continues after a lock closes, until merges up to its closure are
-    checked (ADR-015).
+    checked, and judges each PR's `fixes-main` label as it was at merge time (ADR-015);
+  - opening a lock re-runs the gate for merge groups already in the queue (ADR-016).
 
 **Timings (phase 1).** They appear in the run's job summary (the CTRF reporter action) and
 in the check run output, and are saved as `timings.json` in the artifact (ADR-011). An own
@@ -67,13 +69,17 @@ metrics store (PostgreSQL + Grafana) is deferred.
 
 ## Open items before building
 
-1. Get the requester's decision on CQ-10 to CQ-12 (ADR-013 to ADR-015). CQ-11 is a real
-   trade-off: a lock lapsing during a long watcher outage, against a lock that stays in
-   force until someone closes it.
+1. Get the requester's decision on CQ-10 to CQ-13 (ADR-013 to ADR-016). Two are real
+   trade-offs:
+   - CQ-11: a lock lapsing during a long watcher outage, against a lock that stays in
+     force until someone closes it;
+   - CQ-13: narrowing FR-4 so that a group merging in the seconds after a lock opens is
+     reported, not blocked.
 2. Confirm the cluster has outbound HTTPS to `api.github.com` and a secret store (A-6).
 3. Get security approval for `actions: write` on target repos for the `main-watcher` App
    (R-11), and for Issues: read on `mw-observer` (ADR-014).
-4. Run sandbox test TS-S5 early: batched merge groups and the gate (A-5, R-3).
+4. Run sandbox tests early: TS-S5, batched merge groups and the gate (A-5, R-3); and
+   TS-S17, gate re-runs for groups queued before a lock (A-7).
 5. Verify team @-mentions from an App notify the team (TS-S10, R-10).
 6. Verify CTRF duration units shown by the reporter action (TS-S13, R-17).
 7. Remaining `[assumption]` tags: worker resource sizing, .NET and Node versions, sandbox
@@ -101,14 +107,14 @@ python .claude/skills/architecture-design/scripts/render_diagrams.py docs/archit
 ```
 
 Expected output: four "cites superseded ADR" notices for ADR-005 and ADR-006. They are
-intentional history references. Until CQ-10 to CQ-12 are settled, `check_freshness.py`
+intentional history references. Until CQ-10 to CQ-13 are settled, `check_freshness.py`
 also lists their `[unconfirmed]` items and exits 1.
 
 ## Conventions
 
 - **IDs:**
   - FR / NFR / C (constraints) / A (assumptions) / R (risks) / Q;
-  - CQ = confirmation-queue items (CQ-1 to CQ-9 settled; CQ-10 to CQ-12 pending);
+  - CQ = confirmation-queue items (CQ-1 to CQ-9 settled; CQ-10 to CQ-13 pending);
   - TS-S = scenario tests, TS-U = unit tests.
 - **Front matter:** every doc has an owner, reviewed date and review-by date. Update
   `reviewed` and the change log in `architecture.md` §20 when you edit.

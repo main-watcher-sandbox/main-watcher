@@ -21,6 +21,11 @@ confidence: confirmed
 > confirmation.** The gate would enforce a lock only while its lease, renewed by the
 > watcher, has not expired. With an expired lease it would fail open with a warning.
 
+> **Proposed amendment: [ADR-016](ADR-016-recheck-queued-groups-on-lock.md), 2026-09-15,
+> awaiting confirmation.** When a lock opens, the watcher would re-run the gate for merge
+> groups still in the queue whose gate started before the lock, and FR-4 would be narrowed
+> to report groups that merge before that re-check takes effect.
+
 **Deciders:** requester, platform team · **Consulted:** security (App permissions)
 
 ## Context

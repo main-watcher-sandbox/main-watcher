@@ -22,7 +22,8 @@ amends: ADR-002
 > - [ADR-014](ADR-014-lock-lease.md): the gate would also fail open when a lock's lease,
 >   renewed by the watcher, has expired.
 > - [ADR-015](ADR-015-reconcile-through-closure.md): reconciliation would cover every lock
->   until merges up to its closure are checked, not only locks that are still open.
+>   until merges up to its closure are checked, not only locks that are still open. It
+>   would also judge each merged PR by its labels at merge time, from label events.
 
 **Deciders:** requester, platform team · **Consulted:** —
 

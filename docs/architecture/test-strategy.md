@@ -6,7 +6,7 @@ state: target
 owner: platform-team
 reviewed: 2026-09-15
 review_by: 2027-03-15
-sources: [ARCH-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015]
+sources: [ARCH-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016]
 confidence: assumed
 ---
 
@@ -28,7 +28,7 @@ confidence: assumed
 | Unit: worker change detection | Platform team | Worker repo CI (`dotnet test`, xUnit v3) | Merge | `GitHubGateway` faked |
 | Unit: Planner, Reporter (including replay), CTRF reader, push-range logic, gate decision (including lease), reconciliation (including closed locks) | Platform team | Watcher repo CI | Merge | GitHub API fixtures |
 | Container smoke test | Platform team | Worker CI | Image publish | Starts the image; `/healthz` responds; config errors fail fast |
-| Scenario TS-S1–S12, TS-S14–S16 | Platform team | Sandbox org + a sandbox namespace in the cluster | Release of the worker, a new workflow tag, or a new gate template | Real GitHub, about 30 min |
+| Scenario TS-S1–S12, TS-S14–S17 | Platform team | Sandbox org + a sandbox namespace in the cluster | Release of the worker, a new workflow tag, or a new gate template | Real GitHub, about 30 min |
 | Workflow security review | Platform team + security | PR review | Any change to `.github/workflows` or App permissions | Checklist in §6 |
 | Onboarding dry run | Target owner | Target repo | Before the gate becomes required | Onboarding step 5 |
 
@@ -43,7 +43,7 @@ confidence: assumed
 | Dependency | Stood in by | Drift risk | Real-dependency check |
 |---|---|---|---|
 | GitHub REST API | Fakes (worker) and recorded fixtures (watcher) | Payload shape changes: activity API, `merge_group`, dispatch `return_run_details` | Scenario suite before each release |
-| Merge queue behaviour | Only the real thing | High | TS-S4, TS-S5 |
+| Merge queue behaviour | Only the real thing | High | TS-S4, TS-S5, TS-S17 |
 | `ctrf-io/github-test-reporter` | Nothing; only the real action, pinned | Medium (upstream changes) | TS-S13 on every pin update |
 
 ## 5. Quality gates
@@ -51,7 +51,7 @@ confidence: assumed
 | Gate | Must pass | Who may override | Override recorded where |
 |---|---|---|---|
 | Watcher repo or worker merge | Unit tests, workflow lint | Platform lead | PR comment |
-| New workflow tag, gate template or worker image | TS-S1–S12, TS-S14–S16 | No one | — |
+| New workflow tag, gate template or worker image | TS-S1–S12, TS-S14–S17 | No one | — |
 
 ## 6. Testing the architecture itself
 
@@ -71,8 +71,9 @@ confidence: assumed
 | TS-S13: the job summary lists the slowest tests with correct units, compared to xUnit v3's own CTRF values; the check run shows suite time, the 5 slowest tests and the retry flag | FR-6, ADR-011, R-17 | Sandbox suite with tests of known duration (e.g. 50 ms, 2 s, 20 s) | Release, and on each reporter pin update |
 | TS-S12: cancelling a target test run marks its check run neutral, raises an alert, and retests the head | ADR-009 | Cancel the run by hand | Release |
 | TS-S14: a Reporter stopped (a) after creating the lock issue and (b) after updating it, but before completing the check run, is replayed on the next cycle: the check run completes, no duplicate issue or comment appears, and the check run is never marked stale. (c) With issue writes failing for 20 min, a "reporting pending" alert is raised, and the lock appears once writes succeed. (d) Stopped after creating the lock issue, which a human then closes before the replay: no new lock is created, the check run completes as `failure`, and the override comment is posted | FR-4, ADR-004, ADR-013 | Fault-injection switch in the sandbox Reporter that exits after the chosen write; revoked Issues permission for (c); for (d), close the issue by hand before restoring the Reporter | Release |
-| TS-S15: an unlabelled PR merged during a lock, followed by a human closing the lock issue before the watcher recovers, is reported on recovery: on the closed issue, as a comment, and as a `watcher-infra` alert; the issue is then marked `reconciled=complete` | NFR-4, ADR-015 | Worker scaled to 0 and sweep disabled; gate forced open (invalid token or expired lease); merge, close the issue, restore | Release |
-| TS-S16: a failing test run whose CTRF upload fails opens a lock saying "failing tests unknown", not a neutral result; a run whose restore step fails completes the check run as `neutral`, with an alert and no lock | FR-3, FR-4, ADR-007, ADR-013 | Sandbox switches that make the upload step fail, and that point restore at an unreachable feed | Release |
+| TS-S15: an unlabelled PR merged during a lock, followed by a human closing the lock issue before the watcher recovers, is reported on recovery: on the closed issue, as a comment, and as a `watcher-infra` alert; the issue is then marked `reconciled=complete`. (b) The same, but with `fixes-main` added to the PR after it merged and before recovery: still reported | NFR-4, ADR-015 | Worker scaled to 0 and sweep disabled; gate forced open (invalid token or expired lease); merge, close the issue, restore; for (b), label the PR before restoring | Release |
+| TS-S16: a failing test run whose CTRF upload fails opens a lock saying "failing tests unknown", not a neutral result; a run whose restore step fails completes the check run as `neutral`, with an alert and no lock; (c) the Reporter finds the `main-watcher-test` step in the real jobs response of a reusable-workflow caller, and a workflow tag with that step renamed produces an "outcome contract broken" alert | FR-3, FR-4, ADR-007, ADR-013 | Sandbox switches that make the upload step fail, and that point restore at an unreachable feed; a sandbox workflow tag with the step renamed for (c) | Release |
+| TS-S17: an unlabelled PR whose gate has passed while a slow second required check is still running is removed from the queue when a lock opens: the watcher re-runs its gate, which fails. The same holds for a gate still running when the lock opens. A group that merged before its re-run is reported. This confirms A-7 | FR-4, A-7, ADR-016 | Sandbox ruleset with a second required check that sleeps 10 min; force a failing test run while the PR waits | Release, and before rollout |
 | TS-U1: the CTRF reader merges several projects' reports, lists failed tests, and treats missing or schema-invalid files as "unknown" | ADR-007 | xUnit v3-produced fixtures | Every commit |
 | TS-U2: the reusable workflow's retry passes failing names to `--filter-method` and records the retry count | ADR-007, CQ-4 | Fixture reports | Every commit |
 | TS-U3: no new test starts while a check run is in progress, or within `poll_interval` of the last start | CQ-1, FR-2 | Timestamped fixtures | Every commit |
@@ -82,8 +83,9 @@ confidence: assumed
 | TS-U5: the worker flags work for (a) a new head, (b) a completed target run, (c) a stale run, (d) a lock lease last renewed more than 1 h ago, (e) a closed lock not yet reconciled, and nothing otherwise; it dispatches at most once per cycle; a completed target run is never treated as stale, with or without an artifact | ADR-010, ADR-013, ADR-014, ADR-015 | Faked gateway | Every commit |
 | TS-U8: Reporter replay is idempotent: stopping after any write in the create, update or close sequence and replaying for the same check run gives one issue, one comment and a completed check run; two open locks lead to the newer being closed; a check run ID already on a closed issue creates nothing; a red result for the commit of a human-closed lock creates nothing, while one for a different commit opens a new lock | ADR-004, ADR-013 | Faked gateway that fails after each write | Every commit |
 | TS-U9: the gate enforces a lock only when `lease_until` is in the future and at most 24 h ahead; a missing, unreadable, expired or too-distant lease fails open with the "LOCK LEASE EXPIRED" warning | ADR-014 | Marker fixtures, fixed clock | Every commit |
-| TS-U10: reconciliation covers merges up to a lock's `closed_at` for App-closed and human-closed issues, ignores merges after closure, writes `reconciled=complete` only after every report succeeds, and skips issues already complete | ADR-015 | Activity and issue fixtures | Every commit |
-| TS-U11: the Reporter's outcome table: run cancelled or timed out, or a setup step failed → infrastructure error; `main-watcher-test` failed with valid CTRF → red, tests listed; failed with missing, invalid or undownloadable CTRF → red, "failing tests unknown"; succeeded → green; run deleted (404) → neutral, "outcome unknown"; any other jobs API error → still pending | ADR-007, ADR-013 | Jobs API and artifact fixtures | Every commit |
+| TS-U10: reconciliation covers merges up to a lock's `closed_at` for App-closed and human-closed issues, ignores merges after closure, writes `reconciled=complete` only after every report succeeds, and skips issues already complete; judges `fixes-main` from label events up to `merged_at`, so a label added after the merge still reports and one removed after it does not; stops without advancing `last_reconciled` when label events cannot be read | ADR-015 | Activity and issue fixtures | Every commit |
+| TS-U11: the Reporter's outcome table: run cancelled or timed out, or a setup step failed → infrastructure error; `main-watcher-test` failed with valid CTRF → red, tests listed; failed with missing, invalid or undownloadable CTRF → red, "failing tests unknown"; succeeded → green; run deleted (404) → neutral, "outcome unknown"; any other jobs API error → still pending; no step named `main-watcher-test` in a `main-watcher` job, or more than one → contract error, neutral | ADR-007, ADR-013 | Jobs API and artifact fixtures, including a reusable-workflow caller's jobs response | Every commit |
+| TS-U12: the queue sweep re-runs completed gate runs that started before the lock for groups still queued, re-runs gate runs still in progress once they complete, skips gate runs started after the lock and groups no longer queued, and writes `queue_swept` only when nothing is left | ADR-016 | Branch, workflow-run and issue fixtures | Every commit |
 
 **Workflow and deployment review checklist:**
 - no `pull_request_target`;
@@ -106,7 +108,7 @@ detection stalled becomes a scenario or unit test. Owner: platform lead.
 |---|---|
 | FR-2 | TS-S1, TS-S2, TS-U3, TS-U5 |
 | FR-3 | TS-S2, TS-S16, TS-U1, TS-U11 |
-| FR-4 | TS-S3, TS-S4, TS-S5, TS-S14, TS-S16, TS-U8 |
+| FR-4 | TS-S3, TS-S4, TS-S5, TS-S14, TS-S16, TS-S17, TS-U8, TS-U12 |
 | FR-5 | TS-S8 |
 | C-2 | TS-S4 |
 | C-7 | TS-S11 |

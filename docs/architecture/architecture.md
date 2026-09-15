@@ -7,7 +7,7 @@ owner: platform-team
 reviewed: 2026-09-15
 review_by: 2027-03-15
 review_trigger: "more than 20 target repos, public webhook hosting becomes available, or GitHub ships a native merge-queue pause"
-sources: [FR-1, FR-2, FR-3, FR-4, FR-5, FR-6, C-1, C-2, C-6, C-7, ADR-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015]
+sources: [FR-1, FR-2, FR-3, FR-4, FR-5, FR-6, C-1, C-2, C-6, C-7, ADR-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016]
 confidence: assumed
 ---
 
@@ -16,7 +16,7 @@ confidence: assumed
 ## Confirmation queue
 
 These items started as defaults chosen during design. The requester settled CQ-1 to CQ-9
-on 2026-09-15. CQ-10 to CQ-12 came from an adversarial review of the architecture on
+on 2026-09-15. CQ-10 to CQ-13 came from adversarial reviews of the architecture on
 2026-09-15 and are awaiting confirmation.
 
 | # | Item | Section | Why it matters | Settled by |
@@ -32,7 +32,8 @@ on 2026-09-15. CQ-10 to CQ-12 came from an adversarial review of the architectur
 | CQ-9 | Anyone with triage rights may apply `fixes-main`. Confirmed | 8, R-4 | The lock bypass | Requester |
 | CQ-10 | The Reporter writes the lock issue before completing the check run, and replays an interrupted report without re-locking a commit a human overrode; a "reporting pending" alert after 15 min. The test outcome comes from the `main-watcher-test` step (build and tests), so a failure stays red without CTRF; checkout and restore failures are infrastructure errors (ADR-013) `[unconfirmed]` | 5.1 | A crash or a failed upload must not leave a red `main` unlocked, and a replay must not undo an override | Awaiting requester |
 | CQ-11 | A lock lapses when the watcher has not renewed it for `lock_lease` (default 4 h), and the gate then fails open with a warning. With a lock open, NFR-3 therefore holds only after up to `lock_lease`. `mw-observer` gains Issues: read (ADR-014) `[unconfirmed]` | 5.2, 8 | Merge availability vs. enforcing a red `main` through a long watcher outage | Awaiting requester |
-| CQ-12 | Reconciliation continues after a lock closes, until merges up to its closure are checked; closures older than 30 days are not revisited (ADR-015) `[unconfirmed]` | 5.2 | NFR-4 must hold when a human closes the lock first | Awaiting requester |
+| CQ-12 | Reconciliation continues after a lock closes, until merges up to its closure are checked; closures older than 30 days are not revisited; each merge is judged by the PR's labels at merge time (ADR-015) `[unconfirmed]` | 5.2 | NFR-4 must hold when a human closes the lock first, or a label changes after the merge | Awaiting requester |
+| CQ-13 | When a lock opens, or a lapsed lock is renewed, the watcher re-runs the gate for merge groups still in the queue whose gate started earlier. FR-4 is narrowed: a group that merges in the seconds before its re-run takes effect is reported, not blocked (ADR-016) `[unconfirmed]` | 2, 5.2 | Otherwise groups that passed the gate just before a lock merge onto a red `main`, with no outage involved | Awaiting requester |
 
 ---
 
@@ -77,7 +78,7 @@ Main Watcher has no datastore; GitHub holds all state (ADR-003):
 | FR-1 Reusable; can be pointed at any GitHub repo | Fact | Requester | Onboarding = config entry + two workflow files + App installs |
 | FR-2 Runs integration tests continuously on `main`, testing only the latest commit when pushes pile up | Fact | Requester | Change detection by the worker; one run per target at a time (ADR-001, ADR-010) |
 | FR-3 On failure, opens an issue listing failing tests and all pushes since the last successful run | Fact | Requester | CTRF results (ADR-007); repository activity API |
-| FR-4 Blocks the GitHub merge queue until the issue is resolved | Fact | Requester | Gate check (ADR-002); resolution rules (ADR-004) |
+| FR-4 Blocks the GitHub merge queue until the issue is resolved | Fact | Requester | Gate check (ADR-002); resolution rules (ADR-004); groups queued before a lock are re-checked, and a race of seconds is reported (ADR-016, CQ-13) |
 | FR-5 Each target repo manages its tests' secrets its own way | Fact | Requester, 2026-09-15 | Tests run inside the target repo (ADR-009) |
 | FR-6 Capture how long integration tests take, and identify the slowest tests in a suite | Fact | Requester, 2026-09-15 | Timings and reports in the shared workflow (ADR-011); own store deferred |
 | C-1 GitHub's merge queue has no pause function | Constraint | Community discussion 50893; vendor comparison | Pause built from a required check |
@@ -97,7 +98,7 @@ Main Watcher has no datastore; GitHub holds all state (ADR-003):
 
 | Rank | Attribute | Target and conditions | How it will be verified |
 |---|---|---|---|
-| 1 | Correctness of the lock | Main is never locked without an App-authored issue, never stays locked after a green run, and an interrupted report still opens the lock | TS-S3–S6, TS-S14 |
+| 1 | Correctness of the lock | Main is never locked without an App-authored issue, never stays locked after a green run, and an interrupted report still opens the lock; a group queued before a lock does not merge after it, outside a race of seconds | TS-S3–S6, TS-S14, TS-S17 |
 | 2 | Availability of merging | No component outage blocks merges for longer than `lock_lease` (4 h) even with a lock open; a false lock can be overridden in under 5 min | TS-S7, TS-S9 |
 | 3 | Least privilege | The worker holds only read and dispatch rights; target code never runs near the main App key | TS-S8 |
 | 4 | Timeliness | NFR-1 while the worker is healthy; at most about 1 h + suite time while it is down | TS-S11, alert timestamps |
@@ -112,6 +113,7 @@ Main Watcher has no datastore; GitHub holds all state (ADR-003):
 | A-4 | Target test workflows run on GitHub-hosted runners, or on self-hosted runners the target team owns | None for the watcher; isolation is the target team's concern | Target owners | Onboarding |
 | A-5 | The merge-group payload's `base_sha`/`head_sha` identify every PR in a group | The gate cannot enforce grouped merges | Platform lead | Sandbox, before rollout |
 | A-6 | The cluster has outbound HTTPS to `api.github.com` and a secret store (no alerting stack; see C-8) | The worker cannot run there | Platform team | Before build |
+| A-7 | Re-running a successful required check makes it pending again for the merge group, and a failed re-run removes the group; queued groups appear as `gh-readonly-queue/main/*` branches | ADR-016 cannot stop groups that passed before a lock; replace it with its Option B or D | Platform lead | Sandbox TS-S17, before rollout |
 
 ### Scope
 
@@ -224,9 +226,9 @@ flowchart LR
 | Container | Responsibility | Technology | Owner | Serves |
 |---|---|---|---|---|
 | targets.yml | Lists targets: repo, test command, CTRF results glob, timeout, `poll_interval`, `notify`, `enabled` | YAML in watcher repo | Platform team | FR-1 |
-| Trigger worker | Every `check_period`, detects work per target (new head, finished run, stale run, lock lease due for renewal, closed lock not yet reconciled) and starts `watch.yml`. Exposes `/healthz`. Raises `watcher-infra` issues if the watcher hasn't completed a run in 2 h, if reporting has been pending for more than 15 min, on repeated errors, or on token failures (ADR-012, ADR-013, ADR-014) | .NET 8+ `BackgroundService`, container, 1 replica | Platform team | FR-2, C-7 |
-| watch.yml — Planner | For the targets passed in (or all, on the hourly sweep): creates an in-progress check run, starts the target's test workflow with `return_run_details`, stores the run ID in the check run's `external_id`. Handles stale runs; renews lock leases (ADR-014); reconciles merges made during a lock, through the lock's closure (ADR-008, ADR-015); raises "worker appears down" if work waited more than 15 min | GitHub Actions job | Platform team | FR-2, NFR-3, NFR-4 |
-| watch.yml — Reporter | For completed target runs: reads the outcome of the `main-watcher-test` step, downloads CTRF, finds the last green commit, collects pushes, opens, updates or closes the lock issue (never re-locking a commit a human overrode), and only then completes the check run, so an interrupted report is replayed (ADR-013). Adds a timing section to the check run: suite time, change from last green, 5 slowest tests, retry flag (ADR-011) | GitHub Actions job | Platform team | FR-3, FR-4 |
+| Trigger worker | Every `check_period`, detects work per target (new head, finished run, stale run, lock lease due for renewal, closed lock not yet reconciled, unfinished queue sweep) and starts `watch.yml`. Exposes `/healthz`. Raises `watcher-infra` issues if the watcher hasn't completed a run in 2 h, if reporting has been pending, or a queue sweep unfinished, for more than 15 min, on repeated errors, or on token failures (ADR-012, ADR-013, ADR-014, ADR-016) | .NET 8+ `BackgroundService`, container, 1 replica | Platform team | FR-2, C-7 |
+| watch.yml — Planner | For the targets passed in (or all, on the hourly sweep): creates an in-progress check run, starts the target's test workflow with `return_run_details`, stores the run ID in the check run's `external_id`. Handles stale runs; renews lock leases (ADR-014); finishes queue sweeps (ADR-016); reconciles merges made during a lock, through the lock's closure, judging labels at merge time (ADR-008, ADR-015); raises "worker appears down" if work waited more than 15 min | GitHub Actions job | Platform team | FR-2, NFR-3, NFR-4 |
+| watch.yml — Reporter | For completed target runs: reads the outcome of the `main-watcher-test` step, downloads CTRF, finds the last green commit, collects pushes, opens, updates or closes the lock issue (never re-locking a commit a human overrode), and only then completes the check run, so an interrupted report is replayed (ADR-013). After opening a lock, it re-runs the gate for merge groups queued before it (ADR-016). Adds a timing section to the check run: suite time, change from last green, 5 slowest tests, retry flag (ADR-011) | GitHub Actions job | Platform team | FR-3, FR-4 |
 | run-integration-tests.yml | `test` job: checks out `sha` and restores (setup steps); builds and runs tests with one retry of failed tests in a single step, `main-watcher-test`, whose conclusion is the test outcome (ADR-013); then writes `timings.json` and uploads the `main-watcher-ctrf` artifact, even when that step failed. `report` job: no secrets, read-only token, publishes the CTRF job summary with the slowest tests and duration trends (ADR-011) | Reusable GitHub workflow, version-tagged; `ctrf-io/github-test-reporter` pinned by SHA | Platform team | FR-2, FR-6, ADR-007 |
 | main-watcher-tests.yml | Caller: `workflow_dispatch` inputs → reusable workflow, `secrets: inherit`. The place where the target sets up OIDC or feeds | ~15-line workflow in target | Target owners (template from platform) | FR-5 |
 | Gate workflow | On `merge_group`: fails while an App-authored lock with an unexpired lease is open, unless every PR in the group has `fixes-main`. Fails open, with a warning, on API errors or an expired lease (ADR-008, ADR-014). On `pull_request`: always passes | ~40-line workflow in target | Target owners (template from platform) | FR-4, C-2 |
@@ -278,6 +280,7 @@ sequenceDiagram
             Note over WA: override stands, no new lock
         else no open lock issue
             WA->>GH: create issue main-broken, lease_until
+            WA->>GH: re-run gate of queued groups checked before the lock
         else lock issue open
             WA->>GH: update body, add comment, skip if already done
         end
@@ -336,7 +339,8 @@ moment; intermediate commits are never tested.
   - a push table: time, pusher (plain name, no `@`), type (push / force push / PR merge /
     merge-queue merge), before→after, commit count;
   - hidden markers `<!-- main-watcher last_green=… first_red=… last_reconciled=…
-    lease_until=… reported_check=… reported_sha=… reconciled=… -->` (ADR-013, ADR-014, ADR-015).
+    lease_until=… reported_check=… reported_sha=… reconciled=… queue_swept=… -->` (ADR-013, ADR-014, ADR-015,
+    ADR-016).
 - **Comments (history):** one per later failing run, each with a hidden `check=` marker
   for replay (ADR-013). Comments do not mention anyone.
 - **Mentions (CQ-6):** the body opens by mentioning the target's `notify` list, or else the
@@ -381,17 +385,26 @@ sequenceDiagram
 - **On `pull_request` events the gate always passes.**
 - **PRs removed by the gate** must be re-queued by hand (§17). The unlock comment lists
   them.
+- **Groups already queued when a lock opens (ADR-016).** A group whose gate started before
+  the lock existed would otherwise merge as soon as its other checks pass. After opening a
+  lock, or renewing a lapsed one, the watcher lists the groups still in the queue
+  (`gh-readonly-queue/main/*` branches) and re-runs each gate run that started earlier; a
+  gate still running is re-run once it finishes. The lock's `queue_swept` marker records
+  when this is done, and the worker keeps requesting work until it is. A group that merges
+  before its re-run takes effect is reported by reconciliation.
 - **Lock lease (ADR-014).** The watcher sets each open lock's `lease_until` to 4 h ahead
   whenever it processes the target, and the worker requests a renewal once a lease is an
   hour old. If the watcher stops, the lease runs out and the gate fails open with a
   warning, so a watcher outage blocks ordinary merges for at most `lock_lease`. When the
-  watcher returns it renews the lease, comments on the lapse, and raises an alert.
+  watcher returns it renews the lease, comments on the lapse, raises an alert, and
+  re-checks groups queued during the lapse (ADR-016).
 - **Reconciliation (ADR-008, ADR-015).** Every merge moves `main`, which makes the worker
   start `watch.yml`. For every App-authored lock issue that is open, or closed but not yet
   marked `reconciled=complete`, the Planner lists `merge_queue_merge` and `pr_merge`
-  activity since `last_reconciled`, up to the issue's close time. Any PR merged without
-  `fixes-main` is appended under "Merged while locked" (with a comment, if the issue is
-  closed) and raised as a `watcher-infra` alert. A closed issue is marked complete once
+  activity since `last_reconciled`, up to the issue's close time. Any PR that did not
+  carry `fixes-main` when it merged, judged from its label events, is appended under
+  "Merged while locked" (with a comment, if the issue is closed) and raised as a
+  `watcher-infra` alert. A closed issue is marked complete once
   its whole window has been checked.
 
 ### 5.3 Resolution (ADR-004, ADR-014)
@@ -436,7 +449,7 @@ Main Watcher has no datastore.
 | Lock state | Open App-authored `main-broken` issue whose `lease_until` has not passed (ADR-014) | — | Internal | Issue history |
 | Reporting pending | An `in_progress` check run whose target run has completed (ADR-013) | — | Internal | GitHub check retention |
 | Test outcome of a target run | Conclusion of the `main-watcher-test` step, read through the Actions jobs API (ADR-013) | Check run conclusion | Internal | Target repo's run retention |
-| Last green commit, last reconciled activity, lease, last reported check, reconciliation complete | Check runs; hidden markers in the lock issue, open or closed | — | Internal | As above |
+| Last green commit, last reconciled activity, lease, last reported check, reconciliation complete, queue sweep | Check runs; hidden markers in the lock issue, open or closed | — | Internal | As above |
 | Test logs, CTRF reports | Actions run and artifact **in the target repo** | Excerpts in the issue | Internal; may contain secrets if tests print them | Target repo's artifact retention |
 | Test timings (`timings.json`: queue wait, step durations, wall time, summed test time, retry flag) | `main-watcher-ctrf` artifact in the target repo | Job summary; check run output | Internal | Target repo's artifact retention; phase 2 store deferred (ADR-011) |
 
@@ -479,7 +492,7 @@ keys. That is a recommendation, not something the watcher enforces.
 | Principal | Target code | Checks | Lock issue | Target workflows | Merge queue |
 |---|---|---|---|---|---|
 | Trigger worker | Read | Read | Read (lease, reconciliation state) | Read status | — |
-| watch.yml | Read | Write | Create, update, close | Start, read artifacts | — |
+| watch.yml | Read | Write | Create, update, close | Start, re-run the gate, read artifacts | — |
 | Target test run | Read, execute | — | — | (itself) | — |
 | Gate workflow | Read | Its own | Read | — | Pass/fail entries |
 | Maintainer (triage+) | per repo | — | Close (override) | per repo | Apply `fixes-main` |
@@ -501,6 +514,7 @@ logs.
 | Repository activity API | GitHub | Degraded: push list only | Sync REST | Issue opens with "push list unavailable" and a compare link |
 | GitHub scheduled events | GitHub | Backup only | Hourly cron | The worker is the primary trigger |
 | GitHub merge queue + rulesets | GitHub | Critical for FR-4 | Required check on `merge_group` | Outside our control |
+| Workflow re-run API and `gh-readonly-queue/main/*` branches | GitHub | Degraded: groups queued before a lock may merge | Sync REST | The sweep stays unfinished and is retried; alert after 15 min; any merges are reconciled (ADR-016) |
 | Kubernetes cluster | Organisation | Degraded: timeliness | Hosting | Liveness restart; hourly sweep + "worker appears down" issue alert |
 | `ctrf-io/github-test-reporter` action | Open-source project | Degraded: timing report only | Step in the `report` job | Tests and locking are unaffected; the job summary is missing |
 
@@ -568,6 +582,7 @@ flowchart LR
 | 3 worker cycle errors in a row | Worker | `watcher-infra` issue (ADR-012) |
 | No completed `watch.yml` run in 2 h | Worker check | `watcher-infra` issue (ADR-012) |
 | Reporting pending for more than 15 min (ADR-013) | Worker check | `watcher-infra` issue |
+| Queue sweep unfinished 15 min after a lock opened or was renewed (ADR-016) | Worker check | `watcher-infra` issue |
 | Hung worker | Kubernetes liveness probe | Automatic restart |
 | "Trigger worker appears down" (work waited more than 15 min) | Hourly sweep | `watcher-infra` issue |
 | Infrastructure error twice in a row for a target; stale or cancelled target run | Planner | `watcher-infra` issue |
@@ -634,7 +649,7 @@ team subscribes to that label.
 | ADR | Decision | Status | Review trigger |
 |---|---|---|---|
 | ADR-001 | Central watcher tests only the newest `main` commit | Accepted, amended by ADR-009 and ADR-010 | More than 20 targets |
-| ADR-002 | Pause the merge queue with a gate workflow in each target repo, bypassed by `fixes-main` | Accepted, amended by ADR-008; amendment ADR-014 proposed | GitHub ships a native queue pause |
+| ADR-002 | Pause the merge queue with a gate workflow in each target repo, bypassed by `fixes-main` | Accepted, amended by ADR-008; amendments ADR-014 and ADR-016 proposed | GitHub ships a native queue pause |
 | ADR-003 | No datastore; check runs and the lock issue hold all state | Accepted; amendment ADR-013 proposed | Walk-back above ~50 calls |
 | ADR-004 | Green run closes the lock automatically; a human close is an override | Accepted | Frequent overrides |
 | ADR-005 | Test script contract: exit code plus JUnit XML | Superseded by ADR-007 | — |
@@ -647,7 +662,8 @@ team subscribes to that label.
 | ADR-012 | The worker alerts through `watcher-infra` GitHub issues | Accepted | A monitoring stack is adopted |
 | ADR-013 | The Reporter completes the check run last; an interrupted report is replayed | Proposed (CQ-10) | "Reporting pending" alert more than once a month |
 | ADR-014 | A lock is enforced only while the watcher renews its lease | Proposed (CQ-11) | A lock lapses more than once a quarter |
-| ADR-015 | Reconciliation follows each lock through its closure | Proposed (CQ-12) | A closed lock unreconciled 24 h after closing |
+| ADR-015 | Reconciliation follows each lock through its closure, judging labels at merge time | Proposed (CQ-12) | A closed lock unreconciled 24 h after closing |
+| ADR-016 | Opening a lock re-runs the gate for merge groups already in the queue; FR-4 narrowed to report a race of seconds | Proposed (CQ-13) | TS-S17 disproves A-7 |
 
 ## 16. Risks and open questions
 
@@ -673,6 +689,7 @@ team subscribes to that label.
 | R-19 | A watcher outage longer than `lock_lease` unlocks a `main` that is still red | Breakage worsens | Low | Gate warning and `gate-fail-open` check run; merges during the lapse are reconciled; "lock lapsed" alert on recovery (ADR-014) | Platform team |
 | R-20 | An issue write keeps failing, so a report stays pending and no newer head is tested | Detection stalls for that target | Low | "Reporting pending" alert after 15 min (ADR-013) | Platform team |
 | R-21 | A watcher outage longer than `reconcile_lookback` (30 days) leaves older closed locks unreconciled | Unlabelled merges go unreported | Very low | Accepted; worker and sweep alerts fire long before (ADR-015) | Platform team |
+| R-22 | A merge group merges between a lock opening and its gate re-run, or GitHub changes merge-queue branch naming or re-run behaviour | A non-fix PR lands on a red `main` | Low | Sweep immediately after the lock opens; reconciliation reports it; TS-S17 on every release (ADR-016, A-7) | Platform team |
 
 ## 17. Evolution
 
@@ -700,6 +717,7 @@ team subscribes to that label.
 | Lease | The time until which an open lock is enforced (`lease_until`). The watcher renews it; the gate ignores a lock whose lease has passed |
 | Lapsed | A lock issue that is still open but whose lease has passed |
 | Reporting pending | A check run still `in_progress` after its target run completed; the Reporter replays it |
+| Queue sweep | Re-running the gate for merge groups queued before a lock opened or was renewed (ADR-016) |
 | Gate | The required merge-queue check in the target that enforces the lock |
 
 ## 20. Change log
@@ -714,3 +732,4 @@ team subscribes to that label.
 | 2026-09-15 | FR-6 test-duration metrics (phase 1); C-8 no monitoring/DB infrastructure; A-6 corrected; worker alerts moved to GitHub issues; R-16–R-18 added | Platform team with Claude | ADR-011; ADR-012 (amends ADR-010) |
 | 2026-09-15 | Adversarial review fixes, all proposed: reports complete the check run last and replay; lock lease bounds locks during watcher outages; reconciliation continues through closure. CQ-10–CQ-12, R-19–R-21, TS-S14, TS-S15 and TS-U8–U10 added; TS-S7 extended; `mw-observer` gains Issues: read | Platform team with Claude | ADR-013 (amends ADR-003, ADR-010); ADR-014 (amends ADR-002, ADR-008, ADR-010); ADR-015 (amends ADR-008) |
 | 2026-09-15 | Second adversarial review: the test outcome is read from the `main-watcher-test` step, so a lost artifact no longer turns a failure neutral; replay checks closed locks and keeps human overrides. TS-S16 and TS-U11 added; TS-S14, TS-U5 and TS-U8 extended | Platform team with Claude | ADR-013 (revised while proposed) |
+| 2026-09-15 | Third adversarial review: the test step is found by name, not step ID, with an explicit contract error; reconciliation judges labels at merge time; opening a lock re-runs the gate for groups already queued, with FR-4 narrowed to report a race of seconds. CQ-13, A-7, R-22, TS-S17 and TS-U12 added; TS-S15, TS-S16, TS-U10 and TS-U11 extended | Platform team with Claude | ADR-013 and ADR-015 (revised while proposed); ADR-016 (amends ADR-002) |

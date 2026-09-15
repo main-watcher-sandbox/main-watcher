@@ -52,21 +52,36 @@ to use state that GitHub already holds.
 (ADR-009):
 - runs checkout, toolchain setup and `dotnet restore` as **setup steps**;
 - runs build and tests, including the one retry of failed tests (CQ-4), in a single step
-  with the fixed ID `main-watcher-test`. That step has no `continue-on-error`, so its
-  conclusion is the exit code that ADR-007 relies on;
+  named `main-watcher-test`, inside a job named `main-watcher`. That step has no
+  `continue-on-error`, so its conclusion is the exit code that ADR-007 relies on;
 - writes `timings.json` and uploads the CTRF artifact in later steps that run even when
   `main-watcher-test` fails.
 
 Restore counts as setup and build counts as test `[unconfirmed]`: a package-feed outage
 should not lock the queue, but a compile break on `main` should.
 
-The Reporter reads the step's conclusion from the Actions jobs API. GitHub records it
-whether or not any upload worked. What the Reporter concludes:
+**Finding the step.** The Actions jobs API returns each step's name, number and
+conclusion, but not the step ID from the workflow file, as a third review on 2026-09-15
+pointed out. So the contract is the step **name**:
+- the Reporter reads the jobs of the run's latest attempt, and looks for exactly one step
+  named `main-watcher-test` in a job whose name ends in `main-watcher`. A job from a called
+  workflow is listed with the caller's job name in front `[assumption]`;
+- the step name is a literal, never an expression, and no other step in the reusable
+  workflow uses it;
+- no match, or more than one, is a **contract error**: the check run completes as
+  `neutral`, with a `watcher-infra` alert "outcome contract broken". A contract error is
+  never green, and never leaves a report pending forever;
+- matching is verified against a real jobs response from a reusable-workflow caller, in the
+  sandbox (TS-S16) and in the onboarding dry run.
+
+GitHub records the step's conclusion whether or not any upload worked. What the Reporter
+concludes:
 
 | Target run | `main-watcher-test` step | CTRF | Result |
 |---|---|---|---|
 | Cancelled, or stopped by the job timeout | Any | Any | Infrastructure error: `neutral`, alert |
 | Completed | Not run, because a setup step failed | — | Infrastructure error: `neutral`, alert |
+| Completed | No step named `main-watcher-test`, or more than one | — | Contract error: `neutral`, alert "outcome contract broken" |
 | Completed | `failure` | Valid | Red; failing tests listed |
 | Completed | `failure` | Missing, invalid, or not downloadable after retries | Red; "failing tests unknown", with a link to the run |
 | Completed | `success` | Any | Green; a warning if CTRF is missing or lists failures |
@@ -138,7 +153,7 @@ cannot be told apart from a lock a human already closed as an override.
 ### Option D — Take the test outcome from a second, small artifact
 
 The test step would write an `outcome.json` artifact next to the CTRF reports. It needs no
-step-ID contract. It lost because a second upload can fail in exactly the same way as the
+step-name contract. It lost because a second upload can fail in exactly the same way as the
 CTRF upload, while GitHub records the step conclusion itself.
 
 ## Consequences
@@ -156,9 +171,11 @@ CTRF upload, while GitHub records the step conclusion itself.
   write succeeds.
 - **A stuck report blocks new tests** for that target until it succeeds. The 15-minute
   alert makes this visible but does not prevent it (R-20).
-- **A contract on a step ID.** The Reporter and the reusable workflow must agree on
-  `main-watcher-test`. Both are versioned by the platform team, and the reporter must
-  handle every workflow tag still pinned by a target.
+- **A contract on names.** The Reporter and the reusable workflow must agree on the job
+  name `main-watcher` and the step name `main-watcher-test`. Renaming either breaks
+  reporting for targets on that workflow tag; this shows up as "outcome contract broken"
+  alerts, not as wrong results. Both are versioned by the platform team, and the Reporter
+  must handle every workflow tag still pinned by a target.
 - **Restore failures caused by the code**, such as a bad package reference, count as
   infrastructure errors and do not lock. They alert after two in a row.
 - **More Reporter logic and API calls:** a jobs API read per report, a list of issues in
@@ -176,7 +193,7 @@ CTRF upload, while GitHub records the step conclusion itself.
 
 | Implemented by | Verified by | Operational control |
 |---|---|---|
-| Reusable workflow step layout; Reporter outcome table, write order and replay checks; worker stale and pending rules | TS-S14, TS-S16, TS-U8, TS-U11 | `watcher-infra` alerts "reporting pending" and "outcome unknown" |
+| Reusable workflow step layout; Reporter outcome table, write order and replay checks; worker stale and pending rules | TS-S14, TS-S16, TS-U8, TS-U11 | `watcher-infra` alerts "reporting pending", "outcome unknown" and "outcome contract broken" |
 
 ## Revisit when
 

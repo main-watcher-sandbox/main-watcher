@@ -12,7 +12,7 @@ confidence: assumed
 amends: ADR-008
 ---
 
-# ADR-015 — Reconciliation follows each lock through its closure, not only while it is open (amends ADR-008)
+# ADR-015 — Reconciliation follows each lock through its closure, and judges labels as they were at merge time (amends ADR-008)
 
 **Deciders:** platform team; requester confirmation pending (CQ-12) · **Consulted:** —
 
@@ -66,8 +66,22 @@ same pass, so the Reporter needs no special step before closing.
 lock that is not yet `reconciled=complete`, using the Issues: read permission from
 ADR-014.
 
-**7. Persistent failure.** If a closed lock still cannot be reconciled 24 hours after it
-closed, the Planner raises a `watcher-infra` alert.
+**7. Persistent failure.** If any merge in a lock's window stays unresolved for 24 hours,
+or a closed lock is still not complete 24 hours after it closed, the Planner raises a
+`watcher-infra` alert, "reconciliation failing".
+
+**8. Labels as they were at merge time.** ADR-008 checked each merged PR's **current**
+`fixes-main` label. A later review on 2026-09-15 found this is wrong in both directions: a
+label added after an unlabelled merge hides the report, and a label removed after a
+legitimate fix raises a false alert. The window between merge and reconciliation can be
+long, because of outages and the closed-lock pass above. So the Planner:
+- reads the PR's `labeled` and `unlabeled` events from the Issues events API, up to the
+  PR's `merged_at`;
+- treats the PR as a fix only if `fixes-main` was on it at that moment. An event in the
+  same second as the merge counts as before it;
+- when that history cannot be read, stops at that merge. `last_reconciled` does not move
+  past it, the merge is retried on the next run, and the lock is never marked
+  `reconciled=complete` while any merge in its window is unresolved.
 
 ## Options considered
 
@@ -89,6 +103,12 @@ For example, the App reopens the issue until reconciliation finishes, or overrid
 label instead of closing. It lost because it contradicts ADR-004 (the App never reopens),
 and makes the override slower and less obvious at the moment people are already blocked.
 
+### Option D — Keep judging the PR's current label (ADR-008 as written)
+
+It needs one fewer API call per merge, and it matches what a person sees on the PR today.
+It lost because the label can change between the merge and reconciliation, which hides
+real reports and raises false ones.
+
 ## Consequences
 
 **Positive**
@@ -105,6 +125,10 @@ and makes the override slower and less obvious at the moment people are already 
   reconciled (R-21). This is accepted; the worker and sweep alerts fire long before that.
 - **Boundary precision.** Activity times and `closed_at` are compared at one-second
   resolution; a merge in the same second as the close counts as inside the window.
+- **Label history costs a call per merged PR** in a lock window, and an outage of the
+  events API delays reports until it recovers.
+- **A label added in the same second as the merge counts as present**, so a report could
+  be missed in that exact second.
 
 **Follow-on work**
 - Planner discovery over open and closed locks.
@@ -115,7 +139,7 @@ and makes the override slower and less obvious at the moment people are already 
 
 | Implemented by | Verified by | Operational control |
 |---|---|---|
-| Planner reconciliation over open and closed locks; worker closed-lock rule | TS-S15, TS-U4, TS-U10 | `watcher-infra` alerts "Merged while locked" and "reconciliation failing" |
+| Planner reconciliation over open and closed locks, with label history; worker closed-lock rule | TS-S15, TS-U4, TS-U10 | `watcher-infra` alerts "Merged while locked" and "reconciliation failing" |
 
 ## Revisit when
 
