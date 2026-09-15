@@ -18,7 +18,7 @@ durations and the slowest tests.
   - Accepted ADRs are never edited. A changed decision gets a new ADR that supersedes or
     amends the old one, plus a note at the top of the old one.
 - `docs/architecture/test-strategy.md` — TS-001: scenario tests TS-S1–S18, unit tests
-  TS-U1–U13.
+  TS-U1–U14.
 - `docs/architecture/artifact-index.md` — what exists, what was deliberately not produced,
   and why.
 - `docs/architecture/diagrams/` — PNG renders. The Mermaid sources inside the markdown are
@@ -57,7 +57,9 @@ is work, it starts `watch.yml` in the watcher repo through the `mw-doorbell` App
 - Proposed recovery rules:
   - the Reporter completes the check run only after writing the lock issue, and replays
     interrupted reports without undoing a human override. The test outcome comes from the
-    `main-watcher-test` step, so a failure stays red even without CTRF (ADR-013);
+    `main-watcher-test` step, counted only when the `main-watcher-tests-finished` marker
+    step shows the tests ran to completion. A failure stays red without CTRF, and a
+    timeout is neutral (ADR-013);
   - the watcher renews a 4 h lease on each open lock (ADR-014);
   - reconciliation continues after a lock closes, until merges up to its closure are
     checked, and judges each PR's `fixes-main` label as it was at merge time (ADR-015);

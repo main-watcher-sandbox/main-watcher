@@ -58,7 +58,8 @@ CQ-1 to CQ-9 are settled. CQ-10 to CQ-14 came from adversarial reviews of the
 architecture on 2026-09-15 and await the requester:
 
 - **CQ-10 (ADR-013):** replay interrupted reports without undoing overrides; test outcome
-  from the `main-watcher-test` step; alert after 15 min.
+  from the `main-watcher-test` step, confirmed by a finished-marker step; alert after
+  15 min.
 - **CQ-11 (ADR-014):** a 4 h lock lease; `mw-observer` gains Issues: read.
 - **CQ-12 (ADR-015):** reconcile through closure; 30-day lookback; labels judged at merge
   time.

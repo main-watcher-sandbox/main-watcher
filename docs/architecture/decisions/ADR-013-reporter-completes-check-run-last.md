@@ -52,51 +52,65 @@ to use state that GitHub already holds.
 (ADR-009):
 - runs checkout, toolchain setup and `dotnet restore` as **setup steps**;
 - runs build and tests, including the one retry of failed tests (CQ-4), in a single step
-  named `main-watcher-test`, inside a job named `main-watcher`. That step has no
-  `continue-on-error`, so its conclusion is the exit code that ADR-007 relies on;
+  named `main-watcher-test`, inside a job named `main-watcher`. The step runs the target's
+  command through a small wrapper that enforces the target's `timeout` itself:
+  - when the command exits on its own, with any exit code, the wrapper sets the step output
+    `finished=true` and exits with the command's exit code, which ADR-007 relies on;
+  - when the deadline is reached, it stops the command's whole process tree and exits
+    non-zero **without** setting `finished`;
+  - the step has no `timeout-minutes` and no `continue-on-error`;
+- runs a marker step named `main-watcher-tests-finished` immediately afterwards, with the
+  condition `always() && steps.<test step id>.outputs.finished == 'true'`. It does nothing
+  but succeed, so its `success` is GitHub's own record that the tests ran to completion;
 - writes `timings.json` and uploads the CTRF artifact in later steps that run even when
-  `main-watcher-test` fails.
+  `main-watcher-test` fails. Those steps have their own short `timeout-minutes`;
+- sets the job's `timeout-minutes` to the target's `timeout` plus a margin for setup and
+  upload, so the wrapper's deadline is reached before the job's.
 
 Restore counts as setup and build counts as test `[unconfirmed]`: a package-feed outage
 should not lock the queue, but a compile break on `main` should.
 
-**Finding the step.** The Actions jobs API returns each step's name, number and
+**Finding the steps.** The Actions jobs API returns each step's name, number and
 conclusion, but not the step ID from the workflow file, as a third review on 2026-09-15
-pointed out. So the contract is the step **name**:
-- the Reporter reads the jobs of the run's latest attempt, and looks for exactly one step
-  named `main-watcher-test` in a job whose name ends in `main-watcher`. A job from a called
-  workflow is listed with the caller's job name in front `[assumption]`;
-- the step name is a literal, never an expression, and no other step in the reusable
-  workflow uses it;
-- no match, or more than one, is a **contract error**: the check run completes as
-  `neutral`, with a `watcher-infra` alert "outcome contract broken". A contract error is
-  never green, and never leaves a report pending forever;
+pointed out. So the contract is the step **names**:
+- the Reporter reads the jobs of the run's latest attempt, and looks for the steps named
+  `main-watcher-test` and `main-watcher-tests-finished` in a job whose name ends in
+  `main-watcher`. A job from a called workflow is listed with the caller's job name in
+  front `[assumption]`;
+- both names are literals, never expressions, and no other step in the reusable workflow
+  uses them;
+- a name found more than once is a **contract error**: `neutral`, with a `watcher-infra`
+  alert "outcome contract broken". A missing marker step is no evidence that the tests
+  finished, so it is also `neutral` (see the table). Neither case is ever red or green, or
+  leaves a report pending forever;
 - matching is verified against a real jobs response from a reusable-workflow caller, in the
   sandbox (TS-S16) and in the onboarding dry run.
 
-GitHub records the step's conclusion whether or not any upload worked. What the Reporter
-concludes:
+GitHub records step conclusions whether or not any upload worked.
 
-**The test step decides, whatever happens after it.** A run can still be cancelled, or hit
-its job timeout, after `main-watcher-test` has finished, for example while uploading the
-artifact. A fifth review on 2026-09-15 found that an earlier version of this table made any
-cancelled or timed-out run neutral, so a hung upload could hide a real failure. The step's
-own conclusion now takes precedence, and the run's conclusion is used only when the test
-step did not finish. The upload steps also have their own short `timeout-minutes`, so a hung
-upload ends without waiting for the job timeout.
+**Only a finished test run decides.** Two reviews on 2026-09-15 shaped this rule:
+- the fifth found that treating every cancelled or timed-out run as neutral let a hung
+  upload hide a real failure, so a finished test step must win over anything later in the
+  run;
+- the sixth found that GitHub reports a step that hits its own `timeout-minutes` as
+  `failure`, so a step's conclusion alone cannot tell a failing test from a timeout.
+
+The marker step settles both. The test step's red or green counts only when
+`main-watcher-tests-finished` succeeded. Anything that interrupts the tests leaves no
+marker and gives `neutral`: the wrapper's deadline, a step or job timeout, a cancellation,
+or a lost runner. Nothing after the marker, such as a hung upload, can change the result.
 
 Rows are checked from top to bottom:
 
-| `main-watcher-test` step | CTRF | Result |
-|---|---|---|
-| Found more than once | — | Contract error: `neutral`, alert "outcome contract broken" |
-| `failure`, whatever the run's conclusion | Valid | Red; failing tests listed |
-| `failure`, whatever the run's conclusion | Missing, invalid, or not downloadable after retries | Red; "failing tests unknown", with a link to the run |
-| `success`, whatever the run's conclusion | Any | Green; a warning if CTRF is missing or lists failures |
-| Did not finish: cancelled or timed out while running, or skipped because a setup step failed | — | Infrastructure error: `neutral`, alert |
-| Not found, in a run that was cancelled, timed out or failed before reaching it | — | Infrastructure error: `neutral`, alert |
-| Not found, in a run that otherwise completed | — | Contract error: `neutral`, alert "outcome contract broken" |
-| Run deleted after completing (the API returns 404) | — | `neutral`, alert "outcome unknown" |
+| Condition | Result |
+|---|---|
+| The run was deleted after completing (the API returns 404) | `neutral`, alert "outcome unknown" |
+| `main-watcher-test` or `main-watcher-tests-finished` found more than once | Contract error: `neutral`, alert "outcome contract broken" |
+| `main-watcher-tests-finished` missing, or not `success` | The tests did not finish (setup failure, deadline, timeout, cancellation or lost runner): infrastructure error, `neutral`, with an alert listing the step conclusions found |
+| Marker `success`; `main-watcher-test` `failure`; CTRF valid | Red; failing tests listed |
+| Marker `success`; `main-watcher-test` `failure`; CTRF missing, invalid, or not downloadable after retries | Red; "failing tests unknown", with a link to the run |
+| Marker `success`; `main-watcher-test` `success` | Green; a warning if CTRF is missing or lists failures |
+| Marker `success`; `main-watcher-test` missing, or any other conclusion | Contract error: `neutral`, alert "outcome contract broken" |
 
 Any other error reading the jobs API leaves the report pending, to be retried (point 3).
 
@@ -167,6 +181,14 @@ The test step would write an `outcome.json` artifact next to the CTRF reports. I
 step-name contract. It lost because a second upload can fail in exactly the same way as the
 CTRF upload, while GitHub records the step conclusion itself.
 
+### Option E — Enforce the deadline only at job level, and trust the test step's conclusion
+
+The test step would have no `timeout-minutes`, so only the job timeout could stop a hung
+test. It is simpler: no wrapper and no marker step. It lost because it depends on the
+conclusion GitHub gives a step cut off by a job timeout, which this design has not
+verified, and a `timeout-minutes` added to the test step later would silently turn every
+hung test into a red lock.
+
 ## Consequences
 
 **Positive**
@@ -183,17 +205,23 @@ CTRF upload, while GitHub records the step conclusion itself.
 - **A stuck report blocks new tests** for that target until it succeeds. The 15-minute
   alert makes this visible but does not prevent it (R-20).
 - **A contract on names.** The Reporter and the reusable workflow must agree on the job
-  name `main-watcher` and the step name `main-watcher-test`. Renaming either breaks
-  reporting for targets on that workflow tag; this shows up as "outcome contract broken"
-  alerts, not as wrong results. Both are versioned by the platform team, and the Reporter
+  name `main-watcher` and the step names `main-watcher-test` and
+  `main-watcher-tests-finished`. Renaming any of them breaks reporting for targets on that
+  workflow tag; this shows up as neutral results and alerts, never as a wrong red or green. Both are versioned by the platform team, and the Reporter
   must handle every workflow tag still pinned by a target.
 - **Restore failures caused by the code**, such as a bad package reference, count as
   infrastructure errors and do not lock. They alert after two in a row.
 - **More Reporter logic and API calls:** a jobs API read per report, a list of issues in
   any state before writing, marker checks, and duplicate handling.
-- **It trusts GitHub's step conclusion.** If GitHub ever reported an interrupted test step
-  as `failure`, for example after losing the runner, it would read as red `[assumption]`.
-  TS-S16 checks the conclusions GitHub gives for a cancelled and a timed-out step.
+- **It relies on the marker step's condition.** That GitHub skips the marker step when
+  `finished` was never set, including after a cancellation or a lost runner, is
+  `[assumption]`. TS-S16 checks it.
+- **A narrow window stays neutral.** A run cancelled in the seconds between the test step
+  and the marker step is neutral although the tests finished. ADR-017 retests the head.
+- **A test that hangs past its deadline never locks**, even when the code causes the hang.
+  It raises an alert, and ADR-017 retries up to 3 times before "head untestable".
+- **One more piece to maintain:** the wrapper script and its process-tree handling on the
+  runner's operating system.
 - **Duplicate detection assumes the issues list shows a just-created issue.** If the list
   lags, a replay could create a second issue; the duplicate rule closes it on the next
   pass.
