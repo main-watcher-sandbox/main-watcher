@@ -19,18 +19,19 @@ confidence: confirmed
 | ARCH-001 | [Architecture](architecture.md) | architecture | target | proposed | platform-team | 2026-09-15 | 2027-03-15 |
 | ADR-001 | [Central watcher](decisions/ADR-001-central-watcher.md) | adr | target | accepted (amended by ADR-009, ADR-010) | platform-team | 2026-09-15 | More than 20 targets |
 | ADR-002 | [Merge-queue gate](decisions/ADR-002-merge-queue-gate.md) | adr | target | accepted (amended by ADR-008; ADR-014, ADR-016 proposed) | platform-team | 2026-09-15 | Native pause ships |
-| ADR-003 | [State in GitHub](decisions/ADR-003-state-in-github.md) | adr | target | accepted (ADR-013 proposed) | platform-team | 2026-09-15 | Walk-back above 50 calls |
+| ADR-003 | [State in GitHub](decisions/ADR-003-state-in-github.md) | adr | target | accepted (ADR-013, ADR-017 proposed) | platform-team | 2026-09-15 | Walk-back above 50 calls |
 | ADR-004 | [Resolution semantics](decisions/ADR-004-resolution-semantics.md) | adr | target | accepted | platform-team | 2026-09-15 | Override frequency |
 | ADR-007 | [Test result contract: CTRF](decisions/ADR-007-ctrf-test-result-contract.md) | adr | target | accepted | platform-team | 2026-09-15 | A non-xUnit-v3 target appears |
 | ADR-008 | [Gate fails open, with reconciliation](decisions/ADR-008-gate-fails-open-with-reconciliation.md) | adr | target | accepted (ADR-014, ADR-015 proposed) | platform-team | 2026-09-15 | Unlabelled merges during a lock |
 | ADR-009 | [Tests run in target repos](decisions/ADR-009-tests-run-in-target-repos.md) | adr | target | accepted | platform-team | 2026-09-15 | `actions: write` rejected |
-| ADR-010 | [Self-hosted trigger worker](decisions/ADR-010-self-hosted-trigger-worker.md) | adr | target | accepted (amended by ADR-012; ADR-013, ADR-014 proposed) | platform-team | 2026-09-15 | Webhook hosting available |
+| ADR-010 | [Self-hosted trigger worker](decisions/ADR-010-self-hosted-trigger-worker.md) | adr | target | accepted (amended by ADR-012; ADR-013, ADR-014, ADR-017 proposed) | platform-team | 2026-09-15 | Webhook hosting available |
 | ADR-011 | [Test-duration metrics, phase 1](decisions/ADR-011-test-duration-metrics-phase-1.md) | adr | target | accepted | platform-team | 2026-09-15 | Cross-repo views needed |
 | ADR-012 | [Worker alerts via GitHub issues](decisions/ADR-012-worker-alerts-via-github-issues.md) | adr | target | accepted | platform-team | 2026-09-15 | Monitoring stack adopted |
 | ADR-013 | [Reporter completes the check run last](decisions/ADR-013-reporter-completes-check-run-last.md) | adr | target | proposed | platform-team | 2026-09-15 | "Reporting pending" alerts recur |
 | ADR-014 | [Lock lease](decisions/ADR-014-lock-lease.md) | adr | target | proposed | platform-team | 2026-09-15 | Locks lapse more than once a quarter |
 | ADR-015 | [Reconcile through closure, labels at merge time](decisions/ADR-015-reconcile-through-closure.md) | adr | target | proposed | platform-team | 2026-09-15 | Closed lock left unreconciled |
 | ADR-016 | [Re-check queued groups when a lock opens](decisions/ADR-016-recheck-queued-groups-on-lock.md) | adr | target | proposed | platform-team | 2026-09-15 | TS-S17 disproves A-7 |
+| ADR-017 | [Retry neutral results](decisions/ADR-017-retry-neutral-results.md) | adr | target | proposed | platform-team | 2026-09-15 | "Head untestable" alerts recur |
 | TS-001 | [Test strategy](test-strategy.md) | test-strategy | target | draft | platform-team | 2026-09-15 | 2027-03-15 |
 
 ### Superseded (kept for history)
@@ -53,7 +54,7 @@ confidence: confirmed
 
 ## Outstanding confirmations
 
-CQ-1 to CQ-9 are settled. CQ-10 to CQ-13 came from adversarial reviews of the
+CQ-1 to CQ-9 are settled. CQ-10 to CQ-14 came from adversarial reviews of the
 architecture on 2026-09-15 and await the requester:
 
 - **CQ-10 (ADR-013):** replay interrupted reports without undoing overrides; test outcome
@@ -63,6 +64,8 @@ architecture on 2026-09-15 and await the requester:
   time.
 - **CQ-13 (ADR-016):** re-run the gate for groups queued before a lock; FR-4 narrowed to
   report a race of seconds. Depends on A-7, checked by sandbox test TS-S17.
+- **CQ-14 (ADR-017):** retest a neutral head after `poll_interval`, up to 3 times, then
+  alert.
 
 Remaining `[assumption]` tags in ARCH-001: worker resource sizing, .NET and Node versions,
 and the sandbox organisation name.

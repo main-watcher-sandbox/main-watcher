@@ -45,23 +45,35 @@ renews a lapsed lease, `watch.yml` sweeps the target's queue:
 - it lists the groups still in the queue, from the temporary `gh-readonly-queue/main/*`
   branches GitHub creates for them `[assumption]` (A-7);
 - for each group, it finds the gate workflow runs for the group's head commit;
-- a gate run that **completed successfully** and **started before** the sweep moment (the
-  lock's creation, or the lease renewal) is re-run through the Actions API. The re-run
+- a gate run that **completed successfully** and **started before** the sweep's cut-off
+  (point 2) is re-run through the Actions API. The re-run
   reads the current lock, so it fails the group unless every PR in it has `fixes-main`;
-- a gate run that started before that moment and is **still running** may already have
+- a gate run that started before the cut-off and is **still running** may already have
   read "no lock". It is re-run as soon as it completes;
-- a gate run that started after that moment already sees the lock, and is left alone.
+- a gate run that started after the cut-off already sees the lock, and is left alone.
 
 "Started before" is used rather than "completed before", because a gate can read the lock
 at any point during its run.
 
-**2. Durable progress.** The sweep's state lives in the lock issue's hidden marker,
-`queue_swept=<timestamp>`. It is written only when no queued group has an unhandled gate
-run from before the sweep moment. Until then:
-- the worker flags work for the target, since it can read the marker (ADR-014);
-- each watcher run continues the sweep;
-- if the sweep is still unfinished after 15 minutes `[unconfirmed]`, the worker raises a
-  `watcher-infra` alert, "queue sweep unfinished".
+**2. A durable obligation, then durable progress.** Each sweep is a generation recorded in
+the lock issue's hidden marker. A later review on 2026-09-15 found that recording only
+completion was not enough: a lease renewed just before a crash would leave an older
+`queue_swept` marker and nothing saying a new sweep was owed. So:
+- **The obligation is written with its cause.** `sweep_required=<T>` goes into the same
+  issue write that creates the lock, or that renews an expired lease (ADR-014). Ordinary
+  renewals never change it.
+- **The cut-off.** The sweep covers gate runs that started before T plus 5 minutes
+  `[unconfirmed]`. The margin absorbs clock differences and the delay before a new lock
+  becomes visible; re-running a gate that already saw the lock is harmless.
+- **Completion.** `queue_swept=<T>` is written, with the same T, only when no queued group
+  still has an unhandled gate run before that cut-off.
+- **What is owed.** A sweep is owed whenever `queue_swept` is missing or earlier than
+  `sweep_required`, so a crash at any point leaves it visible. While it is owed, the worker
+  flags work for the target (it can read the marker, ADR-014) and each watcher run
+  continues the sweep. If it is still owed after 15 minutes `[unconfirmed]`, the worker
+  raises a `watcher-infra` alert, "queue sweep unfinished".
+- **A newer generation**, from a second lapse, replaces an unfinished older one. Its later
+  cut-off covers the older generation's gate runs as well.
 
 **3. What the re-run relies on (A-7).** A re-run of a successful required check makes that
 check pending again for the group, so the queue waits; when the re-run fails, the queue
@@ -127,7 +139,9 @@ label rule.
   (R-22).
 - **Re-runs add noise** in the target's Actions tab, and the unlock comment must also list
   groups removed by a re-run.
-- **One more marker, one more worker rule, and one more alert.**
+- **Two more markers, one more worker rule, and one more alert.**
+- **Some unnecessary re-runs.** The 5-minute margin re-runs gates that already saw the
+  lock; each re-run of a fix's gate delays that fix by one gate run.
 
 **Follow-on work**
 - The queue sweep in the Reporter and Planner, and the worker's unfinished-sweep rule.

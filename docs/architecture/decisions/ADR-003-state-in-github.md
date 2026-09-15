@@ -20,6 +20,11 @@ confidence: confirmed
 > `main-watcher-test` step. The lock issue's hidden markers would gain `reported_check` and
 > `reported_sha`, plus `lease_until` (ADR-014) and `reconciled` (ADR-015).
 
+> **Proposed amendment: [ADR-017](ADR-017-retry-neutral-results.md), 2026-09-15, awaiting
+> confirmation.** A `neutral` check run would not count as "tested": the head could be
+> tested again after `poll_interval`, up to 3 neutral results. The newest check run on a
+> commit would be its result.
+
 **Deciders:** platform team · **Consulted:** —
 
 ## Context

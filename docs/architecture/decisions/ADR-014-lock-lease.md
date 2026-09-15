@@ -55,9 +55,18 @@ unreadable, expired or more than 24 hours ahead, the gate:
 
 The 24-hour cap stops a hand-edited or faulty marker from making the lock unbounded again.
 
-**4. Recovery.** When the watcher renews a lease that had already expired, it:
-- comments on the lock issue with the lapse window;
-- raises a `watcher-infra` alert, "lock lapsed";
+**4. Recovery.** When the watcher renews a lease that had already expired, the same
+issue-body write that sets the new `lease_until` also records:
+- `lapsed=<old lease_until>..<renewal time>`;
+- a new queue-sweep obligation, `sweep_required` (ADR-016).
+
+Because these are written together, a crash right after the renewal cannot hide the lapse.
+Afterwards the watcher:
+- comments on the lock issue with the lapse window and raises a `watcher-infra` alert,
+  "lock lapsed", then writes `lapse_reported=<renewal time>`. If that marker is missing, a
+  later run posts them; the comment carries a hidden marker and the alert is de-duplicated
+  (ADR-012), so a repeat creates nothing new;
+- re-checks merge groups queued during the lapse (ADR-016);
 - reconciles merges made during the lapse as usual. The issue stayed open, so they fall
   inside the lock window (ADR-008, ADR-015).
 

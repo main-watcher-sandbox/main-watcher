@@ -26,6 +26,9 @@ amends: ADR-001
 > - [ADR-014](ADR-014-lock-lease.md): `mw-observer` gains Issues: read on targets. The
 >   worker also flags work when a lock lease is due for renewal, or when a closed lock is
 >   not yet reconciled (ADR-015).
+> - [ADR-017](ADR-017-retry-neutral-results.md): a head whose newest check run is `neutral`
+>   would be work again after `poll_interval`, up to 3 neutral results, under a rule shared
+>   with the Planner.
 
 **Deciders:** requester, platform team · **Consulted:** —
 
