@@ -122,3 +122,17 @@ confirmation.
 - **Front matter:** every doc has an owner, reviewed date and review-by date. Update
   `reviewed` and the change log in `architecture.md` §20 when you edit.
 - **Tags:** `[assumption]` and `[open]` mark unconfirmed statements.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on Actium-Group-Corporation/MainWatcher, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default triage labels, used unchanged (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+One set of domain docs for the whole repo: `CONTEXT.md` at the root, and ADRs in `docs/architecture/decisions/`. See `docs/agents/domain.md`.
