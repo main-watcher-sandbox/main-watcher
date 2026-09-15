@@ -60,5 +60,5 @@ CQ-14, which came from adversarial reviews, on 2026-09-15, all as proposed.
 One assumption behind an accepted decision is still open: **A-7**, the GitHub re-run
 behaviour ADR-016 relies on. Sandbox test TS-S17 must confirm it before rollout.
 
-Remaining `[assumption]` tags in ARCH-001: worker resource sizing, .NET and Node versions,
+Remaining `[assumption]` tags in ARCH-001: worker resource sizing, the .NET version,
 and the sandbox organisation name.

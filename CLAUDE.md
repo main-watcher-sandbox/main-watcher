@@ -85,7 +85,7 @@ metrics store (PostgreSQL + Grafana) is deferred.
      ADR-017), which relies on GitHub's job, step and timeout behaviour.
 4. Verify team @-mentions from an App notify the team (TS-S10, R-10).
 5. Verify CTRF duration units shown by the reporter action (TS-S13, R-17).
-6. Remaining `[assumption]` tags: worker resource sizing, .NET and Node versions, sandbox
+6. Remaining `[assumption]` tags: worker resource sizing, .NET version, sandbox
    organisation name.
 
 ## Suggested next steps
