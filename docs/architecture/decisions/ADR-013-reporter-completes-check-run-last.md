@@ -181,9 +181,17 @@ run yet:
 4. Once the `main-watcher` job has completed, it goes through the table in point 1 like any
    other job: reported from the test step if `main-watcher-tests-finished` succeeded,
    otherwise `neutral` with an alert.
-5. Only if the run still has not stopped 15 minutes after `force_cancel_requested` is the
-   check run completed as `neutral`, with a `watcher-infra` alert "target run could not be
-   stopped". Any result that run produces later is ignored.
+5. If the run still has not stopped 15 minutes after `force_cancel_requested`, the check
+   run is **still not completed**. A ninth review on 2026-09-15 found that completing it
+   would let a second test overlap the running one, and would discard a later proven
+   failure. So:
+   - the check run stays `in_progress`, and no test starts for the target: no retry, no
+     newer head, and no forced dispatch (ADR-017);
+   - the Planner raises a `watcher-infra` alert, "target run could not be stopped", and
+     repeats the force-cancel on each cycle;
+   - as soon as the run stops, its job goes through the table in point 1;
+   - a person can delete the run instead. That gives "outcome unknown" (404) and releases
+     the target.
 
 All of this state is in GitHub: the check run's creation time and output, and the job's
 `started_at` and status. A crash at any step is resumed on the next cycle.
@@ -263,8 +271,9 @@ hung test into a red lock.
 - **The worker makes one Actions jobs API call** per running test on every cycle, to see
   whether the `main-watcher` job has completed (R-13).
 - **Slower recovery from a stuck run.** A stale run holds its check run open through the
-  queue or run deadline and then up to 30 minutes of cancel and force-cancel waits, before
-  a retest can start.
+  queue or run deadline and the cancel and force-cancel waits, before a retest can start.
+  A run that GitHub cannot stop blocks all testing on that target until it stops or someone
+  deletes it (R-24).
 - **The Planner now cancels target runs**, a further use of `actions: write` on targets
   (R-11).
 - **It relies on the marker step's condition.** That GitHub skips the marker step when

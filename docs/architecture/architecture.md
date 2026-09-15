@@ -308,7 +308,9 @@ is raised (ADR-017).
     are unfinished (ADR-013).
   - A job that has not started 30 min after the check run was created, or is still running
     its `timeout-minutes` + 10 min after it started, is cancelled first, and force-cancelled
-    if it will not stop. The check run stays `in_progress` meanwhile. Once the job has
+    if it will not stop. The check run stays `in_progress` meanwhile, however long that
+    takes: a run that cannot be stopped raises an alert and blocks testing on that target
+    until it stops or is deleted. Once the job has
     stopped, it is reported from the test step if `main-watcher-tests-finished` succeeded,
     and is otherwise `neutral` (ADR-013).
   - A `watcher-infra` alert is raised. The head stays eligible and is retested after
@@ -600,7 +602,7 @@ flowchart LR
 | Reporting pending for more than 15 min (ADR-013) | Worker check | `watcher-infra` issue |
 | Queue sweep unfinished 15 min after a lock opened or was renewed (ADR-016) | Worker check | `watcher-infra` issue |
 | Head untestable: 3 neutral results on the same head (ADR-017) | Planner | `watcher-infra` issue |
-| Target run could not be stopped by cancel or force-cancel (ADR-013) | Planner | `watcher-infra` issue |
+| Target run not stopped 15 min after force-cancel; testing on that target is blocked until it stops or is deleted (ADR-013) | Planner | `watcher-infra` issue |
 | Hung worker | Kubernetes liveness probe | Automatic restart |
 | "Trigger worker appears down" (work waited more than 15 min) | Hourly sweep | `watcher-infra` issue |
 | Infrastructure error twice in a row for a target; stale or cancelled target run | Planner | `watcher-infra` issue |
@@ -710,6 +712,7 @@ team subscribes to that label.
 | R-21 | A watcher outage longer than `reconcile_lookback` (30 days) leaves older closed locks unreconciled | Unlabelled merges go unreported | Very low | Accepted; worker and sweep alerts fire long before (ADR-015) | Platform team |
 | R-22 | A merge group merges between a lock opening and its gate re-run, or GitHub changes merge-queue branch naming or re-run behaviour | A non-fix PR lands on a red `main` | Low | Sweep immediately after the lock opens; reconciliation reports it; TS-S17 on every release (ADR-016, A-7) | Platform team |
 | R-23 | A head stays untestable after 3 neutral results, so a fixed `main` stays locked or a broken one stays unlocked | Merges blocked, or breakage unreported | Low | "Head untestable" alert; override; a push or a forced dispatch retests (ADR-017) | Platform team |
+| R-24 | GitHub does not stop a stale target run even after force-cancel | Testing on that target stops until the run ends or is deleted | Very low | "Target run could not be stopped" alert; a person deletes the run (ADR-013) | Platform team |
 
 ## 17. Evolution
 
@@ -759,3 +762,4 @@ team subscribes to that label.
 | 2026-09-15 | Sixth adversarial review: GitHub reports a step timeout as `failure`, so the test step now runs through a deadline wrapper, and its result counts only when the `main-watcher-tests-finished` marker step succeeded; anything that interrupts the tests is neutral. TS-U14 added; TS-S16 and TS-U11 extended | Platform team with Claude | ADR-013 (revised while proposed) |
 | 2026-09-15 | Seventh adversarial review: reporting and staleness follow the target run's `main-watcher` job, not the whole run, so a stuck `report` job cannot discard a proven failure; past the stale threshold, a succeeded finished-marker step is reported, not marked stale. TS-S16, TS-U5 and TS-U11 extended | Platform team with Claude | ADR-013 (revised while proposed) |
 | 2026-09-15 | Eighth adversarial review: separate queue and run deadlines, the run deadline counted from the job's start; a stale run is cancelled, force-cancelled if needed, and judged from its steps once stopped, with no retest meanwhile. TS-U15 added; TS-S16 and TS-U5 extended | Platform team with Claude | ADR-013 (revised while proposed) |
+| 2026-09-15 | Ninth adversarial review: a target run that cannot be stopped keeps its check run `in_progress`, blocking all testing on that target until it stops or is deleted; TS-U5 no longer exempts unfinished jobs with a succeeded marker from the deadlines. R-24 added; TS-S16, TS-U5 and TS-U15 extended. Not re-reviewed | Platform team with Claude | ADR-013 (revised while proposed) |
