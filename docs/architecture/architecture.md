@@ -30,7 +30,7 @@ on 2026-09-15. CQ-10 to CQ-14 came from adversarial reviews of the architecture 
 | CQ-7 | The gate fails **open** on API errors; the watcher reports it afterwards (ADR-008). Confirmed | 5.2, 11 | Merge availability | Requester |
 | CQ-8 | The platform team owns the watcher repo, the trigger worker and all three GitHub Apps. Confirmed | 14 | Key custody | Requester |
 | CQ-9 | Anyone with triage rights may apply `fixes-main`. Confirmed | 8, R-4 | The lock bypass | Requester |
-| CQ-10 | The Reporter writes the lock issue before completing the check run, and replays an interrupted report without re-locking a commit a human overrode; a "reporting pending" alert after 15 min. The test outcome comes from the `main-watcher-test` step (build and tests), so a failure stays red without CTRF; checkout and restore failures, and tests that do not finish (deadline, timeout, cancellation), are infrastructure errors (ADR-013) `[unconfirmed]` | 5.1 | A crash or a failed upload must not leave a red `main` unlocked, and a replay must not undo an override | Awaiting requester |
+| CQ-10 | The Reporter writes the lock issue before completing the check run, and replays an interrupted report without re-locking a commit a human overrode; a "reporting pending" alert after 15 min. The test outcome comes from the `main-watcher-test` step (build and tests), so a failure stays red without CTRF; checkout and restore failures, and tests that do not finish (deadline, timeout, cancellation), are infrastructure errors; a test run that waits over 30 min for a runner, or overruns its job timeout, is cancelled and its steps read before it is judged (ADR-013) `[unconfirmed]` | 5.1 | A crash or a failed upload must not leave a red `main` unlocked, and a replay must not undo an override | Awaiting requester |
 | CQ-11 | A lock lapses when the watcher has not renewed it for `lock_lease` (default 4 h), and the gate then fails open with a warning. With a lock open, NFR-3 therefore holds only after up to `lock_lease`. `mw-observer` gains Issues: read (ADR-014) `[unconfirmed]` | 5.2, 8 | Merge availability vs. enforcing a red `main` through a long watcher outage | Awaiting requester |
 | CQ-12 | Reconciliation continues after a lock closes, until merges up to its closure are checked; closures older than 30 days are not revisited; each merge is judged by the PR's labels at merge time (ADR-015) `[unconfirmed]` | 5.2 | NFR-4 must hold when a human closes the lock first, or a label changes after the merge | Awaiting requester |
 | CQ-13 | When a lock opens, or a lapsed lock is renewed, the watcher re-runs the gate for merge groups still in the queue whose gate started earlier. FR-4 is narrowed: a group that merges in the seconds before its re-run takes effect is reported, not blocked (ADR-016) `[unconfirmed]` | 2, 5.2 | Otherwise groups that passed the gate just before a lock merge onto a red `main`, with no outage involved | Awaiting requester |
@@ -228,7 +228,7 @@ flowchart LR
 |---|---|---|---|---|
 | targets.yml | Lists targets: repo, test command, CTRF results glob, timeout, `poll_interval`, `notify`, `enabled` | YAML in watcher repo | Platform team | FR-1 |
 | Trigger worker | Every `check_period`, detects work per target (eligible head, ADR-017; finished `main-watcher` job, stale run, lock lease due for renewal, closed lock not yet reconciled, unfinished queue sweep) and starts `watch.yml`. Exposes `/healthz`. Raises `watcher-infra` issues if the watcher hasn't completed a run in 2 h, if reporting has been pending, or a queue sweep unfinished, for more than 15 min, on repeated errors, or on token failures (ADR-012, ADR-013, ADR-014, ADR-016) | .NET 8+ `BackgroundService`, container, 1 replica | Platform team | FR-2, C-7 |
-| watch.yml — Planner | For the targets passed in (or all, on the hourly sweep): for an eligible head (ADR-017), creates an in-progress check run, starts the target's test workflow with `return_run_details`, stores the run ID in the check run's `external_id`. Handles stale runs, checking the finished-marker step first (ADR-013); renews lock leases (ADR-014); finishes queue sweeps (ADR-016); reconciles merges made during a lock, through the lock's closure, judging labels at merge time (ADR-008, ADR-015); raises "worker appears down" if work waited more than 15 min | GitHub Actions job | Platform team | FR-2, NFR-3, NFR-4 |
+| watch.yml — Planner | For the targets passed in (or all, on the hourly sweep): for an eligible head (ADR-017), creates an in-progress check run, starts the target's test workflow with `return_run_details`, stores the run ID in the check run's `external_id`. Handles stale runs: cancels a run past its queue or run deadline, and reports it once it has stopped (ADR-013); renews lock leases (ADR-014); finishes queue sweeps (ADR-016); reconciles merges made during a lock, through the lock's closure, judging labels at merge time (ADR-008, ADR-015); raises "worker appears down" if work waited more than 15 min | GitHub Actions job | Platform team | FR-2, NFR-3, NFR-4 |
 | watch.yml — Reporter | When a target run's `main-watcher` job has completed (other jobs in the run are ignored): reads the outcome of the `main-watcher-test` step, trusted only when the `main-watcher-tests-finished` marker step succeeded, downloads CTRF, finds the last green commit, collects pushes, opens, updates or closes the lock issue (never re-locking a commit a human overrode), and only then completes the check run, so an interrupted report is replayed (ADR-013). After opening a lock, it re-runs the gate for merge groups queued before it (ADR-016). Adds a timing section to the check run: suite time, change from last green, 5 slowest tests, retry flag (ADR-011) | GitHub Actions job | Platform team | FR-3, FR-4 |
 | run-integration-tests.yml | `test` job: checks out `sha` and restores (setup steps); builds and runs tests with one retry of failed tests in a single step, `main-watcher-test`, through a wrapper that enforces the target's timeout; a marker step, `main-watcher-tests-finished`, succeeds only if the tests ran to completion (ADR-013); then writes `timings.json` and uploads the `main-watcher-ctrf` artifact, even when that step failed. `report` job: no secrets, read-only token, publishes the CTRF job summary with the slowest tests and duration trends (ADR-011) | Reusable GitHub workflow, version-tagged; `ctrf-io/github-test-reporter` pinned by SHA | Platform team | FR-2, FR-6, ADR-007 |
 | main-watcher-tests.yml | Caller: `workflow_dispatch` inputs → reusable workflow, `secrets: inherit`. The place where the target sets up OIDC or feeds | ~15-line workflow in target | Target owners (template from platform) | FR-5 |
@@ -306,9 +306,11 @@ is raised (ADR-017).
     does not complete, or its `external_id` points to a run that no longer exists. A
     completed job is never stale, even without an artifact or while other jobs in the run
     are unfinished (ADR-013).
-  - Once older than the job's `timeout-minutes` + 10 min, it is marked `neutral`, unless
-    its `main-watcher-tests-finished` step already succeeded; then the result is reported
-    from the test step instead (ADR-013).
+  - A job that has not started 30 min after the check run was created, or is still running
+    its `timeout-minutes` + 10 min after it started, is cancelled first, and force-cancelled
+    if it will not stop. The check run stays `in_progress` meanwhile. Once the job has
+    stopped, it is reported from the test step if `main-watcher-tests-finished` succeeded,
+    and is otherwise `neutral` (ADR-013).
   - A `watcher-infra` alert is raised. The head stays eligible and is retested after
     `poll_interval`; there is no separate retry step for a crash to lose (ADR-017).
 - **Reporter interrupted** (crash, cancelled job, or API retries exhausted mid-report).
@@ -506,7 +508,7 @@ keys. That is a recommendation, not something the watcher enforces.
 | Principal | Target code | Checks | Lock issue | Target workflows | Merge queue |
 |---|---|---|---|---|---|
 | Trigger worker | Read | Read | Read (lease, reconciliation state) | Read status | — |
-| watch.yml | Read | Write | Create, update, close | Start, re-run the gate, read artifacts | — |
+| watch.yml | Read | Write | Create, update, close | Start, cancel stale runs, re-run the gate, read artifacts | — |
 | Target test run | Read, execute | — | — | (itself) | — |
 | Gate workflow | Read | Its own | Read | — | Pass/fail entries |
 | Maintainer (triage+) | per repo | — | Close (override) | per repo | Apply `fixes-main` |
@@ -598,6 +600,7 @@ flowchart LR
 | Reporting pending for more than 15 min (ADR-013) | Worker check | `watcher-infra` issue |
 | Queue sweep unfinished 15 min after a lock opened or was renewed (ADR-016) | Worker check | `watcher-infra` issue |
 | Head untestable: 3 neutral results on the same head (ADR-017) | Planner | `watcher-infra` issue |
+| Target run could not be stopped by cancel or force-cancel (ADR-013) | Planner | `watcher-infra` issue |
 | Hung worker | Kubernetes liveness probe | Automatic restart |
 | "Trigger worker appears down" (work waited more than 15 min) | Hourly sweep | `watcher-infra` issue |
 | Infrastructure error twice in a row for a target; stale or cancelled target run | Planner | `watcher-infra` issue |
@@ -755,3 +758,4 @@ team subscribes to that label.
 | 2026-09-15 | Fifth adversarial review: the test step's own conclusion takes precedence over a later cancellation or timeout, so a hung upload cannot hide a failure; upload steps get their own timeout. TS-S16 and TS-U11 extended | Platform team with Claude | ADR-013 (revised while proposed) |
 | 2026-09-15 | Sixth adversarial review: GitHub reports a step timeout as `failure`, so the test step now runs through a deadline wrapper, and its result counts only when the `main-watcher-tests-finished` marker step succeeded; anything that interrupts the tests is neutral. TS-U14 added; TS-S16 and TS-U11 extended | Platform team with Claude | ADR-013 (revised while proposed) |
 | 2026-09-15 | Seventh adversarial review: reporting and staleness follow the target run's `main-watcher` job, not the whole run, so a stuck `report` job cannot discard a proven failure; past the stale threshold, a succeeded finished-marker step is reported, not marked stale. TS-S16, TS-U5 and TS-U11 extended | Platform team with Claude | ADR-013 (revised while proposed) |
+| 2026-09-15 | Eighth adversarial review: separate queue and run deadlines, the run deadline counted from the job's start; a stale run is cancelled, force-cancelled if needed, and judged from its steps once stopped, with no retest meanwhile. TS-U15 added; TS-S16 and TS-U5 extended | Platform team with Claude | ADR-013 (revised while proposed) |

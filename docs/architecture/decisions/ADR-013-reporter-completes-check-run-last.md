@@ -156,19 +156,43 @@ while the `main-watcher` job of its target run (`external_id`) has completed mea
 - If the Reporter ever finds two open locks, it keeps the older one and closes the newer as
   a duplicate.
 
-**5. Narrower stale-run rule (amends ADR-010).** A completed `main-watcher` job always goes
-through the table in point 1, whatever other jobs in the run are doing. An in-progress check
-run whose `main-watcher` job has **not** completed is checked once the job's own
-`timeout-minutes` plus 10 minutes have passed since the check run was created:
-- **If `main-watcher-tests-finished` succeeded,** the tests did finish, so the run is not
-  stale. The table in point 1 is applied now, with whatever CTRF is available; at worst a
-  real failure is red with "failing tests unknown".
-- **Otherwise the run is stale:** `neutral`, with an alert. This includes a job that never
-  got a runner.
-- **If the job's steps cannot be read** because of an API error, the check run stays
-  pending and is checked again on the next cycle.
-- **If the run no longer exists** (404), the result is `neutral` with "outcome unknown", as
-  in point 1.
+**5. A stale run is stopped before it is judged (amends ADR-010).** A completed
+`main-watcher` job always goes through the table in point 1, whatever other jobs in the run
+are doing.
+
+**Two deadlines.** A job that has not completed has two separate deadlines, because waiting
+for a runner is not running. An eighth review on 2026-09-15 found that a single deadline
+counted from the check run's creation could abandon a job that started late and was still
+testing.
+- **Queue deadline:** the job has not started 30 minutes `[unconfirmed]` after the check run
+  was created.
+- **Run deadline:** the job started, and its `started_at` plus its `timeout-minutes` plus 10
+  minutes has passed. GitHub's own job timeout normally ends the job well before this.
+
+**Stopping the run.** When either deadline passes, the Planner does not complete the check
+run yet:
+1. It writes `cancel_requested=<time>` into the check run's output, then cancels the target
+   run through the Actions API (`main-watcher` has Actions: write). Cancelling is
+   idempotent, so a later run simply asks again.
+2. The check run stays `in_progress` until the run has stopped, so ADR-017 starts no second
+   test meanwhile.
+3. If the run has not stopped 15 minutes `[unconfirmed]` after `cancel_requested`, it writes
+   `force_cancel_requested=<time>` and calls GitHub's force-cancel endpoint.
+4. Once the `main-watcher` job has completed, it goes through the table in point 1 like any
+   other job: reported from the test step if `main-watcher-tests-finished` succeeded,
+   otherwise `neutral` with an alert.
+5. Only if the run still has not stopped 15 minutes after `force_cancel_requested` is the
+   check run completed as `neutral`, with a `watcher-infra` alert "target run could not be
+   stopped". Any result that run produces later is ignored.
+
+All of this state is in GitHub: the check run's creation time and output, and the job's
+`started_at` and status. A crash at any step is resumed on the next cycle.
+
+**Other cases.**
+- **If the job cannot be read** because of an API error, nothing changes, and it is checked
+  again on the next cycle.
+- **If the run no longer exists** (404), there is nothing to stop: `neutral` with "outcome
+  unknown", as in point 1.
 
 A missing CTRF artifact never makes a result neutral, and a pending report is never
 discarded as stale.
@@ -238,6 +262,11 @@ hung test into a red lock.
   any state before writing, marker checks, and duplicate handling.
 - **The worker makes one Actions jobs API call** per running test on every cycle, to see
   whether the `main-watcher` job has completed (R-13).
+- **Slower recovery from a stuck run.** A stale run holds its check run open through the
+  queue or run deadline and then up to 30 minutes of cancel and force-cancel waits, before
+  a retest can start.
+- **The Planner now cancels target runs**, a further use of `actions: write` on targets
+  (R-11).
 - **It relies on the marker step's condition.** That GitHub skips the marker step when
   `finished` was never set, including after a cancellation or a lost runner, is
   `[assumption]`. TS-S16 checks it.
@@ -260,7 +289,7 @@ hung test into a red lock.
 
 | Implemented by | Verified by | Operational control |
 |---|---|---|
-| Reusable workflow step layout; Reporter outcome table, write order and replay checks; worker stale and pending rules | TS-S14, TS-S16, TS-U8, TS-U11 | `watcher-infra` alerts "reporting pending", "outcome unknown" and "outcome contract broken" |
+| Reusable workflow step layout; Reporter outcome table, write order and replay checks; worker stale and pending rules | TS-S14, TS-S16, TS-U8, TS-U11, TS-U14, TS-U15 | `watcher-infra` alerts "reporting pending", "outcome unknown" and "outcome contract broken" |
 
 ## Revisit when
 

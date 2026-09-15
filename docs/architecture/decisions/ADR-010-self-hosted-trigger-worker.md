@@ -23,9 +23,10 @@ amends: ADR-001
 >   target run's `main-watcher` job has completed is "reporting pending", with or without an
 >   artifact and whatever other jobs in the run are doing; the worker reads that job through
 >   the Actions jobs API. A pending report is never marked stale, and raises an alert after
->   15 minutes. A run is stale only when its `main-watcher` job has not completed within the
->   job's timeout + 10 min and its `main-watcher-tests-finished` step has not succeeded, or
->   when the run no longer exists.
+>   15 minutes. A run past its queue deadline (not started 30 min after the check run)
+>   or run deadline (still running its timeout + 10 min after it started) is cancelled
+>   first, and its steps are read once it has stopped. Only then is it `neutral`, and only
+>   if the tests did not finish.
 > - [ADR-014](ADR-014-lock-lease.md): `mw-observer` gains Issues: read on targets. The
 >   worker also flags work when a lock lease is due for renewal, or when a closed lock is
 >   not yet reconciled (ADR-015).
