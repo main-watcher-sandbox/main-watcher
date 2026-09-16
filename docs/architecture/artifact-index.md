@@ -32,7 +32,7 @@ confidence: confirmed
 | ADR-015 | [Reconcile through closure, labels at merge time](decisions/ADR-015-reconcile-through-closure.md) | adr | target | accepted | platform-team | 2026-09-15 | Closed lock left unreconciled |
 | ADR-016 | [Re-check queued groups when a lock opens](decisions/ADR-016-recheck-queued-groups-on-lock.md) | adr | target | accepted | platform-team | 2026-09-15 | TS-S17 disproves A-7 |
 | ADR-017 | [Retry neutral results](decisions/ADR-017-retry-neutral-results.md) | adr | target | accepted | platform-team | 2026-09-15 | "Head untestable" alerts recur |
-| TS-001 | [Test strategy](test-strategy.md) | test-strategy | target | draft | platform-team | 2026-09-15 | 2027-03-15 |
+| TS-001 | [Test strategy](test-strategy.md) | test-strategy | target | draft | platform-team | 2026-09-16 | 2027-03-15 |
 
 ### Superseded (kept for history)
 
