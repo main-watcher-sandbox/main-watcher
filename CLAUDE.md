@@ -86,7 +86,8 @@ metrics store (PostgreSQL + Grafana) is deferred.
 ## Open items before building
 
 1. Run sandbox tests early:
-   - TS-S17: gate re-runs for groups queued before a lock (A-7, which ADR-016 depends on);
+   - TS-S17: the watcher's queue sweep end to end (A-7 itself was confirmed by a spike,
+     MainWatcher#6);
    - TS-S14, TS-S16 and TS-S18: the reporting, cancel and retry lifecycle (ADR-013,
      ADR-017), which relies on GitHub's job, step and timeout behaviour.
 2. Verify team @-mentions from an App notify the team (TS-S10, R-10).

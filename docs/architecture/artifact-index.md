@@ -4,7 +4,7 @@ type: architecture
 status: draft
 state: current
 owner: platform-team
-reviewed: 2026-09-15
+reviewed: 2026-09-16
 review_by: 2027-03-15
 sources: [ARCH-001]
 confidence: confirmed
@@ -57,8 +57,8 @@ confidence: confirmed
 None. All confirmation-queue items are settled: CQ-1 to CQ-9 during design, and CQ-10 to
 CQ-14, which came from adversarial reviews, on 2026-09-15, all as proposed.
 
-One assumption behind an accepted decision is still open: **A-7**, the GitHub re-run
-behaviour ADR-016 relies on. Sandbox test TS-S17 must confirm it before rollout.
+**A-7**, the GitHub re-run behaviour ADR-016 relies on, was confirmed by a sandbox spike on
+2026-09-16 (MainWatcher#6). TS-S17 still tests the whole queue sweep before rollout.
 
 Remaining `[assumption]` tags in ARCH-001: worker resource sizing, the .NET version,
 and the sandbox organisation name.

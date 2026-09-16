@@ -38,6 +38,7 @@ Microsoft Testing Platform exits with code 8 when a project runs no tests.
 | `flaky_test` | `false` | `Flaky` fails on the first attempt of a workflow run and passes on the retry | TS-S13 retry flag |
 | `fail_restore` | `false` | `Directory.Build.props` points restore at an unreachable feed, with an empty packages folder: `dotnet restore` fails with NU1301 | TS-S16, TS-S18 |
 | `fail_upload` | `false` | **Stub.** Makes the CTRF upload step fail. Read by the sandbox build of the reusable test workflow (MainWatcher#7), not by this repo | TS-S16 |
+| `slow_check_minutes` | `0` | On merge groups, the required `sandbox-slow-check` job waits this many minutes before passing, like a target's own slow CI. Read from the merge group's commit | TS-S17, MainWatcher#6 |
 | `hang_upload` | `false` | **Stub.** Makes the CTRF upload step hang past its timeout. Read by the sandbox build of the reusable test workflow (MainWatcher#7), not by this repo | TS-S16 (d), (h) |
 
 An unknown key makes every test except `Baseline.Runs` fail, so a typo in `sandbox.json` shows up at once.
@@ -60,6 +61,10 @@ Organisation admins bypass it, so scenario scripts can push to `main` directly.
 `templates/`, using the gate action from the public `main-watcher-sandbox/gate` repo. Its
 `main-watcher-gate` job is a required check. While an App-authored `main-broken` issue with a
 valid lease is open, merge groups fail unless every PR in them is labelled `fixes-main`.
+
+`sandbox-slow-check.yml` is a second required check. It passes at once on pull requests,
+and on merge groups waits `slow_check_minutes`, so a group can sit in the queue with its
+gate already passed (TS-S17).
 
 ## Self-test
 
