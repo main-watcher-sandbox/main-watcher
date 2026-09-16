@@ -29,7 +29,7 @@ confidence: assumed
 | Unit: shared library (eligibility rule, `GitHubGateway`) | Platform team | CI of the library shared by the worker and the watcher scripts (`dotnet test`, xUnit v3) | Merge | Timestamped fixtures |
 | Unit: Planner, Reporter (including replay), CTRF reader, push-range logic, gate decision (including lease), reconciliation (including closed locks) | Platform team | Watcher repo CI (`dotnet test`, xUnit v3) | Merge | GitHub API fixtures |
 | Container smoke test | Platform team | Worker CI | Image publish | Starts the image; `/healthz` responds; config errors fail fast |
-| Scenario TS-S1–S12, TS-S14–S18 | Platform team | Sandbox org + a sandbox namespace in the cluster | Release of the worker, a new workflow tag, or a new gate template | Real GitHub, about 30 min |
+| Scenario TS-S1–S12, TS-S14–S18 | Platform team | Sandbox org + the `main-watcher-sandbox` namespace in the cluster | Release of the worker, a new workflow tag, or a new gate template | Real GitHub, about 30 min |
 | Workflow security review | Platform team + security | PR review | Any change to `.github/workflows` or App permissions | Checklist in §6 |
 | Onboarding dry run | Target owner | Target repo | Before the gate becomes required | Onboarding step 5 |
 
@@ -37,7 +37,7 @@ confidence: assumed
 
 | Environment | Purpose | Production-like? | Data source |
 |---|---|---|---|
-| Sandbox org `main-watcher-sandbox` | Scenario tests | Yes: same App manifests, a real merge queue, a worker deployment | Synthetic xUnit v3 repo whose tests pass or fail according to a file; a second synthetic repo with a "slow" suite |
+| Sandbox org `main-watcher-sandbox` | Scenario tests | Yes: same App manifests, a real merge queue, a worker deployment in the `main-watcher-sandbox` namespace | Synthetic xUnit v3 repo whose tests pass or fail according to a file; a second synthetic repo with a "slow" suite |
 
 ## 4. Simulating dependencies
 

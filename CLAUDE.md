@@ -74,19 +74,17 @@ metrics store (PostgreSQL + Grafana) is deferred.
 
 ## Open items before building
 
-1. Confirm the cluster has outbound HTTPS to `api.github.com` and a secret store (A-6).
-2. Get security approval for `actions: write` on target repos for the `main-watcher` App
+1. Get security approval for `actions: write` on target repos for the `main-watcher` App
    (R-11), which now also cancels stale runs and re-runs the gate, and for Issues: read on
    `mw-observer` (ADR-014).
-3. Run sandbox tests early:
+2. Run sandbox tests early:
    - TS-S5: batched merge groups and the gate (A-5, R-3);
    - TS-S17: gate re-runs for groups queued before a lock (A-7, which ADR-016 depends on);
    - TS-S14, TS-S16 and TS-S18: the reporting, cancel and retry lifecycle (ADR-013,
      ADR-017), which relies on GitHub's job, step and timeout behaviour.
-4. Verify team @-mentions from an App notify the team (TS-S10, R-10).
-5. Verify CTRF duration units shown by the reporter action (TS-S13, R-17).
-6. Remaining `[assumption]` tags: worker resource sizing, .NET version, sandbox
-   organisation name.
+3. Verify team @-mentions from an App notify the team (TS-S10, R-10).
+4. Verify CTRF duration units shown by the reporter action (TS-S13, R-17).
+5. Remaining `[assumption]` tags: worker resource sizing and .NET version.
 
 ## Suggested next steps
 
