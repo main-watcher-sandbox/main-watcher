@@ -8,8 +8,9 @@ review_by: 2027-03-15
 
 Issue #9 supplies one Planner/Reporter cycle in `.github/workflows/watch.yml`.
 It creates and completes `main-watcher` check runs. Issue #10 adds the lock issue:
-a red result opens it and a green result closes it. Replay, the push list, lease
-renewal, stale-run cancellation and the automatic trigger are separate backlog items.
+a red result opens it and a green result closes it. Issue #11 adds the push list and
+a comment for each later failure. Replay, lease renewal, stale-run cancellation and the
+automatic trigger are separate backlog items.
 
 Configure the `reporter` environment with `MAIN_WATCHER_APP_ID` (variable) and
 `MAIN_WATCHER_PRIVATE_KEY` (secret). Install that App on each target with
@@ -96,14 +97,35 @@ so a failed issue write leaves the check `in_progress` for the next cycle.
   last `*` rule in the first CODEOWNERS file on `main` (`.github/`, root, `docs/`), then
   shows the failing commit, the failing tests (or "failing tests unknown") and the target
   run. The hidden marker holds `first_red`, `lease_until` (now + 4 h, read by the gate),
-  `reported_check` and `reported_sha`. An open lock is left as it is: later-failure
-  comments come with #11, lease renewal with #19 and replay against closed locks with #12.
+  `reported_check` and `reported_sha`, plus `last_green` when a green run was found.
+  Lease renewal comes with #19 and replay against closed locks with #12.
   Test output is HTML-encoded, so it cannot mention anyone or add a second marker.
   The body stays well under GitHub's 65,536-character limit whatever the CTRF report holds:
   names, suites and messages are clipped to 200 characters, the failure list stops at
   20,000 characters with "…and N more", and at most 50 handles are mentioned. An existing
   but empty CODEOWNERS file still takes precedence over later locations, so it gives no
   owners and raises the alert.
+- **Push list.** The Reporter walks `main` back up to 100 commits from the failing commit
+  and takes the first whose newest `main-watcher` check run succeeded (ADR-003, ADR-017).
+  It lists repository activity on `main` newer than the push that made that commit the head:
+  time (UTC), pusher (plain login, never `@`), type (push, force push, PR merge,
+  merge-queue merge), before→after with a compare link, and the commit count from the
+  compare API (`?` when GitHub cannot compare, for example after a force push). At most 100
+  activity entries are read and 25,000 characters of table written. The issue says which
+  source was used:
+  - the last green commit, when it is in the walked history;
+  - otherwise, a green check run on a commit that some listed push once made the head (the
+    green commit was force-pushed away, or is older than 100 commits): activity after
+    that check run started;
+  - otherwise, the last 100 pushes.
+
+  If history, check runs or activity cannot be read, the lock still opens with "Push list
+  unavailable" and a link comparing the last green commit with the failing one, or, with no
+  green commit known, the commits up to the failing one.
+- **Later red.** While an App lock is open, each further failing run adds one comment: the
+  failing commit, the failing tests, the target run and a hidden `check=` marker. Comments
+  mention nobody. The body, including its push list, keeps the state from when the lock
+  opened; updating it comes with replay (#12).
 - **Green.** Every open App-authored lock gets a comment naming the green commit and is
   closed.
 - **Author.** Only issues by the token's App (`MW_BOT_LOGIN`, `<app-slug>[bot]`) count;
@@ -125,4 +147,6 @@ directory. Sandbox execution uses the private watcher replica described in
 `sandbox/README.md`. The [issue #9 validation record](../sandbox/issue-9-validation.md)
 links the passing and failing checks, their Planner and Reporter cycles, and
 the target restoration evidence. The [issue #10 validation record](../sandbox/issue-10-validation.md)
-covers a real lock opening and closing, and TS-S4 with that lock.
+covers a real lock opening and closing, and TS-S4 with that lock. The
+[issue #11 validation record](../sandbox/issue-11-validation.md) covers TS-S2: the push list
+and the later-failure comment.
