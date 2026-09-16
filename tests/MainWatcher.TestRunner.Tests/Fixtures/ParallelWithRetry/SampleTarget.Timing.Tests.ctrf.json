@@ -1,0 +1,120 @@
+{
+  "reportFormat": "CTRF",
+  "specVersion": "0.0.0",
+  "reportId": "d4ff549d-e391-4de4-a58d-c9bcd43f1b58",
+  "timestamp": "2026-09-16T18:20:54Z",
+  "results": {
+    "tool": {
+      "name": "xUnit.net v3",
+      "version": "3.2.2+728c1dce01"
+    },
+    "environment": {
+      "osPlatform": "Linux",
+      "osRelease": "Ubuntu 24.04"
+    },
+    "extra": {
+      "computer": "runner",
+      "user": "runner",
+      "suites": [
+        {
+          "id": "281a155f-128e-48cb-a0c4-8bf5303e230b",
+          "filePath": "/home/runner/work/sample-target/sample-target/tests/SampleTarget.Timing.Tests/bin/Debug/net10.0/SampleTarget.Timing.Tests.dll",
+          "environment": "64-bit (x64) .NET 10.0.12 [collection-per-class, parallel (20 threads)]",
+          "testFramework": "xUnit.net v3 3.2.2+728c1dce01",
+          "targetFramework": ".NETCoreApp,Version=v10.0",
+          "start": 1789582834340,
+          "stop": 1789582854459,
+          "duration": 20124,
+          "collections": [
+            {
+              "id": "fe2d9110-1dd3-47c2-b2b1-d91f756a6257",
+              "name": "Test collection for SampleTarget.Timing.Tests.Duration20Seconds (id: a38703edc20167db5b6112c0a804b4a6eef6c9658579b8e071783f51131285f0)"
+            },
+            {
+              "id": "1bdfc7b6-cb11-4c34-af37-0d84953e0cb9",
+              "name": "Test collection for SampleTarget.Timing.Tests.Duration50Milliseconds (id: 31c2cb39e9559ee25c4ef8dab583911b10f48db6cc8c158dbcf1accd144473f4)"
+            },
+            {
+              "id": "e0f2862e-57e9-4228-a086-1f2985422d31",
+              "name": "Test collection for SampleTarget.Timing.Tests.Baseline (id: 29379a7cd91e25193a042f130f19850d2716be460f205fc08f5ae4c189f12069)"
+            },
+            {
+              "id": "82009d08-af98-410a-b157-985e1f8c264a",
+              "name": "Test collection for SampleTarget.Timing.Tests.Duration2Seconds (id: eea2bcce55ed3b199f34accc3e2ed317e2f865ccdb6a539703ab1599e1bfafc0)"
+            }
+          ],
+          "errors": []
+        }
+      ]
+    },
+    "summary": {
+      "tests": 4,
+      "passed": 4,
+      "failed": 0,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0,
+      "suites": 1,
+      "start": 1789582834340,
+      "stop": 1789582854459
+    },
+    "tests": [
+      {
+        "name": "SampleTarget.Timing.Tests.Duration20Seconds.Takes20Seconds",
+        "status": "passed",
+        "duration": 20044,
+        "suite": "281a155f-128e-48cb-a0c4-8bf5303e230b",
+        "filePath": "/home/runner/work/sample-target/sample-target/tests/SampleTarget.Timing.Tests/KnownDurationTests.cs",
+        "line": 25,
+        "extra": {
+          "id": "f7eabe2c-1b0f-43dc-961a-e8f0e1c21907",
+          "collection": "fe2d9110-1dd3-47c2-b2b1-d91f756a6257",
+          "type": "SampleTarget.Timing.Tests.Duration20Seconds",
+          "method": "Takes20Seconds"
+        }
+      },
+      {
+        "name": "SampleTarget.Timing.Tests.Duration50Milliseconds.Takes50Milliseconds",
+        "status": "passed",
+        "duration": 91,
+        "suite": "281a155f-128e-48cb-a0c4-8bf5303e230b",
+        "filePath": "/home/runner/work/sample-target/sample-target/tests/SampleTarget.Timing.Tests/KnownDurationTests.cs",
+        "line": 13,
+        "extra": {
+          "id": "65993a86-c3d4-4c2c-80cc-523d47efb16f",
+          "collection": "1bdfc7b6-cb11-4c34-af37-0d84953e0cb9",
+          "type": "SampleTarget.Timing.Tests.Duration50Milliseconds",
+          "method": "Takes50Milliseconds"
+        }
+      },
+      {
+        "name": "SampleTarget.Timing.Tests.Baseline.Runs",
+        "status": "passed",
+        "duration": 12,
+        "suite": "281a155f-128e-48cb-a0c4-8bf5303e230b",
+        "filePath": "/home/runner/work/sample-target/sample-target/tests/SampleTarget.Timing.Tests/KnownDurationTests.cs",
+        "line": 35,
+        "extra": {
+          "id": "5829ffa8-543a-44a4-83b5-3e9e44efe0f6",
+          "collection": "e0f2862e-57e9-4228-a086-1f2985422d31",
+          "type": "SampleTarget.Timing.Tests.Baseline",
+          "method": "Runs"
+        }
+      },
+      {
+        "name": "SampleTarget.Timing.Tests.Duration2Seconds.Takes2Seconds",
+        "status": "passed",
+        "duration": 2040,
+        "suite": "281a155f-128e-48cb-a0c4-8bf5303e230b",
+        "filePath": "/home/runner/work/sample-target/sample-target/tests/SampleTarget.Timing.Tests/KnownDurationTests.cs",
+        "line": 19,
+        "extra": {
+          "id": "abc582f7-06e8-483f-8a0c-edaec75120e1",
+          "collection": "82009d08-af98-410a-b157-985e1f8c264a",
+          "type": "SampleTarget.Timing.Tests.Duration2Seconds",
+          "method": "Takes2Seconds"
+        }
+      }
+    ]
+  }
+}

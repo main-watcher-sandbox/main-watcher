@@ -44,7 +44,8 @@ sandbox/publish-public.sh
 ```
 
 To test a commit by hand, as the watcher will, dispatch the target's `main-watcher-tests`
-workflow. The run's `main-watcher-ctrf` artifact holds the CTRF reports:
+workflow. The run's `main-watcher-ctrf` artifact holds the CTRF reports and `timings.json`, and
+its `report` job's summary shows the slowest tests and duration trends:
 
 ```
 gh workflow run main-watcher-tests.yml -R main-watcher-sandbox/sample-target -f sha=<commit>

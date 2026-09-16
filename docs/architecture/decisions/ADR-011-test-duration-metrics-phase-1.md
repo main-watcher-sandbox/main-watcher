@@ -13,6 +13,12 @@ confidence: confirmed
 
 # ADR-011 — Test-duration metrics, phase 1: per-run reports inside GitHub; own metrics store deferred
 
+> **Amended by [ADR-018](ADR-018-reporter-history-and-test-job-token.md) on 2026-09-16.** The
+> reporter reads only the first JSON file of an earlier run's artifact, so the `report` job keeps
+> its history in its own `main-watcher-report` artifact. The `main-watcher` job gains
+> `actions: read` for the queue wait, given only to the timings step. The previous-results report
+> is the duration trend, and the slowest tests are ranked by 95th percentile.
+
 **Deciders:** requester, platform team · **Consulted:** —
 
 ## Context

@@ -8,7 +8,8 @@
             sleep infinity
           fi
           if jq -e '.fail_upload == true' sandbox.json > /dev/null; then
-            echo "fail_upload: deleting the CTRF reports so no artifact is uploaded"
+            echo "fail_upload: deleting the CTRF reports and timings.json so no artifact is uploaded"
             find . -path '*/TestResults/*.ctrf.json' -delete
+            rm -f timings.json
             exit 1
           fi
