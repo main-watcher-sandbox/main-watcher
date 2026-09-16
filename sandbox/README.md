@@ -6,8 +6,9 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 |---|---|
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
-| `publish-gate.sh` | Publishes the gate action and `src/MainWatcher.Gate` to the public `main-watcher-sandbox/gate` repo |
-| `seed-target.sh` | Pushes the template and the gate workflow to a sandbox repo, creates the `main-broken` and `fixes-main` labels, and applies the ruleset. Re-run it to reset a repo |
+| `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
+| `upload-switches.yml` | The `fail_upload` and `hang_upload` step that `publish-public.sh` inserts into the sandbox build of the test workflow |
+| `seed-target.sh` | Pushes the template and the gate and test workflows to a sandbox repo, creates the `main-broken` and `fixes-main` labels, and applies the ruleset. Re-run it to reset a repo |
 
 Seed or reset both targets (needs `gh` logged in as a sandbox org admin):
 
@@ -33,12 +34,19 @@ git push https://github.com/main-watcher-sandbox/main-watcher.git HEAD:main
 ```
 
 Sandbox targets are public, because the sandbox org is on the Free plan, where the merge
-queue works only in public repos. A public repo cannot use an action from a private one, so
-the gate is also published on its own to the public `main-watcher-sandbox/gate` repo, and
-seeded targets use its `@main`:
+queue works only in public repos. A public repo cannot use an action or reusable workflow
+from a private one, so the gate and the reusable test workflow are also published on their
+own to the public `main-watcher-sandbox/gate` repo, and seeded targets use its `@main`:
 
 ```
-sandbox/publish-gate.sh
+sandbox/publish-public.sh
+```
+
+To test a commit by hand, as the watcher will, dispatch the target's `main-watcher-tests`
+workflow. The run's `main-watcher-ctrf` artifact holds the CTRF reports:
+
+```
+gh workflow run main-watcher-tests.yml -R main-watcher-sandbox/sample-target -f sha=<commit>
 ```
 
 Set `GATE_REF` when seeding to pin another ref.

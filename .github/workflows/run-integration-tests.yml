@@ -1,0 +1,129 @@
+# Main Watcher reusable test workflow, v1 (ADR-007, ADR-009, ADR-013). Targets call it from
+# main-watcher-tests.yml (templates/). It checks out the commit under test, runs the target's
+# tests through a deadline wrapper with one retry of failed tests, and uploads the CTRF
+# reports as the main-watcher-ctrf artifact.
+#
+# Contract with the Reporter: the job name main-watcher, the step names main-watcher-test and
+# main-watcher-tests-finished, and the artifact name main-watcher-ctrf. They are literals and
+# no other step uses them. Renaming any of them needs a new workflow tag (ADR-013).
+name: run-integration-tests
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: Commit to test
+        type: string
+        required: true
+      check-run-id:
+        description: Main Watcher check run this test belongs to, shown in the job summary
+        type: string
+        default: ""
+      timeout-minutes:
+        description: The target's timeout for build and tests, including the retry. At most 340
+        type: number
+        default: 30
+      test-command:
+        description: Builds and runs the tests. Microsoft Testing Platform options are appended for the retry
+        type: string
+        default: dotnet test --no-restore
+      restore-command:
+        description: Restores packages. A failure here is an infrastructure error, not a test failure
+        type: string
+        default: dotnet restore
+      results-glob:
+        description: The CTRF reports the test command writes, relative to the repo root
+        type: string
+        default: "**/TestResults/*.ctrf.json"
+      global-json-file:
+        description: The target's global.json, which selects its .NET SDK
+        type: string
+        default: global.json
+      runs-on:
+        description: Runner label
+        type: string
+        default: ubuntu-latest
+    outputs:
+      retry-count:
+        description: 1 when failed tests were retried, else 0
+        value: ${{ jobs.main-watcher.outputs.retry-count }}
+
+jobs:
+  main-watcher:
+    name: main-watcher
+    runs-on: ${{ inputs.runs-on }}
+    # The target's timeout plus 20 minutes for setup and upload, so the wrapper's deadline is
+    # reached before the job's (ADR-013). Expressions have no arithmetic: item i is i + 20.
+    timeout-minutes: ${{ fromJSON('[20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,255,256,257,258,259,260,261,262,263,264,265,266,267,268,269,270,271,272,273,274,275,276,277,278,279,280,281,282,283,284,285,286,287,288,289,290,291,292,293,294,295,296,297,298,299,300,301,302,303,304,305,306,307,308,309,310,311,312,313,314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,338,339,340,341,342,343,344,345,346,347,348,349,350,351,352,353,354,355,356,357,358,359,360]')[inputs.timeout-minutes] }}
+    permissions:
+      contents: read
+    outputs:
+      retry-count: ${{ steps.test.outputs.retry-count }}
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      # Setup: a failure before main-watcher-test leaves no marker, so it is neutral (ADR-013).
+      - name: Build the test runner
+        id: runner
+        uses: Actium-Group-Corporation/MainWatcher/.github/actions/test-runner@v1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: ${{ inputs.global-json-file }}
+
+      - name: Restore
+        env:
+          MW_SECRETS: ${{ toJSON(secrets) }}
+          MW_RESTORE_COMMAND: ${{ inputs.restore-command }}
+        run: |
+          # Inherited secrets become environment variables of the same name.
+          while IFS= read -r -d '' name && IFS= read -r -d '' value; do export "$name=$value"
+          done < <(jq -j 'to_entries[] | select(.key != "github_token") | .key, "\u0000", .value, "\u0000"' <<< "$MW_SECRETS")
+          unset MW_SECRETS
+          bash -c "$MW_RESTORE_COMMAND"
+
+      # Build and tests. No timeout-minutes and no continue-on-error: the wrapper enforces the
+      # deadline and sets finished only when the tests exit on their own.
+      - name: main-watcher-test
+        id: test
+        env:
+          MW_SECRETS: ${{ toJSON(secrets) }}
+          MW_TEST_COMMAND: ${{ inputs.test-command }}
+          MW_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+          MW_RESULTS_GLOB: ${{ inputs.results-glob }}
+          MW_RUNNER_DLL: ${{ steps.runner.outputs.dll }}
+        run: |
+          while IFS= read -r -d '' name && IFS= read -r -d '' value; do export "$name=$value"
+          done < <(jq -j 'to_entries[] | select(.key != "github_token") | .key, "\u0000", .value, "\u0000"' <<< "$MW_SECRETS")
+          unset MW_SECRETS
+          dotnet "$MW_RUNNER_DLL"
+
+      # GitHub's own record that the tests ran to completion (ADR-013). Does nothing else.
+      - name: main-watcher-tests-finished
+        if: always() && steps.test.outputs.finished == 'true'
+        run: echo "The tests ran to completion."
+
+      # sandbox: upload switches are inserted here by sandbox/publish-public.sh
+
+      - name: Upload CTRF reports
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: main-watcher-ctrf
+          path: ${{ inputs.results-glob }}
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        timeout-minutes: 1
+        env:
+          SHA: ${{ inputs.sha }}
+          CHECK_RUN_ID: ${{ inputs.check-run-id }}
+        run: echo "Main Watcher test of \`$SHA\`${CHECK_RUN_ID:+, check run $CHECK_RUN_ID}." >> "$GITHUB_STEP_SUMMARY"

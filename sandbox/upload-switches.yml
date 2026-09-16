@@ -1,0 +1,14 @@
+      # Sandbox switches fail_upload and hang_upload (TS-S16), inserted by publish-public.sh.
+      - name: sandbox upload switches
+        if: always()
+        timeout-minutes: 5
+        run: |
+          if jq -e '.hang_upload == true' sandbox.json > /dev/null; then
+            echo "hang_upload: sleeping past this step's timeout"
+            sleep infinity
+          fi
+          if jq -e '.fail_upload == true' sandbox.json > /dev/null; then
+            echo "fail_upload: deleting the CTRF reports so no artifact is uploaded"
+            find . -path '*/TestResults/*.ctrf.json' -delete
+            exit 1
+          fi

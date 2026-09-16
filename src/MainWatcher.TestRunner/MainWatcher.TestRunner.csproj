@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The deadline wrapper around a target's test command (ADR-007, ADR-013). It runs in target
+    repos through .github/actions/test-runner, so it has no package references: building it
+    needs no feed, and does not depend on the target's feed settings.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+</Project>

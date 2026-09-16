@@ -1,0 +1,27 @@
+# Builds the deadline wrapper for run-integration-tests.yml (ADR-013). GitHub downloads this
+# whole repo at the referenced tag to run the action, so the step below can build
+# src/MainWatcher.TestRunner. The build uses this repo's global.json, not the target's.
+name: Main Watcher test runner
+description: Builds the wrapper that runs a target's tests with a deadline and one retry of failed tests.
+
+outputs:
+  dll:
+    description: Path of the built MainWatcher.TestRunner.dll. Run it with dotnet.
+    value: ${{ steps.build.outputs.dll }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      with:
+        global-json-file: ${{ github.action_path }}/../../../global.json
+
+    - id: build
+      shell: bash
+      env:
+        DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+        DOTNET_NOLOGO: "1"
+      run: |
+        out="$RUNNER_TEMP/main-watcher-test-runner"
+        dotnet publish "$GITHUB_ACTION_PATH/../../../src/MainWatcher.TestRunner" --configuration Release --output "$out"
+        echo "dll=$out/MainWatcher.TestRunner.dll" >> "$GITHUB_OUTPUT"

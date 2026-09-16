@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Seeds (or resets) a sandbox target repo from sandbox/sample-target, adds the gate workflow
-# from templates/, creates the Main Watcher labels and applies the merge-queue ruleset on
-# main. Safe to re-run: it commits the template over whatever is there and updates the
-# ruleset in place.
+# Seeds (or resets) a sandbox target repo from sandbox/sample-target, adds the gate and test
+# workflows from templates/, creates the Main Watcher labels and applies the merge-queue
+# ruleset on main. Safe to re-run: it commits the template over whatever is there and updates
+# the ruleset in place.
 #
 # Usage: sandbox/seed-target.sh <owner/repo> [--slow]
 #   --slow  sets slow_suite_minutes to 5 and turns timed_tests off (the slow-suite variant)
 #
 # GATE_REF (default main) is the ref of main-watcher-sandbox/gate, published by
-# publish-gate.sh, whose gate action the target uses.
+# publish-public.sh, whose gate action and reusable test workflow the target uses.
 #
 # Needs gh logged in as a sandbox org admin: pushing to main bypasses the ruleset.
 set -euo pipefail
@@ -36,6 +36,11 @@ gate_uses="main-watcher-sandbox/gate/.github/actions/gate@$gate_ref"
 sed "s#Actium-Group-Corporation/MainWatcher/.github/actions/gate@v1#$gate_uses#" \
   "$here/../templates/main-watcher-gate.yml" > .github/workflows/main-watcher-gate.yml
 grep -q "uses: $gate_uses$" .github/workflows/main-watcher-gate.yml
+
+tests_uses="main-watcher-sandbox/gate/.github/workflows/run-integration-tests.yml@$gate_ref"
+sed "s#Actium-Group-Corporation/MainWatcher/.github/workflows/run-integration-tests.yml@v1#$tests_uses#" \
+  "$here/../templates/main-watcher-tests.yml" > .github/workflows/main-watcher-tests.yml
+grep -q "uses: $tests_uses$" .github/workflows/main-watcher-tests.yml
 
 if [ "$variant" = "--slow" ]; then
   sed -i 's/"slow_suite_minutes": 0/"slow_suite_minutes": 5/; s/"timed_tests": true/"timed_tests": false/' sandbox.json
