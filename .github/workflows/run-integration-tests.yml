@@ -171,6 +171,8 @@ jobs:
           path: main-watcher-ctrf
 
       # Merges every CTRF report of the run. timings.json is not CTRF, so the reporter skips it.
+      # previous-results-report is the duration trend: one row per earlier run, with its
+      # wall-clock time. summary-delta-report is left out: it formats durations in the wrong unit.
       - uses: ctrf-io/github-test-reporter@7974087018bf4857cf5a9d78723e152038c3fa31 # v1.3.0
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -181,6 +183,7 @@ jobs:
           slowest-report: true
           insights-report: true
           flaky-rate-report: true
+          previous-results-report: true
           artifact-name: main-watcher-report
           upload-artifact: true
           previous-results-max: 100
