@@ -6,7 +6,7 @@ state: target
 owner: platform-team
 reviewed: 2026-09-16
 review_by: 2027-03-15
-sources: [ARCH-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016, ADR-017]
+sources: [ARCH-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016, ADR-017, ADR-018]
 confidence: assumed
 ---
 
@@ -69,7 +69,7 @@ confidence: assumed
 | TS-S9: when the gate cannot reach the API, it fails open with a warning, and the next watcher run reports the unlabelled merge | NFR-3, NFR-4, ADR-008 | Invalid-token override in the gate, lock open, unlabelled PR | Release |
 | TS-S10: the lock issue notifies the `notify` team, and falls back to CODEOWNERS | CQ-6, R-10 | Sandbox team member checks their notifications | Release |
 | TS-S11: with the worker scaled to 0, a push is tested by the next hourly sweep and a "worker appears down" alert is raised | ADR-010, R-5 | Scale down, push, wait | Release |
-| TS-S13: the job summary lists the slowest tests with correct units, compared to xUnit v3's own CTRF values; the check run shows suite time, the 5 slowest tests and the retry flag | FR-6, ADR-011, R-17 | Sandbox suite with tests of known duration (e.g. 50 ms, 2 s, 20 s) | Release, and on each reporter pin update |
+| TS-S13: the job summary lists the slowest tests with correct units, compared to xUnit v3's own CTRF values; the check run shows suite time, the 5 slowest tests and the retry flag | FR-6, ADR-011, ADR-018, R-17 | Sandbox suite with tests of known duration (e.g. 50 ms, 2 s, 20 s) | Release, and on each reporter pin update |
 | TS-S12: cancelling a target test run marks its check run neutral, raises an alert, and retests the head after `poll_interval` | ADR-009, ADR-017 | Cancel the run by hand | Release |
 | TS-S14: a Reporter stopped (a) after creating the lock issue and (b) after updating it, but before completing the check run, is replayed on the next cycle: the check run completes, no duplicate issue or comment appears, and the check run is never marked stale. (c) With issue writes failing for 20 min, a "reporting pending" alert is raised, and the lock appears once writes succeed. (d) Stopped after creating the lock issue, which a human then closes before the replay: no new lock is created, the check run completes as `failure`, and the override comment is posted | FR-4, ADR-004, ADR-013 | Fault-injection switch in the sandbox Reporter that exits after the chosen write; revoked Issues permission for (c); for (d), close the issue by hand before restoring the Reporter | Release |
 | TS-S15: an unlabelled PR merged during a lock, followed by a human closing the lock issue before the watcher recovers, is reported on recovery: on the closed issue, as a comment, and as a `watcher-infra` alert; the issue is then marked `reconciled=complete`. (b) The same, but with `fixes-main` added to the PR after it merged and before recovery: still reported | NFR-4, ADR-015 | Worker scaled to 0 and sweep disabled; gate forced open (invalid token or expired lease); merge, close the issue, restore; for (b), label the PR before restoring | Release |

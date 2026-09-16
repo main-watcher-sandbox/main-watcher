@@ -14,10 +14,12 @@ built (MainWatcher#8).
 ## Where things are
 
 - `docs/architecture/architecture.md` — the main document (ARCH-001). Start here.
-- `docs/architecture/decisions/` — ADR-001 to ADR-017.
+- `docs/architecture/decisions/` — ADR-001 to ADR-018.
   - ADR-005 is superseded by ADR-007; ADR-006 is superseded by ADR-009.
   - ADR-013 to ADR-017 were accepted on 2026-09-15 (CQ-10 to CQ-14). They amend
     ADR-002, ADR-003, ADR-008 and ADR-010, which carry a note saying so.
+  - ADR-018 (2026-09-16, MainWatcher#8) amends ADR-011: the job summary's history artifact
+    and the test job's `actions: read`.
   - Accepted ADRs are never edited. A changed decision gets a new ADR that supersedes or
     amends the old one, plus a note at the top of the old one.
 - `docs/architecture/test-strategy.md` — TS-001: scenario tests TS-S1–S18, unit tests
