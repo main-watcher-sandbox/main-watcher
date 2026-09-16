@@ -10,7 +10,8 @@ durations and the slowest tests.
 target repo template is in `sandbox/`; the gate is built (MainWatcher#5); the reusable test
 workflow is built (MainWatcher#7); test timings (`timings.json` and the CTRF job summary) are
 built (MainWatcher#8). The manual Planner and Reporter are built (MainWatcher#9),
-with passing and failing sandbox checks verified.
+with passing and failing sandbox checks verified. A red result opens the lock issue and a
+green one closes it (MainWatcher#10).
 
 ## Where things are
 
@@ -120,8 +121,8 @@ metrics store (PostgreSQL + Grafana) is deferred.
       passed in the sandbox on 2026-09-16.
    2. Reusable test workflow + caller template. Built (MainWatcher#7); timings and the
       `report` job built (MainWatcher#8).
-   3. `watch.yml` (Planner and Reporter). Built (MainWatcher#9); automated triggers and
-      lock lifecycle remain in later tickets.
+   3. `watch.yml` (Planner and Reporter). Built (MainWatcher#9); the lock opens and closes
+      (MainWatcher#10). Automated triggers, replay and lease renewal remain in later tickets.
    4. Trigger worker.
    5. Onboarding docs.
 
