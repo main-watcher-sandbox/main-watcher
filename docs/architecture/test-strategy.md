@@ -4,7 +4,7 @@ type: test-strategy
 status: draft
 state: target
 owner: platform-team
-reviewed: 2026-09-15
+reviewed: 2026-09-16
 review_by: 2027-03-15
 sources: [ARCH-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016, ADR-017]
 confidence: assumed
