@@ -283,6 +283,33 @@ public class WatcherTests
     }
 
     [Fact]
+    public async Task AnEmptyFirstCodeOwnersFileHidesLaterFilesAndRaisesTheAlert()
+    {
+        var fake = new FakeGitHub();
+        fake.Files["owner/repo:.github/CODEOWNERS"] = "";
+        fake.Files["owner/repo:CODEOWNERS"] = "* @old-team";
+        var alerts = new FakeGitHub();
+        await new Reporter(fake, new Alerts(alerts, "owner/watcher")).Report(new() { Repo = "owner/repo" }, Pending(), TestContext.Current.CancellationToken);
+        Assert.DoesNotContain("@old-team", fake.Issues["owner/repo"].Single().Body);
+        Assert.Single(alerts.Issues["owner/watcher"]);
+    }
+
+    [Fact]
+    public async Task OversizedFailuresKeepTheLockBodyWithinGitHubsLimit()
+    {
+        var huge = new string('@', 100_000);
+        var failures = Enumerable.Range(0, 5000).Select(i => new FailedTest(huge + i, huge, "message")).ToArray();
+        var fake = new FakeGitHub { ReportResult = new(true, failures) };
+        await new Reporter(fake, clock: () => Now).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(), TestContext.Current.CancellationToken);
+        var body = fake.Issues["owner/repo"].Single().Body;
+        Assert.True(body.Length <= Reporter.MaxIssueBody, $"body is {body.Length} characters");
+        Assert.Contains("more; see the target run", body);
+        Assert.Contains("https://github.com/owner/repo/actions/runs/42", body);
+        Assert.Equal(Now.Add(Reporter.LockLease), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
+        Assert.Contains("reported_check=1", body);
+    }
+
+    [Fact]
     public async Task WithNobodyToMentionTheLockOpensAndOneDeduplicatedAlertIsRaised()
     {
         var fake = new FakeGitHub();

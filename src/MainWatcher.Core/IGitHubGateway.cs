@@ -13,7 +13,7 @@ public interface IGitHubGateway
     Task<IReadOnlyList<WorkflowJob>?> Jobs(string repo, long runId, CancellationToken ct);
     Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct);
     Task Complete(string repo, long checkId, string conclusion, string summary, CancellationToken ct);
-    /// <summary>A file on <c>main</c>, or null when it does not exist.</summary>
+    /// <summary>A file on <c>main</c>: null when it does not exist, "" when it is empty or too large to read inline.</summary>
     Task<string?> File(string repo, string path, CancellationToken ct);
     Task<IReadOnlyList<Issue>> OpenIssues(string repo, string label, CancellationToken ct);
     /// <summary>Creates the label if it is missing, then an issue carrying it.</summary>

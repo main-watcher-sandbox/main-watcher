@@ -99,6 +99,11 @@ so a failed issue write leaves the check `in_progress` for the next cycle.
   `reported_check` and `reported_sha`. An open lock is left as it is: later-failure
   comments come with #11, lease renewal with #19 and replay against closed locks with #12.
   Test output is HTML-encoded, so it cannot mention anyone or add a second marker.
+  The body stays well under GitHub's 65,536-character limit whatever the CTRF report holds:
+  names, suites and messages are clipped to 200 characters, the failure list stops at
+  20,000 characters with "…and N more", and at most 50 handles are mentioned. An existing
+  but empty CODEOWNERS file still takes precedence over later locations, so it gives no
+  owners and raises the alert.
 - **Green.** Every open App-authored lock gets a comment naming the green commit and is
   closed.
 - **Author.** Only issues by the token's App (`MW_BOT_LOGIN`, `<app-slug>[bot]`) count;

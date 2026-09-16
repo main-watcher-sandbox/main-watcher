@@ -196,9 +196,12 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         try
         {
             var file = await Send(HttpMethod.Get, $"repos/{repo}/contents/{path}?ref=main", null, ct);
-            // A directory is an array; files over 1 MB come without inline content.
-            return file.ValueKind == JsonValueKind.Object && Text(file, "content") is { Length: > 0 } content
-                ? System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(content)) : null;
+            // A directory is an array, not a file. An existing empty file is "", not null, so a
+            // CODEOWNERS lookup stops at the first file that exists. Files over 1 MB come without
+            // inline content and also read as "".
+            if (file.ValueKind != JsonValueKind.Object || Text(file, "type") != "file") return null;
+            return Text(file, "encoding") == "base64" && Text(file, "content") is { } content
+                ? System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(content)) : "";
         }
         catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.NotFound) { return null; }
     }

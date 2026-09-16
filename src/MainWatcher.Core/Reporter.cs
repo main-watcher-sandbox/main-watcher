@@ -13,7 +13,11 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     public const string LockLabel = "main-broken";
     /// <summary><c>lock_lease</c> (ADR-014). Renewal and configuration come with the lease work (#19).</summary>
     public static readonly TimeSpan LockLease = TimeSpan.FromHours(4);
-    const int MaxListedFailures = 50;
+    /// <summary>GitHub rejects issue bodies over 65536 characters, and a rejected body would leave <c>main</c> unlocked.</summary>
+    public const int MaxIssueBody = 60000;
+    const int MaxMentions = 50;
+    const int FailureBudget = 20000;
+    const int MaxFieldLength = 200;
 
     /// <summary>Alerts that could not be raised. They never block the lock or the check run.</summary>
     public List<string> AlertFailures { get; } = [];
@@ -33,7 +37,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
             {
                 var locks = await Locks(repo, ct);
                 var lockIssue = locks.FirstOrDefault() ?? await OpenLock(target, check, reports, runUrl, ct);
-                summary += $"\n\nLock issue: {lockIssue.Url}\n\n" + FailureList(reports);
+                summary += $"\n\nLock issue: {lockIssue.Url}\n\n" + FailureList(reports, FailureBudget);
             }
             else
             {
@@ -61,10 +65,12 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     async Task<Issue> OpenLock(Target target, CheckRun check, CtrfResult reports, string runUrl, CancellationToken ct)
     {
         IReadOnlyList<string> mentions = target.Notify.Length > 0 ? target.Notify.Select(Mentions.Normalize).ToArray() : await CodeOwners(target.Repo, ct);
+        // GitHub notifies at most 50 mentions per issue; the cap also bounds the body.
+        mentions = mentions.Take(MaxMentions).ToArray();
         var leaseUntil = (clock ?? (() => DateTimeOffset.UtcNow))().Add(LockLease).UtcDateTime;
         var body = (mentions.Count > 0 ? string.Join(" ", mentions) + "\n\n" : "")
             + $"Main Watcher tests failed on `main` at {Commit(target.Repo, check.Sha)}.\n\n"
-            + "**Failing tests**\n\n" + FailureList(reports) + "\n\n"
+            + "**Failing tests**\n\n" + FailureList(reports, FailureBudget) + "\n\n"
             + $"[Target run]({runUrl})\n\n"
             + $"While this issue is open, the merge queue accepts only pull requests labelled `fixes-main`. "
             + "A green Main Watcher run on `main` closes it. Closing it by hand overrides the lock.\n\n"
@@ -93,13 +99,25 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         catch (Exception e) when (!ct.IsCancellationRequested) { AlertFailures.Add($"{title}: {e.Message}"); }
     }
 
-    static string FailureList(CtrfResult reports)
+    /// <summary>Lists failures within <paramref name="budget"/> characters, so any valid CTRF report fits in an issue body.</summary>
+    static string FailureList(CtrfResult reports, int budget)
     {
         if (!reports.Known || reports.Failures.Count == 0) return "failing tests unknown";
-        var lines = reports.Failures.Take(MaxListedFailures).Select(f => $"- {Escape(f.Name)} ({Escape(f.Suite)}): {Escape(f.Message)}");
-        var more = reports.Failures.Count - MaxListedFailures;
+        var lines = new List<string>();
+        var length = 0;
+        foreach (var f in reports.Failures)
+        {
+            var line = $"- {Escape(Clip(f.Name))} ({Escape(Clip(f.Suite))}): {Escape(Clip(f.Message))}";
+            if (length + line.Length + 1 > budget) break;
+            lines.Add(line);
+            length += line.Length + 1;
+        }
+        var more = reports.Failures.Count - lines.Count;
         return string.Join("\n", lines) + (more > 0 ? $"\n\n…and {more} more; see the target run." : "");
     }
+
+    // Clipped before escaping, so an escaped field is at most a few times this length.
+    static string Clip(string text) => text.Length > MaxFieldLength ? text[..MaxFieldLength] + "…" : text;
 
     static string Short(string sha) => sha.Length > 7 ? sha[..7] : sha;
     static string Commit(string repo, string sha) => $"[`{Short(sha)}`](https://github.com/{repo}/commit/{sha})";
