@@ -4,6 +4,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 
 | Path | What it is |
 |---|---|
+| `issue-9-validation.md` | Passing/failing watcher checks and target restoration evidence for #9 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
@@ -54,7 +55,7 @@ Set `GATE_REF` when seeding to pin another ref.
 
 ## Hand-made locks
 
-Until `watch.yml` exists, scenario tests that need a lock (TS-S4, TS-S5) open one with the
+Scenario tests that need a hand-made lock (TS-S4, TS-S5) open one with the
 `sandbox-lock` workflow. It creates a `main-broken` issue authored by `main-watcher[bot]`
 with a `lease_until` marker, or closes the open ones:
 

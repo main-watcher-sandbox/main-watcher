@@ -1,0 +1,7 @@
+namespace MainWatcher.Core;
+
+public sealed record CheckRun(long Id, string Sha, string Status, string? Conclusion,
+    DateTimeOffset StartedAt, DateTimeOffset? CompletedAt, string? ExternalId);
+public sealed record WorkflowRun(long Id, string Title, DateTimeOffset CreatedAt, string Status);
+public sealed record JobStep(string Name, string? Conclusion);
+public sealed record WorkflowJob(string Name, string Status, IReadOnlyList<JobStep> Steps);

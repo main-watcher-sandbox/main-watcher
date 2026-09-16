@@ -1,0 +1,56 @@
+# One Planner/Reporter cycle. Dispatch again after the target job finishes to report it.
+name: watch
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Configured owner/repo in targets.yml
+        required: true
+        type: string
+      force:
+        description: Ignore only the neutral retry cap
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  # GitHub group names are case-insensitive, matching target lookup in the CLI.
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
+  group: main-watcher-${{ inputs.target }}
+  cancel-in-progress: false
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: reporter
+    steps:
+      # Only watcher code is checked out. Target commands run in the target workflow.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - run: dotnet build src/MainWatcher.Watcher --configuration Release
+      - id: target
+        name: Validate token scope
+        env:
+          MW_TARGET: ${{ inputs.target }}
+        run: dotnet src/MainWatcher.Watcher/bin/Release/net10.0/MainWatcher.Watcher.dll --validate-target
+      - id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.MAIN_WATCHER_APP_ID }}
+          private-key: ${{ secrets.MAIN_WATCHER_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.repo }}
+          permission-checks: write
+          permission-actions: write
+          permission-contents: read
+      - name: Plan and report
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          MW_APP_ID: ${{ vars.MAIN_WATCHER_APP_ID }}
+          MW_TARGET: ${{ inputs.target }}
+          MW_FORCE: ${{ inputs.force }}
+        run: dotnet src/MainWatcher.Watcher/bin/Release/net10.0/MainWatcher.Watcher.dll

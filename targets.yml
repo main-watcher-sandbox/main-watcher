@@ -1,0 +1,11 @@
+# timeout and poll_interval are minutes. Add production targets on onboarding.
+# test_command, results_glob and timeout must match the target caller workflow.
+# watch.yml never executes these commands itself.
+targets:
+  - repo: main-watcher-sandbox/sample-target
+    test_command: dotnet test --no-restore
+    results_glob: '**/TestResults/*.ctrf.json'
+    timeout: 30
+    poll_interval: 1
+    notify: []
+    enabled: true
