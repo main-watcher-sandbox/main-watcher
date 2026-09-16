@@ -113,17 +113,38 @@ public class TimingsTests
     }
 
     [Fact]
-    public void The_job_started_is_the_unfinished_job_on_this_runner()
+    public void The_job_started_is_found_by_the_job_id_even_when_runner_names_repeat()
     {
+        // A repository runner and an organisation runner can share a name within one run.
         using var jobs = JsonDocument.Parse("""
             {"total_count":3,"jobs":[
-              {"name":"main-watcher-tests / main-watcher","status":"completed","runner_name":"GitHub Actions 7","started_at":"2026-09-16T11:00:00Z"},
-              {"name":"main-watcher-tests / report","status":"queued","runner_name":null,"started_at":"2026-09-16T12:00:00Z"},
-              {"name":"main-watcher-tests / main-watcher","status":"in_progress","runner_name":"GitHub Actions 7","started_at":"2026-09-16T12:00:09Z"}
+              {"id":101,"name":"main-watcher-tests / main-watcher","status":"completed","runner_name":"build-1","started_at":"2026-09-16T11:00:00Z"},
+              {"id":102,"name":"other / slow","status":"in_progress","runner_name":"build-1","started_at":"2026-09-16T11:30:00Z"},
+              {"id":103,"name":"main-watcher-tests / main-watcher","status":"in_progress","runner_name":"build-1","started_at":"2026-09-16T12:00:09Z"}
             ]}
             """);
 
-        Assert.Equal(T0.AddSeconds(9), RunTimes.JobStarted(jobs.RootElement, "GitHub Actions 7"));
-        Assert.Null(RunTimes.JobStarted(jobs.RootElement, "GitHub Actions 8"));
+        Assert.Equal(T0.AddSeconds(9), RunTimes.JobStarted(jobs.RootElement, 103, "build-1"));
+        Assert.Null(RunTimes.JobStarted(jobs.RootElement, 999, "build-1"));
+    }
+
+    [Fact]
+    public void Without_a_job_id_only_a_single_unfinished_job_on_the_runner_counts()
+    {
+        using var unique = JsonDocument.Parse("""
+            {"jobs":[
+              {"id":101,"status":"completed","runner_name":"GitHub Actions 7","started_at":"2026-09-16T11:00:00Z"},
+              {"id":103,"status":"in_progress","runner_name":"GitHub Actions 7","started_at":"2026-09-16T12:00:09Z"}
+            ]}
+            """);
+        using var ambiguous = JsonDocument.Parse("""
+            {"jobs":[
+              {"id":102,"status":"in_progress","runner_name":"build-1","started_at":"2026-09-16T11:30:00Z"},
+              {"id":103,"status":"in_progress","runner_name":"build-1","started_at":"2026-09-16T12:00:09Z"}
+            ]}
+            """);
+
+        Assert.Equal(T0.AddSeconds(9), RunTimes.JobStarted(unique.RootElement, null, "GitHub Actions 7"));
+        Assert.Null(RunTimes.JobStarted(ambiguous.RootElement, null, "build-1"));
     }
 }

@@ -20,7 +20,8 @@ public static class TimingsCommand
         if (runId is { } run && runAttempt is { } a && Env("GITHUB_TOKEN") is { Length: > 0 } token)
         {
             (runStarted, jobStarted) = await RunTimes.FetchAsync(
-                Env("GITHUB_API_URL") ?? "https://api.github.com", Env("GITHUB_REPOSITORY") ?? "", token, run, a, Env("RUNNER_NAME") ?? "", log);
+                Env("GITHUB_API_URL") ?? "https://api.github.com", Env("GITHUB_REPOSITORY") ?? "", token, run, a,
+                long.TryParse(Env("MW_JOB_CHECK_RUN_ID"), out var jobId) ? jobId : null, Env("RUNNER_NAME") ?? "", log);
         }
 
         var reports = CtrfReports.Load(workingDirectory, Env("MW_RESULTS_GLOB") is { Length: > 0 } glob ? glob : CtrfReports.DefaultGlob, log);

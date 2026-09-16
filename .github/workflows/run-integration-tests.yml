@@ -124,6 +124,7 @@ jobs:
         timeout-minutes: 2
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          MW_JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
           MW_SHA: ${{ inputs.sha }}
           MW_RESULTS_GLOB: ${{ inputs.results-glob }}
           MW_RETRY_COUNT: ${{ steps.test.outputs.retry-count }}

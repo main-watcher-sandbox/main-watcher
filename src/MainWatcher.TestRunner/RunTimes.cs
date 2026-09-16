@@ -11,7 +11,7 @@ namespace MainWatcher.TestRunner;
 public static class RunTimes
 {
     public static async Task<(DateTimeOffset? RunStarted, DateTimeOffset? JobStarted)> FetchAsync(
-        string apiUrl, string repository, string token, long runId, int runAttempt, string runnerName, Action<string> log)
+        string apiUrl, string repository, string token, long runId, int runAttempt, long? jobId, string runnerName, Action<string> log)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("main-watcher-test-runner", "1"));
@@ -26,9 +26,9 @@ public static class RunTimes
 
             using var jobs = JsonDocument.Parse(await http.GetStringAsync(
                 $"{apiUrl}/repos/{repository}/actions/runs/{runId}/attempts/{runAttempt}/jobs?per_page=100"));
-            jobStarted = JobStarted(jobs.RootElement, runnerName);
+            jobStarted = JobStarted(jobs.RootElement, jobId, runnerName);
             if (jobStarted is null)
-                log($"::warning::No in-progress job on runner '{runnerName}' in run {runId}, so the queue wait is unknown.");
+                log($"::warning::This job (ID {jobId?.ToString() ?? "unknown"}, runner '{runnerName}') was not found once in run {runId}, so the queue wait is unknown.");
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException)
         {
@@ -39,18 +39,22 @@ public static class RunTimes
     }
 
     /// <summary>
-    /// The start of the job running on <paramref name="runnerName"/> that has not completed:
-    /// the job calling this. Runner names are unique while a job runs.
+    /// The start of the job calling this. It is found by <paramref name="jobId"/>, the job's
+    /// <c>job.check_run_id</c>, which the jobs API returns as the job's <c>id</c>. Without an ID,
+    /// it falls back to the one unfinished job on <paramref name="runnerName"/>. Runner names can
+    /// repeat within a run when repository and organisation runners share a name, so more than
+    /// one match gives null rather than another job's start.
     /// </summary>
-    public static DateTimeOffset? JobStarted(JsonElement jobsResponse, string runnerName)
+    public static DateTimeOffset? JobStarted(JsonElement jobsResponse, long? jobId, string runnerName)
     {
         if (!jobsResponse.TryGetProperty("jobs", out var jobs) || jobs.ValueKind != JsonValueKind.Array)
             return null;
 
-        return jobs.EnumerateArray()
-            .Where(job => Text(job, "runner_name") == runnerName && Text(job, "status") != "completed")
-            .Select(job => Time(job, "started_at"))
-            .FirstOrDefault(started => started is not null);
+        var matches = jobId is { } id
+            ? jobs.EnumerateArray().Where(job => job.TryGetProperty("id", out var value) && value.TryGetInt64(out var jobIdValue) && jobIdValue == id).ToList()
+            : jobs.EnumerateArray().Where(job => Text(job, "runner_name") == runnerName && Text(job, "status") != "completed").ToList();
+
+        return matches.Count == 1 ? Time(matches[0], "started_at") : null;
     }
 
     static string? Text(JsonElement element, string property) =>
