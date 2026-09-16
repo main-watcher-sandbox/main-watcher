@@ -485,8 +485,8 @@ Main Watcher has no datastore.
 
 | App | Installed on | Permissions | Key location | Worst case if the key leaks |
 |---|---|---|---|---|
-| `main-watcher` | Targets | Metadata R, Contents R, Checks W, Issues W, Actions W | Watcher `reporter` environment | Fake or close locks; start, cancel or disable target workflows (R-11) |
-| `mw-observer` | Targets + watcher | Metadata R, Contents R, Checks R, Actions R, Issues R (ADR-014) | Kubernetes Secret | Read-only access to target code, run metadata and issues |
+| `main-watcher` | Target repos only (R-11) | Metadata R, Contents R, Checks W, Issues W, Actions W | Watcher `reporter` environment | Fake or close locks; start, cancel or disable target workflows (R-11) |
+| `mw-observer` | Target repos + watcher only (R-11) | Metadata R, Contents R, Checks R, Actions R, Issues R (ADR-014) | Kubernetes Secret | Read-only access to target code, run metadata and issues |
 | `mw-doorbell` | Watcher only | Actions W, Issues W | Kubernetes Secret | Start, cancel or disable watcher workflows; create spam issues in the watcher repo (R-12) |
 
 **Report job permissions (in the target's run):** `actions: read`, `contents: read`. It has
@@ -585,13 +585,17 @@ flowchart LR
 
 **Onboarding a repo:**
 1. Add an entry to `targets.yml`.
-2. Install `main-watcher` and `mw-observer` on the repo.
+2. Add the repo to the selected repositories of `main-watcher` and `mw-observer`. Never
+   install either App on all repositories (R-11).
 3. Add `main-watcher-tests.yml` and the gate workflow from their templates, and set up the
    tests' secrets in the repo.
 4. Make the gate a required check in the repo's merge-queue ruleset.
 5. Trigger one run manually. Confirm that a check run appears and the CTRF artifact
    validates against the schema.
 6. Run sandbox scenario TS-S5 once.
+
+**Removing a repo:** delete its `targets.yml` entry, then remove it from the selected
+repositories of `main-watcher` and `mw-observer` (R-11).
 
 ## 11. Cross-cutting concerns
 
@@ -701,7 +705,7 @@ team subscribes to that label.
 | R-7 | PRs removed by the gate are forgotten after unlock | Slower delivery | High | Unlock comment lists them; automatic re-queue deferred | Platform team |
 | R-8 | During an API outage, a non-fix PR merges onto a red `main` | Breakage worsens | Low | Reconciliation reports it, even if the lock is closed first (ADR-008, ADR-015) | Platform team |
 | R-10 | An App's team @-mention may not notify the team | Owners miss the lock | Medium | Sandbox TS-S10; fallback: mention members (needs `members: read`) | Platform team |
-| R-11 | `actions: write` lets the main App cancel or disable target workflows | Misuse if the key leaks | Low | Key only in a protected environment; the App's actions are audited; rotate the key | Platform team |
+| R-11 | `actions: write` lets the main App cancel or disable target workflows | Misuse if the key leaks | Low | Key only in a protected environment; the App's actions are audited; rotate the key. Security approved Actions: write for `main-watcher` (dispatch, cancel, force-cancel, gate re-runs) and Issues: read for `mw-observer` on 2026-09-16, on condition that both Apps are installed only on the repos being watched (plus the watcher repo for `mw-observer`) | Platform team |
 | R-12 | Doorbell key leak lets an attacker cancel or disable watcher workflows | Detection stops | Low | Key in a cluster secret with restricted access; the sweep's alert fires if runs are disabled; rotate the key | Platform team |
 | R-13 | Worker API usage grows with the number of targets | Rate limiting | Low at <20 targets | Worker logs remaining rate limit and raises an issue below 20%; conditional requests (ETags) `[recommendation]` | Platform team |
 | R-14 | The dispatch API does not return run details (API version change) | Runs cannot be linked | Low | Fallback: find the run by the `sha` input and dispatch time | Platform team |
@@ -769,3 +773,4 @@ team subscribes to that label.
 | 2026-09-15 | The `watch.yml` Planner and Reporter are written in .NET rather than Node, sharing one library with the trigger worker for `GitHubGateway` and the eligibility rule; the Node version assumption is removed (§4, §9, §13). TS-001 §2 and TS-U13 updated to test the rule once, in the shared library | Requester; platform team with Claude | — |
 | 2026-09-16 | Sandbox organisation `main-watcher-sandbox` created; its `[assumption]` tag removed from TS-001 §3 | Platform team | — |
 | 2026-09-16 | A-6 confirmed: outbound HTTPS to `api.github.com` works from the cluster; sandbox namespace `main-watcher-sandbox` created with the App keys in a Kubernetes Secret; production keys will use the cluster's secret store (§8, §10). TS-001 §2 and §3 name the namespace | Platform team | — |
+| 2026-09-16 | Security approved Actions: write for `main-watcher` and Issues: read for `mw-observer`, on condition that the Apps are installed only on watched repos; recorded against R-11. §8 and §10 onboarding and removal steps updated; TS-001 §6 checklist extended | Security; platform team with Claude | ADR-009, ADR-013, ADR-014, ADR-016 (no change) |

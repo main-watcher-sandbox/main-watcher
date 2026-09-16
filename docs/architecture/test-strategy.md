@@ -98,6 +98,8 @@ confidence: assumed
 - `watch.yml` never checks out or runs target code;
 - third-party actions pinned by commit SHA;
 - the worker's Kubernetes Secret has restricted RBAC;
+- `main-watcher` and `mw-observer` are installed on selected repositories only, matching
+  `targets.yml` (plus the watcher repo for `mw-observer`; R-11);
 - no inbound Service or Ingress exists for the worker;
 - the `report` job references no secrets and requests only `actions: read` and
   `contents: read`.
