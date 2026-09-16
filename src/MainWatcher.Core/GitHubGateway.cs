@@ -58,6 +58,13 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     async Task<List<JsonElement>> Pages(string path, string? key, CancellationToken ct)
     {
         var all = new List<JsonElement>();
+        await foreach (var item in Items(path, key, ct)) all.Add(item);
+        return all;
+    }
+
+    async IAsyncEnumerable<JsonElement> Items(string path, string? key,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
         string? next = $"{path}{(path.Contains('?') ? '&' : '?')}per_page=100&page=1";
         while (next is not null)
         {
@@ -66,9 +73,8 @@ public sealed class GitHubGateway(HttpClient http, long appId,
                 throw new InvalidDataException("GitHub pagination link points outside the API origin.");
             var json = await Send(HttpMethod.Get, uri.AbsoluteUri, null, ct, value => next = value);
             var items = (key is null ? json : json.GetProperty(key)).EnumerateArray().ToArray();
-            all.AddRange(items);
+            foreach (var item in items) yield return item;
         }
-        return all;
     }
 
     static string? Text(JsonElement json, string key) => json.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
@@ -92,17 +98,11 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         refresh.Add(head);
         if (!hasSnapshot || snapshot.Head != head)
         {
-            var foundPrevious = false;
-            for (var page = 1; !foundPrevious; page++)
+            await foreach (var commit in Items($"repos/{repo}/commits?sha={head}", null, ct))
             {
-                var commits = (await Send(HttpMethod.Get, $"repos/{repo}/commits?sha={head}&per_page=100&page={page}", null, ct)).EnumerateArray().ToArray();
-                foreach (var commit in commits)
-                {
-                    var sha = commit.GetProperty("sha").GetString()!;
-                    if (hasSnapshot && sha == snapshot.Head) { foundPrevious = true; break; }
-                    refresh.Add(sha);
-                }
-                if (commits.Length < 100) break;
+                var sha = commit.GetProperty("sha").GetString()!;
+                if (hasSnapshot && sha == snapshot.Head) break;
+                refresh.Add(sha);
             }
         }
         foreach (var sha in refresh)
@@ -188,6 +188,6 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         await Send(HttpMethod.Patch, $"repos/{repo}/check-runs/{checkId}", new
         {
             status = "completed", conclusion, completed_at = DateTimeOffset.UtcNow,
-            output = new { title = conclusion == "success" ? "Tests passed" : conclusion == "failure" ? "Tests failed" : "Outcome unknown", summary }
+            output = new { title = Outcomes.Title(conclusion), summary }
         }, ct);
 }

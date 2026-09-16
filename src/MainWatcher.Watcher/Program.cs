@@ -7,7 +7,19 @@ try
     var repo = Environment.GetEnvironmentVariable("MW_TARGET") ?? "";
     var target = config.Targets.SingleOrDefault(t => t.Repo.Equals(repo, StringComparison.OrdinalIgnoreCase))
         ?? throw new InvalidOperationException("MW_TARGET must identify a configured target.");
-    if (!target.Enabled) { Console.WriteLine("Target disabled."); return 0; }
+    if (!target.Enabled)
+    {
+        if (args is ["--validate-target"]) throw new InvalidOperationException("Target disabled; no App token requested.");
+        Console.WriteLine("Target disabled.");
+        return 0;
+    }
+    if (args is ["--validate-target"])
+    {
+        var parts = target.Repo.Split('/');
+        File.AppendAllLines(Required("GITHUB_OUTPUT"), [$"owner={parts[0]}", $"repo={parts[1]}"]);
+        return 0;
+    }
+    if (args.Length != 0) throw new ArgumentException("Usage: MainWatcher.Watcher [--validate-target]");
     using var http = new HttpClient { BaseAddress = new Uri("https://api.github.com/"), Timeout = TimeSpan.FromSeconds(60) };
     http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Required("GH_TOKEN"));
     http.DefaultRequestHeaders.UserAgent.ParseAdd("MainWatcher/1.0");

@@ -4,12 +4,17 @@ using YamlDotNet.Serialization.NamingConventions;
 
 namespace MainWatcher.Core;
 
+/// <summary>A watched repository and its ADR-009 execution and scheduling settings.</summary>
 public sealed class Target
 {
+    public const string DefaultTestCommand = "dotnet test --no-restore";
+    public const string DefaultResultsGlob = "**/TestResults/*.ctrf.json";
+    public const int DefaultTimeout = 30;
+
     public string Repo { get; set; } = "";
-    public string TestCommand { get; set; } = "dotnet test --no-restore";
-    public string ResultsGlob { get; set; } = "**/TestResults/*.ctrf.json";
-    public int Timeout { get; set; } = 30;
+    public string TestCommand { get; set; } = DefaultTestCommand;
+    public string ResultsGlob { get; set; } = DefaultResultsGlob;
+    public int Timeout { get; set; } = DefaultTimeout;
     public int PollInterval { get; set; } = 15;
     public string[] Notify { get; set; } = [];
     public bool Enabled { get; set; } = true;

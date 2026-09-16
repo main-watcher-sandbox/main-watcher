@@ -1,10 +1,18 @@
 namespace MainWatcher.Core;
 
+/// <summary>A GitHub check conclusion with the evidence established by the ADR-013 step contract.</summary>
 public sealed record TestOutcome(string Conclusion, string Description);
 
 /// <summary>ADR-013 outcome table: trust test results only with a successful finished marker.</summary>
 public static class Outcomes
 {
+    public static string Title(string conclusion) => conclusion switch
+    {
+        "success" => "Tests passed",
+        "failure" => "Tests failed",
+        _ => "Outcome unknown"
+    };
+
     public static bool IsTestJob(string name) => name == "main-watcher" || name.EndsWith(" / main-watcher", StringComparison.Ordinal);
 
     public static TestOutcome? Read(IReadOnlyList<WorkflowJob>? jobs)
@@ -21,8 +29,8 @@ public static class Outcomes
         if (markers.Length == 0 || markers[0].Conclusion != "success") return new("neutral", "Infrastructure error: tests did not finish");
         return tests.SingleOrDefault()?.Conclusion switch
         {
-            "success" => new("success", "Tests passed"),
-            "failure" => new("failure", "Tests failed"),
+            "success" => new("success", Title("success")),
+            "failure" => new("failure", Title("failure")),
             _ => new("neutral", "outcome contract broken: finished marker without a test result")
         };
     }

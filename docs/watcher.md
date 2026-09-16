@@ -14,6 +14,9 @@ Configure the `reporter` environment with `MAIN_WATCHER_APP_ID` (variable) and
 `MAIN_WATCHER_PRIVATE_KEY` (secret). Install that App on each target with
 Contents read, Actions write and Checks write. The workflow obtains a token
 scoped to the selected repository after building the watcher.
+Before requesting that token, `--validate-target` uses the same configuration parser
+as the cycle and writes the configured owner/repository to the step outputs. Unknown,
+malformed or disabled targets fail this step without requesting a token.
 
 ## Configuration
 
@@ -37,6 +40,10 @@ the watcher only dispatches its `sha` and `check_run_id` inputs. Its literal
 `run-name: main-watcher-tests ${{ inputs.sha }}` exposes the tested SHA for the
 fallback lookup; the workflow run's `head_sha` is not the tested SHA.
 
+The C# defaults are shared between target parsing and caller validation. A regression
+test reads the actual `run-integration-tests.yml` and compares its three execution
+defaults, so workflow changes cannot silently drift from the validator.
+
 ## Run a cycle
 
 ```sh
@@ -49,6 +56,9 @@ is implemented, reporting is manual. Cycles for each target share a concurrency 
 do not cancel a running cycle. Repeated dispatches do not retest a successful
 or failed head. `force=true` bypasses only the three-neutral-result cap, never
 an active check or the poll interval.
+GitHub treats concurrency group names as case-insensitive, so differently cased
+spellings of the same repository share a group, consistent with target lookup
+([GitHub workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency)).
 
 The reusable caller's job and literal step names determine the outcome. The
 Reporter ignores unrelated jobs, reads all jobs pages from the latest attempt,

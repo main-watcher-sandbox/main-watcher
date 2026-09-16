@@ -14,6 +14,8 @@ on:
 permissions:
   contents: read
 concurrency:
+  # GitHub group names are case-insensitive, matching target lookup in the CLI.
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
   group: main-watcher-${{ inputs.target }}
   cancel-in-progress: false
 jobs:
@@ -33,11 +35,8 @@ jobs:
       - id: target
         name: Validate token scope
         env:
-          TARGET: ${{ inputs.target }}
-        run: |
-          [[ "$TARGET" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
-          echo "owner=${TARGET%%/*}" >> "$GITHUB_OUTPUT"
-          echo "repo=${TARGET#*/}" >> "$GITHUB_OUTPUT"
+          MW_TARGET: ${{ inputs.target }}
+        run: dotnet src/MainWatcher.Watcher/bin/Release/net10.0/MainWatcher.Watcher.dll --validate-target
       - id: token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:

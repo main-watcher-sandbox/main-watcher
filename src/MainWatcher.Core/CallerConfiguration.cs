@@ -17,9 +17,9 @@ public static class CallerConfiguration
         if (callers.Length != 1) throw new InvalidDataException("Expected exactly one reusable test workflow caller.");
         var inputs = callers[0].Children.TryGetValue(new YamlScalarNode("with"), out var with) && with is YamlMappingNode mapping
             ? mapping : new YamlMappingNode();
-        var command = Scalar(inputs, "test-command") ?? "dotnet test --no-restore";
-        var glob = Scalar(inputs, "results-glob") ?? "**/TestResults/*.ctrf.json";
-        var timeout = Scalar(inputs, "timeout-minutes") ?? "30";
+        var command = Scalar(inputs, "test-command") ?? Target.DefaultTestCommand;
+        var glob = Scalar(inputs, "results-glob") ?? Target.DefaultResultsGlob;
+        var timeout = Scalar(inputs, "timeout-minutes") ?? Target.DefaultTimeout.ToString(System.Globalization.CultureInfo.InvariantCulture);
         if (command != target.TestCommand || glob != target.ResultsGlob
             || !int.TryParse(timeout, out var minutes) || minutes != target.Timeout)
             throw new InvalidDataException($"{target.Repo}: caller test-command, results-glob and timeout-minutes must match targets.yml using literal values.");

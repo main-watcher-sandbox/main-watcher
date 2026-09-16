@@ -1,5 +1,6 @@
 namespace MainWatcher.Core;
 
+/// <summary>GitHub operations shared by the Planner, Reporter and trigger worker (ADR-009, ADR-017).</summary>
 public interface IGitHubGateway
 {
     Task ValidateTarget(Target target, CancellationToken ct);

@@ -213,6 +213,19 @@ public class WatcherTests
         Assert.Empty(fake.Writes);
     }
 
+    [Fact]
+    public void ConfigurationDefaultsMatchTheActualReusableWorkflow()
+    {
+        var yaml = new YamlDotNet.RepresentationModel.YamlStream();
+        yaml.Load(new StringReader(Fixture("run-integration-tests.yml")));
+        var root = (YamlDotNet.RepresentationModel.YamlMappingNode)yaml.Documents[0].RootNode;
+        var inputs = root.Children["on"]["workflow_call"]["inputs"];
+        var target = new Target();
+        Assert.Equal(target.TestCommand, inputs["test-command"]["default"].ToString());
+        Assert.Equal(target.ResultsGlob, inputs["results-glob"]["default"].ToString());
+        Assert.Equal(target.Timeout.ToString(System.Globalization.CultureInfo.InvariantCulture), inputs["timeout-minutes"]["default"].ToString());
+    }
+
     sealed class FakeGitHub : IGitHubGateway
     {
         public List<string> Writes { get; } = [];

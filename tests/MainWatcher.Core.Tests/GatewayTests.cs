@@ -114,6 +114,33 @@ public class GatewayTests
         Assert.Equal(1, requests);
     }
 
+    [Fact]
+    public async Task CommitHistoryFollowsNextLinkEvenWhenPageIsShort()
+    {
+        var requests = new List<string>();
+        using var http = Client(new Handler(request =>
+        {
+            var path = request.RequestUri!.PathAndQuery;
+            requests.Add(path);
+            if (path.EndsWith("/commits/main")) return Task.FromResult(Response("{\"sha\":\"head\"}"));
+            if (path.Contains("/commits?") && path.Contains("cursor=older"))
+                return Task.FromResult(Response("[{\"sha\":\"old\"}]"));
+            if (path.Contains("/commits?"))
+            {
+                var response = Response("[{\"sha\":\"head\"}]");
+                response.Headers.Add("Link", "<https://api.github.com/repos/owner/repo/commits?sha=head&cursor=older>; rel=\"next\"");
+                return Task.FromResult(response);
+            }
+            if (path.Contains("/old/check-runs")) return Task.FromResult(Response("""
+                {"check_runs":[{"id":1,"head_sha":"old","status":"in_progress","conclusion":null,"started_at":"2026-09-16T18:00:00Z","app":{"id":7}}]}
+                """));
+            return Task.FromResult(Response("{\"check_runs\":[]}"));
+        }));
+        var checks = await new GitHubGateway(http, 7).Checks("owner/repo", TestContext.Current.CancellationToken);
+        Assert.Equal("old", Assert.Single(checks).Sha);
+        Assert.Contains(requests, path => path.Contains("cursor=older"));
+    }
+
     static HttpClient Client(HttpMessageHandler handler) => new(handler) { BaseAddress = new Uri("https://api.github.com/") };
     static HttpResponseMessage Response(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
     sealed class Handler(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) : HttpMessageHandler
