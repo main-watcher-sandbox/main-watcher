@@ -11,7 +11,7 @@ target repo template is in `sandbox/`; the gate is built (MainWatcher#5); the re
 workflow is built (MainWatcher#7); test timings (`timings.json` and the CTRF job summary) are
 built (MainWatcher#8). The manual Planner and Reporter are built (MainWatcher#9),
 with passing and failing sandbox checks verified. A red result opens the lock issue and a
-green one closes it (MainWatcher#10).
+green one closes it (MainWatcher#10); TS-S4 passed again with a real lock.
 
 ## Where things are
 
@@ -41,7 +41,8 @@ green one closes it (MainWatcher#10).
 - `src/MainWatcher.Core` holds target configuration, GitHub access, eligibility, Planner
   and Reporter logic. `src/MainWatcher.Watcher` runs a manual cycle through `watch.yml`.
 - `targets.yml` configures targets. For dispatch, recovery and caller validation, read
-  `docs/watcher.md`. Sandbox evidence is in `sandbox/issue-9-validation.md`.
+  `docs/watcher.md`. Sandbox evidence is in `sandbox/issue-9-validation.md` and
+  `sandbox/issue-10-validation.md`.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls

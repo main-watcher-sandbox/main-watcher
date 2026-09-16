@@ -119,4 +119,5 @@ reports and a GitHub reusable-caller jobs response, with provenance in its fixtu
 directory. Sandbox execution uses the private watcher replica described in
 `sandbox/README.md`. The [issue #9 validation record](../sandbox/issue-9-validation.md)
 links the passing and failing checks, their Planner and Reporter cycles, and
-the target restoration evidence.
+the target restoration evidence. The [issue #10 validation record](../sandbox/issue-10-validation.md)
+covers a real lock opening and closing, and TS-S4 with that lock.
