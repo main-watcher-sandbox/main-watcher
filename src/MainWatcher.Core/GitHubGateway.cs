@@ -107,14 +107,58 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         }
         foreach (var sha in refresh)
         {
-            var checks = await Pages($"repos/{repo}/commits/{sha}/check-runs?check_name={CheckName}&filter=all", "check_runs", ct);
+            var checks = await CommitChecks(repo, sha, ct);
             result.RemoveAll(c => c.Sha == sha);
-            result.AddRange(checks.Where(c => c.GetProperty("app").GetProperty("id").GetInt64() == appId).Select(Check));
+            result.AddRange(checks);
         }
         // Publish only a fully refreshed snapshot; failed reads never make partial state authoritative.
         snapshots[repo] = (head, result);
         return result;
     }
+
+    public async Task<IReadOnlyList<CheckRun>> CommitChecks(string repo, string sha, CancellationToken ct) =>
+        (await Pages($"repos/{repo}/commits/{sha}/check-runs?check_name={CheckName}&filter=all", "check_runs", ct))
+        .Where(c => c.GetProperty("app").GetProperty("id").GetInt64() == appId).Select(Check).ToArray();
+
+    public async Task<IReadOnlyList<string>> History(string repo, string sha, int limit, CancellationToken ct)
+    {
+        var shas = new List<string>();
+        await foreach (var commit in Items($"repos/{repo}/commits?sha={sha}", null, ct))
+        {
+            shas.Add(commit.GetProperty("sha").GetString()!);
+            // Stop before reading a page that would not be used.
+            if (shas.Count == limit) break;
+        }
+        return shas;
+    }
+
+    public async Task<IReadOnlyList<Push>> Pushes(string repo, int limit, CancellationToken ct)
+    {
+        var pushes = new List<Push>();
+        // Activity pages by cursor; the next link carries it.
+        await foreach (var entry in Items($"repos/{repo}/activity?ref=main&direction=desc", null, ct))
+        {
+            pushes.Add(new(Text(entry, "before") ?? "", Text(entry, "after") ?? "", Date(entry, "timestamp") ?? DateTimeOffset.MinValue,
+                Text(entry, "activity_type") ?? "", entry.TryGetProperty("actor", out var actor) && actor.ValueKind == JsonValueKind.Object ? Text(actor, "login") : null));
+            if (pushes.Count == limit) break;
+        }
+        return pushes;
+    }
+
+    public async Task<int?> CommitCount(string repo, string before, string after, CancellationToken ct)
+    {
+        if (!IsSha(before) || !IsSha(after) || before.All(c => c == '0') || after.All(c => c == '0')) return null;
+        try
+        {
+            // One commit per page keeps the response small; total_commits still counts them all.
+            var json = await Send(HttpMethod.Get, $"repos/{repo}/compare/{before}...{after}?per_page=1", null, ct);
+            return json.TryGetProperty("total_commits", out var total) ? total.GetInt32() : null;
+        }
+        // A force push can leave "before" unreachable, and GitHub cannot compare it any more.
+        catch (HttpRequestException e) when (e.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.UnprocessableEntity) { return null; }
+    }
+
+    static bool IsSha(string text) => text.Length == 40 && text.All(char.IsAsciiHexDigit);
 
     public async Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct) =>
         Check(await Send(HttpMethod.Post, $"repos/{repo}/check-runs", new { name = CheckName, head_sha = sha, status = "in_progress", started_at = now }, ct));

@@ -299,7 +299,11 @@ public class WatcherTests
     {
         var huge = new string('@', 100_000);
         var failures = Enumerable.Range(0, 5000).Select(i => new FailedTest(huge + i, huge, "message")).ToArray();
-        var fake = new FakeGitHub { ReportResult = new(true, failures) };
+        var fake = new FakeGitHub
+        {
+            ReportResult = new(true, failures),
+            Activity = [.. Enumerable.Range(0, 100).Select(i => new Push(Sha('a'), Sha('b'), Now, huge, huge))],
+        };
         await new Reporter(fake, clock: () => Now).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(), TestContext.Current.CancellationToken);
         var body = fake.Issues["owner/repo"].Single().Body;
         Assert.True(body.Length <= Reporter.MaxIssueBody, $"body is {body.Length} characters");
@@ -368,6 +372,117 @@ public class WatcherTests
         await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake)
             .Report(new() { Repo = "owner/repo" }, Pending(), TestContext.Current.CancellationToken));
         Assert.Null(fake.Conclusion);
+    }
+
+    static string Sha(char c) => new(c, 40);
+    static CheckRun Result(long id, char sha, string conclusion, int minutesAgo) =>
+        new(id, Sha(sha), "completed", conclusion, Now.AddMinutes(-minutesAgo), Now.AddMinutes(-minutesAgo + 5), id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    static Push PushAt(char before, char after, string type, string? actor, int minutesAgo) =>
+        new(Sha(before), Sha(after), Now.AddMinutes(-minutesAgo), type, actor);
+
+    [Fact]
+    public async Task TheLockListsEveryPushSinceTheNewestGreenCommit()
+    {
+        var fake = new FakeGitHub
+        {
+            // The failing head, a commit whose newest result is neutral after an older success (ADR-017), the green commit.
+            HistoryShas = [Sha('f'), Sha('b'), Sha('a'), Sha('9')],
+            CommitCheckRuns = new()
+            {
+                [Sha('b')] = [Result(20, 'b', "success", 50), Result(21, 'b', "neutral", 30)],
+                [Sha('a')] = [Result(10, 'a', "success", 90)],
+                [Sha('9')] = [Result(5, '9', "success", 200)],
+            },
+            Activity =
+            [
+                PushAt('c', 'f', "merge_queue_merge", "github-merge-queue[bot]", 10),
+                PushAt('d', 'c', "force_push", "alice", 20),
+                PushAt('b', 'd', "pr_merge", "bob", 25),
+                PushAt('a', 'b', "push", "carol", 60),
+                PushAt('9', 'a', "push", "dave", 100),
+            ],
+            Counts = new() { [Sha('f')] = 3, [Sha('c')] = 1, [Sha('b')] = 2 },
+        };
+        await new Reporter(fake, clock: () => Now).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('f')) with { Id = 30 }, TestContext.Current.CancellationToken);
+        var body = fake.Issues["owner/repo"].Single().Body;
+        Assert.Contains($"Since the last green commit, [`aaaaaaa`](https://github.com/owner/repo/commit/{Sha('a')}).", body);
+        Assert.Contains($"| 2026-09-16 18:50:00 | github-merge-queue\\[bot] | merge-queue merge | [`ccccccc` → `fffffff`](https://github.com/owner/repo/compare/{Sha('c')}...{Sha('f')}) | 3 |", body);
+        Assert.Contains("| 2026-09-16 18:40:00 | alice | force push |", body);
+        Assert.Contains("| bob | PR merge |", body);
+        Assert.Contains("| carol | push | [`aaaaaaa` → `bbbbbbb`]", body);
+        Assert.Contains("`ddddddd` → `ccccccc`](https://github.com/owner/repo/compare/", body);
+        Assert.Contains("| ? |", body);
+        Assert.DoesNotContain("dave", body);
+        Assert.DoesNotContain("@alice", body);
+        Assert.Contains($"<!-- main-watcher last_green={Sha('a')} first_red={Sha('f')} ", body);
+        Assert.Equal(Now.Add(Reporter.LockLease), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
+    }
+
+    [Fact]
+    public async Task AForcePushedGreenCommitListsActivityAfterItsCheckRun()
+    {
+        var fake = new FakeGitHub
+        {
+            HistoryShas = [Sha('f'), Sha('e')],
+            CommitCheckRuns = new() { [Sha('a')] = [Result(10, 'a', "success", 60)] },
+            Activity = [PushAt('a', 'f', "force_push", "alice", 30), PushAt('0', 'a', "push", "bob", 70)],
+        };
+        await new Reporter(fake).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('f')), TestContext.Current.CancellationToken);
+        var body = fake.Issues["owner/repo"].Single().Body;
+        Assert.Contains("The last green commit, `aaaaaaa`, is not among the newest 100 commits of `main`", body);
+        Assert.Contains("after its check run started at 2026-09-16 18:00:00 UTC", body);
+        Assert.Contains("| alice | force push |", body);
+        Assert.DoesNotContain("bob", body);
+        Assert.Contains($"last_green={Sha('a')} ", body);
+    }
+
+    [Fact]
+    public async Task WithoutAnyGreenRunTheLockListsTheLastHundredPushes()
+    {
+        var fake = new FakeGitHub
+        {
+            HistoryShas = [Sha('f')],
+            Activity = [.. Enumerable.Range(0, 150).Select(i => PushAt('a', 'b', "push", $"user{i}", i + 1)), PushAt('0', 'a', "branch_creation", null, 500)],
+        };
+        await new Reporter(fake).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('f')), TestContext.Current.CancellationToken);
+        var body = fake.Issues["owner/repo"].Single().Body;
+        Assert.Contains("No green Main Watcher run was found, so this lists the last 100 pushes.", body);
+        Assert.Contains("| user99 |", body);
+        Assert.DoesNotContain("| user100 |", body);
+        Assert.Contains("Only the newest 100 pushes were read", body);
+        Assert.DoesNotContain("last_green=", body);
+    }
+
+    [Fact]
+    public async Task AnUnreadablePushListStillOpensTheLockWithACompareLink()
+    {
+        var fake = new FakeGitHub
+        {
+            HistoryShas = [Sha('f'), Sha('a')],
+            CommitCheckRuns = new() { [Sha('a')] = [Result(10, 'a', "success", 60)] },
+            ActivityError = true,
+        };
+        await new Reporter(fake).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('f')), TestContext.Current.CancellationToken);
+        var body = fake.Issues["owner/repo"].Single().Body;
+        Assert.Contains($"Push list unavailable: the repository activity could not be read. [Compare `aaaaaaa...fffffff`](https://github.com/owner/repo/compare/{Sha('a')}...{Sha('f')})", body);
+        Assert.Contains($"last_green={Sha('a')} ", body);
+        Assert.Equal("failure", fake.Conclusion);
+    }
+
+    [Fact]
+    public async Task ALaterFailingRunAddsOneCommentThatMentionsNobody()
+    {
+        var fake = new FakeGitHub { ReportResult = new(true, [new("Beta", "suite", "@owner broke it")]) };
+        fake.Seed("owner/repo", "main-broken", "main is broken", "main-watcher[bot]", "Bot", "@team\n\nfirst failure");
+        await new Reporter(fake).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('e')) with { Id = 77 }, TestContext.Current.CancellationToken);
+        Assert.Equal(new[] { "comment:1", "complete:failure" }, fake.Order);
+        var comment = Assert.Single(fake.Comments);
+        Assert.DoesNotContain("@", comment);
+        Assert.Contains("Tests failed again on `main` at [`eeeeeee`]", comment);
+        Assert.Contains("- Beta (suite):", comment);
+        Assert.Contains("https://github.com/owner/repo/actions/runs/42", comment);
+        Assert.EndsWith("<!-- main-watcher check=77 -->", comment);
+        Assert.Equal("first failure", fake.Issues["owner/repo"].Single().Body.Split("\n\n")[1]);
     }
 
     [Fact]
@@ -460,6 +575,19 @@ public class WatcherTests
         public Task ValidateTarget(Target target, CancellationToken ct) => InvalidCaller ? throw new InvalidDataException("mismatch") : Task.CompletedTask;
         public Task<string> MainHead(string repo, CancellationToken ct) => Task.FromResult("head");
         public Task<IReadOnlyList<CheckRun>> Checks(string repo, CancellationToken ct) => Task.FromResult<IReadOnlyList<CheckRun>>([]);
+        public List<string> HistoryShas { get; init; } = [];
+        public Dictionary<string, List<CheckRun>> CommitCheckRuns { get; init; } = [];
+        public List<Push> Activity { get; init; } = [];
+        public bool ActivityError { get; init; }
+        public Dictionary<string, int> Counts { get; init; } = [];
+        public Task<IReadOnlyList<string>> History(string repo, string sha, int limit, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<string>>(HistoryShas.Take(limit).ToArray());
+        public Task<IReadOnlyList<CheckRun>> CommitChecks(string repo, string sha, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<CheckRun>>(CommitCheckRuns.GetValueOrDefault(sha, []));
+        public Task<IReadOnlyList<Push>> Pushes(string repo, int limit, CancellationToken ct) =>
+            ActivityError ? throw new HttpRequestException("activity unavailable") : Task.FromResult<IReadOnlyList<Push>>(Activity.Take(limit).ToArray());
+        public Task<int?> CommitCount(string repo, string before, string after, CancellationToken ct) =>
+            Task.FromResult<int?>(Counts.TryGetValue(after, out var count) ? count : null);
         public Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct) { Writes.Add("create"); return Task.FromResult(new CheckRun(1, sha, "in_progress", null, now, null, null)); }
         public Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct) { Writes.Add("dispatch"); if (DispatchError is not null) throw DispatchError; return Task.FromResult(DispatchId); }
         public Task<IReadOnlyList<WorkflowRun>> Runs(string repo, DateTimeOffset since, CancellationToken ct) => RunsError ? throw new HttpRequestException("unavailable") : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList);

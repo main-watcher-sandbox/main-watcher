@@ -17,6 +17,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     public const int MaxIssueBody = 60000;
     const int MaxMentions = 50;
     const int FailureBudget = 20000;
+    const int PushBudget = 25000;
     const int MaxFieldLength = 200;
 
     /// <summary>Alerts that could not be raised. They never block the lock or the check run.</summary>
@@ -35,8 +36,12 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
             var reports = await github.Reports(repo, runId, ct);
             if (outcome.Conclusion == "failure")
             {
-                var locks = await Locks(repo, ct);
-                var lockIssue = locks.FirstOrDefault() ?? await OpenLock(target, check, reports, runUrl, ct);
+                var lockIssue = (await Locks(repo, ct)).FirstOrDefault();
+                if (lockIssue is null) lockIssue = await OpenLock(target, check, reports, runUrl, ct);
+                // One comment per later failing run. It mentions nobody; replay against its marker comes with #12.
+                else await github.Comment(repo, lockIssue.Number,
+                    $"Tests failed again on `main` at {Commit(repo, check.Sha)}.\n\n**Failing tests**\n\n{FailureList(reports, FailureBudget)}\n\n"
+                    + $"[Target run]({runUrl})\n\n<!-- main-watcher check={check.Id} -->", ct);
                 summary += $"\n\nLock issue: {lockIssue.Url}\n\n" + FailureList(reports, FailureBudget);
             }
             else
@@ -67,14 +72,16 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         IReadOnlyList<string> mentions = target.Notify.Length > 0 ? target.Notify.Select(Mentions.Normalize).ToArray() : await CodeOwners(target.Repo, ct);
         // GitHub notifies at most 50 mentions per issue; the cap also bounds the body.
         mentions = mentions.Take(MaxMentions).ToArray();
+        var pushes = await PushList.Collect(github, target.Repo, check.Sha, ct);
         var leaseUntil = (clock ?? (() => DateTimeOffset.UtcNow))().Add(LockLease).UtcDateTime;
         var body = (mentions.Count > 0 ? string.Join(" ", mentions) + "\n\n" : "")
             + $"Main Watcher tests failed on `main` at {Commit(target.Repo, check.Sha)}.\n\n"
             + "**Failing tests**\n\n" + FailureList(reports, FailureBudget) + "\n\n"
             + $"[Target run]({runUrl})\n\n"
+            + "**Pushes since the last green run**\n\n" + PushTable(target.Repo, check.Sha, pushes, PushBudget) + "\n\n"
             + $"While this issue is open, the merge queue accepts only pull requests labelled `fixes-main`. "
             + "A green Main Watcher run on `main` closes it. Closing it by hand overrides the lock.\n\n"
-            + $"<!-- main-watcher first_red={check.Sha} lease_until={leaseUntil.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)} "
+            + "<!-- main-watcher " + (pushes.Green is { } green ? $"last_green={green.Sha} " : "") + $"first_red={check.Sha} lease_until={leaseUntil.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)} "
             + $"reported_check={check.Id} reported_sha={check.Sha} -->";
         var issue = await github.CreateIssue(target.Repo, $"main is broken: tests failed on {Short(check.Sha)}", body, LockLabel, ct);
         if (mentions.Count == 0)
@@ -83,6 +90,56 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
                 + "Configure `notify` for this target.", ct);
         return issue;
     }
+
+    /// <summary>Says how the list was bounded, then lists pushes newest first within <paramref name="budget"/> characters.</summary>
+    static string PushTable(string repo, string failingSha, PushListResult result, int budget)
+    {
+        var green = result.Green;
+        if (result.Source == PushSource.Unavailable)
+            return "Push list unavailable: the repository activity could not be read. " + (green is null
+                ? $"[Commits on `main` up to `{Short(failingSha)}`](https://github.com/{repo}/commits/{failingSha})"
+                : $"[Compare `{Short(green.Sha)}...{Short(failingSha)}`](https://github.com/{repo}/compare/{green.Sha}...{failingSha})");
+        var source = result.Source switch
+        {
+            PushSource.SinceGreen => $"Since the last green commit, {Commit(repo, green!.Sha)}.",
+            PushSource.AfterGreenCheck => $"The last green commit, `{Short(green!.Sha)}`, is not among the newest {PushList.Limit} commits of `main` "
+                + $"(it may have been force-pushed away), so this lists activity after its check run started at {Time(green.StartedAt)} UTC.",
+            _ => $"No green Main Watcher run was found, so this lists the last {PushList.Limit} pushes."
+        };
+        if (result.Pushes.Count == 0) return source + "\n\nNo pushes found.";
+        var lines = new List<string> { "| Time (UTC) | Pusher | Type | Before → after | Commits |", "| --- | --- | --- | --- | --- |" };
+        var length = lines.Sum(l => l.Length + 1);
+        foreach (var (push, commits) in result.Pushes)
+        {
+            var type = push.Type switch
+            {
+                "push" => "push",
+                "force_push" => "force push",
+                "pr_merge" => "PR merge",
+                "merge_queue_merge" => "merge-queue merge",
+                var other => Escape(Clip(other.Replace('_', ' ')))
+            };
+            // A plain name: logins cannot contain @, and Escape would neutralise one anyway.
+            var line = $"| {Time(push.Timestamp)} | {Escape(Clip(push.Actor ?? "unknown")).Replace("|", "\\|")} | {type} | "
+                + $"{ShaRange(repo, push)} | {commits?.ToString(CultureInfo.InvariantCulture) ?? "?"} |";
+            if (length + line.Length + 1 > budget) break;
+            lines.Add(line);
+            length += line.Length + 1;
+        }
+        var more = result.Pushes.Count - (lines.Count - 2);
+        return source + "\n\n" + string.Join("\n", lines)
+            + (more > 0 ? $"\n\n…and {more} more; see the repository activity." : "")
+            + (result.Truncated ? $"\n\nOnly the newest {PushList.Limit} pushes were read; older ones may also be relevant." : "");
+    }
+
+    static string ShaRange(string repo, Push push)
+    {
+        static bool Real(string sha) => sha.Length == 40 && sha.All(char.IsAsciiHexDigit) && sha.Any(c => c != '0');
+        var range = $"{(Real(push.Before) ? $"`{Short(push.Before)}`" : "none")} → {(Real(push.After) ? $"`{Short(push.After)}`" : "none")}";
+        return Real(push.Before) && Real(push.After) ? $"[{range}](https://github.com/{repo}/compare/{push.Before}...{push.After})" : range;
+    }
+
+    static string Time(DateTimeOffset time) => time.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 
     async Task<IReadOnlyList<string>> CodeOwners(string repo, CancellationToken ct)
     {

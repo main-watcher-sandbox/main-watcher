@@ -173,6 +173,54 @@ public class GatewayTests
         Assert.Contains(requests, r => r.StartsWith("PATCH /repos/owner/repo/issues/5 ") && r.Contains("\"state\":\"closed\""));
     }
 
+    [Fact]
+    public async Task ActivityAndHistoryStopAtTheLimitWithoutReadingAnotherPage()
+    {
+        var requests = new List<string>();
+        using var http = Client(new Handler(request =>
+        {
+            var path = request.RequestUri!.PathAndQuery;
+            requests.Add(path);
+            var body = path.Contains("/activity?")
+                ? "[" + string.Join(",", Enumerable.Range(0, 100).Select(i => i == 0
+                    ? """{"before":"b","after":"a","timestamp":"2026-09-16T20:31:54Z","activity_type":"merge_queue_merge","actor":{"login":"github-merge-queue[bot]"}}"""
+                    : """{"before":"b","after":"a","timestamp":"2026-09-16T20:00:00Z","activity_type":"push","actor":null}""")) + "]"
+                : "[" + string.Join(",", Enumerable.Range(0, 100).Select(i => $"{{\"sha\":\"c{i}\"}}")) + "]";
+            var response = Response(body);
+            response.Headers.Add("Link", $"<https://api.github.com{request.RequestUri.AbsolutePath}?after=cursor>; rel=\"next\"");
+            return Task.FromResult(response);
+        }));
+        var gateway = new GitHubGateway(http, 1);
+        var ct = TestContext.Current.CancellationToken;
+        var pushes = await gateway.Pushes("owner/repo", 100, ct);
+        Assert.Equal(100, pushes.Count);
+        Assert.Equal(new Push("b", "a", DateTimeOffset.Parse("2026-09-16T20:31:54Z"), "merge_queue_merge", "github-merge-queue[bot]"), pushes[0]);
+        Assert.Null(pushes[1].Actor);
+        Assert.Equal(new[] { "c0", "c1" }, await gateway.History("owner/repo", "head", 2, ct));
+        Assert.Equal(2, requests.Count);
+        Assert.StartsWith("/repos/owner/repo/activity?ref=main&direction=desc&per_page=100", requests[0]);
+        Assert.StartsWith("/repos/owner/repo/commits?sha=head&per_page=100", requests[1]);
+    }
+
+    [Fact]
+    public async Task CommitCountComparesOneCommitPageAndIsUnknownForUnreachableOrMissingCommits()
+    {
+        string a = new('a', 40), b = new('b', 40), gone = new('9', 40), zero = new('0', 40);
+        var requests = new List<string>();
+        using var http = Client(new Handler(request =>
+        {
+            requests.Add(request.RequestUri!.PathAndQuery);
+            return Task.FromResult(request.RequestUri.AbsolutePath.Contains(gone)
+                ? new HttpResponseMessage(HttpStatusCode.NotFound) : Response("{\"total_commits\":4,\"commits\":[{}]}"));
+        }));
+        var gateway = new GitHubGateway(http, 1);
+        var ct = TestContext.Current.CancellationToken;
+        Assert.Equal(4, await gateway.CommitCount("owner/repo", a, b, ct));
+        Assert.Null(await gateway.CommitCount("owner/repo", gone, b, ct));
+        Assert.Null(await gateway.CommitCount("owner/repo", zero, b, ct));
+        Assert.Equal(new[] { $"/repos/owner/repo/compare/{a}...{b}?per_page=1", $"/repos/owner/repo/compare/{gone}...{b}?per_page=1" }, requests);
+    }
+
     static HttpClient Client(HttpMessageHandler handler) => new(handler) { BaseAddress = new Uri("https://api.github.com/") };
     static HttpResponseMessage Response(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
     sealed class Handler(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) : HttpMessageHandler
