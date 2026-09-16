@@ -62,5 +62,6 @@ large-history targets will need a more economical index before production rollou
 Run `dotnet test` and the CI-pinned actionlint. The core suite includes real xUnit
 reports and a GitHub reusable-caller jobs response, with provenance in its fixtures
 directory. Sandbox execution uses the private watcher replica described in
-`sandbox/README.md`; record the passing and failing check URLs after running both
-Planner and Reporter cycles.
+`sandbox/README.md`. The [issue #9 validation record](../sandbox/issue-9-validation.md)
+links the passing and failing checks, their Planner and Reporter cycles, and
+the target restoration evidence.
