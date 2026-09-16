@@ -4,7 +4,7 @@ type: architecture
 status: proposed
 state: target
 owner: platform-team
-reviewed: 2026-09-15
+reviewed: 2026-09-16
 review_by: 2027-03-15
 review_trigger: "more than 20 target repos, public webhook hosting becomes available, or GitHub ships a native merge-queue pause"
 sources: [FR-1, FR-2, FR-3, FR-4, FR-5, FR-6, C-1, C-2, C-6, C-7, ADR-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016, ADR-017]
@@ -113,7 +113,7 @@ Main Watcher has no datastore; GitHub holds all state (ADR-003):
 | A-2 | Test suites finish in under 30 minutes | Slower detection; more superseded commits | Platform lead | Onboarding |
 | A-4 | Target test workflows run on GitHub-hosted runners, or on self-hosted runners the target team owns | None for the watcher; isolation is the target team's concern | Target owners | Onboarding |
 | A-5 | The merge-group payload's `base_sha`/`head_sha` identify every PR in a group | The gate cannot enforce grouped merges | Platform lead | Sandbox, before rollout |
-| A-6 | The cluster has outbound HTTPS to `api.github.com` and a secret store (no alerting stack; see C-8) | The worker cannot run there | Platform team | Before build |
+| A-6 | The cluster has outbound HTTPS to `api.github.com` and a secret store (no alerting stack; see C-8). Confirmed 2026-09-16: a pod in namespace `main-watcher-sandbox` got HTTP 200 from `api.github.com`; the sandbox holds the App keys in a plain Kubernetes Secret, and production will use the cluster's secret store | The worker cannot run there | Platform team | Confirmed 2026-09-16 |
 | A-7 | Re-running a successful required check makes it pending again for the merge group, and a failed re-run removes the group; queued groups appear as `gh-readonly-queue/main/*` branches | ADR-016 cannot stop groups that passed before a lock; replace it with its Option B or D | Platform lead | Sandbox TS-S17, before rollout |
 
 ### Scope
@@ -499,7 +499,7 @@ no secret references, and the third-party reporter action is pinned by commit SH
 | Secret | Stored in | Managed by |
 |---|---|---|
 | `main-watcher` private key | Watcher repo, `reporter` environment | Platform team |
-| `mw-observer` and `mw-doorbell` private keys | Kubernetes Secret, or the cluster's secret store | Platform team |
+| `mw-observer` and `mw-doorbell` private keys | Production: the cluster's secret store. Sandbox: a Kubernetes Secret in `main-watcher-sandbox` | Platform team |
 | Anything the tests need (DB strings, feed tokens, OIDC trust) | The target repo, its own way (FR-5) | Target owners |
 
 For cloud access from tests, targets should prefer OIDC (`id-token: write`) over stored
@@ -570,6 +570,7 @@ flowchart LR
 - Deployed with a Helm chart or plain manifests: one replica, liveness probe `/healthz`,
   resource requests of about 50m CPU and 128Mi memory `[assumption]`.
 - It needs no inbound network access.
+- Scenario tests use a second deployment in the `main-watcher-sandbox` namespace.
 - A single replica is enough because duplicate dispatches are harmless. More replicas
   would need leader election (ADR-010).
 
@@ -767,3 +768,4 @@ team subscribes to that label.
 | 2026-09-15 | The requester confirmed CQ-10 to CQ-14 as proposed. A-7 stays an assumption until sandbox test TS-S17 | Requester; platform team with Claude | ADR-013, ADR-014, ADR-015, ADR-016 and ADR-017 accepted |
 | 2026-09-15 | The `watch.yml` Planner and Reporter are written in .NET rather than Node, sharing one library with the trigger worker for `GitHubGateway` and the eligibility rule; the Node version assumption is removed (§4, §9, §13). TS-001 §2 and TS-U13 updated to test the rule once, in the shared library | Requester; platform team with Claude | — |
 | 2026-09-16 | Sandbox organisation `main-watcher-sandbox` created; its `[assumption]` tag removed from TS-001 §3 | Platform team | — |
+| 2026-09-16 | A-6 confirmed: outbound HTTPS to `api.github.com` works from the cluster; sandbox namespace `main-watcher-sandbox` created with the App keys in a Kubernetes Secret; production keys will use the cluster's secret store (§8, §10). TS-001 §2 and §3 name the namespace | Platform team | — |
