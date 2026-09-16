@@ -6,8 +6,8 @@ and every push since the last green run. While that issue is open, it blocks the
 GitHub merge queue; only PRs labelled `fixes-main` can still merge. It also reports test
 durations and the slowest tests.
 
-**Status:** architecture designed (2026-09-15). Build started: the sandbox target repo
-template is in `sandbox/` (2026-09-16).
+**Status:** architecture designed (2026-09-15). Build started (2026-09-16): the sandbox
+target repo template is in `sandbox/`; the gate is built (MainWatcher#5).
 
 ## Where things are
 
@@ -25,7 +25,15 @@ template is in `sandbox/` (2026-09-16).
 - `docs/architecture/diagrams/` — PNG renders. The Mermaid sources inside the markdown are
   authoritative.
 - `sandbox/` — the sandbox target template (`sample-target/`, steered by `sandbox.json`), its
-  merge-queue ruleset, and `seed-target.sh`, which pushes it to `main-watcher-sandbox` repos.
+  merge-queue ruleset, `seed-target.sh`, which pushes it to `main-watcher-sandbox` repos, and
+  `publish-gate.sh`, which publishes the gate to the public `main-watcher-sandbox/gate` repo
+  that the public sandbox targets use.
+- `MainWatcher.slnx` — the watcher's .NET projects (`src/`, `tests/`; .NET 10, xUnit v3 on
+  Microsoft Testing Platform). `src/MainWatcher.Gate` is the gate's logic.
+- `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
+  `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
+- `.github/workflows/` — `ci.yml` (`dotnet test` and actionlint on every PR) and
+  `sandbox-lock.yml` (hand-made App-authored locks, sandbox org only).
 - `.claude/skills/architecture-design/` — the design skill used to produce these documents,
   including its validation scripts.
 
@@ -78,7 +86,6 @@ metrics store (PostgreSQL + Grafana) is deferred.
 ## Open items before building
 
 1. Run sandbox tests early:
-   - TS-S5: batched merge groups and the gate (A-5, R-3);
    - TS-S17: gate re-runs for groups queued before a lock (A-7, which ADR-016 depends on);
    - TS-S14, TS-S16 and TS-S18: the reporting, cancel and retry lifecycle (ADR-013,
      ADR-017), which relies on GitHub's job, step and timeout behaviour.
@@ -90,7 +97,8 @@ metrics store (PostgreSQL + Grafana) is deferred.
 
 1. The `user-stories` backlog, or go straight to the build.
 2. Build order:
-   1. Gate workflow and sandbox (retires the biggest risk).
+   1. Gate workflow and sandbox (retires the biggest risk). Built (MainWatcher#5); TS-S4 and TS-S5
+      passed in the sandbox on 2026-09-16.
    2. Reusable test workflow + caller template.
    3. `watch.yml` (Planner and Reporter).
    4. Trigger worker.

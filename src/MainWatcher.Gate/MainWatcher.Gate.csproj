@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The gate (ADR-002, ADR-008, ADR-014). It runs in target repos through
+    .github/actions/gate, so it has no package references: restore needs no feed, and a
+    NuGet outage cannot fail a merge group.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+</Project>

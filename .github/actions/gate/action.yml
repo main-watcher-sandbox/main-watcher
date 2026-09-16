@@ -1,0 +1,41 @@
+# The gate's logic (ADR-002, ADR-008, ADR-014). Target repos call it from their gate
+# workflow, templates/main-watcher-gate.yml. GitHub downloads this whole repo at the
+# referenced tag to run the action, so the step below can build src/MainWatcher.Gate.
+name: Main Watcher gate
+description: Fails a merge group while main is locked, unless every PR in it is labelled fixes-main.
+
+inputs:
+  github-token:
+    description: Token with issues, pull-requests and contents read on the target repo.
+    default: ${{ github.token }}
+  bot-login:
+    description: Login of the App that authors lock issues.
+    default: main-watcher[bot]
+
+outputs:
+  fail-open-reason:
+    description: "Set when the gate passed only because it could not enforce a lock: api-error or lease-expired."
+    value: ${{ steps.gate.outputs.fail-open-reason }}
+
+runs:
+  using: composite
+  steps:
+    # Pull requests always pass, so they skip the .NET build (NFR-2).
+    - if: github.event_name != 'merge_group'
+      shell: bash
+      run: echo "The gate enforces locks only on merge groups. This is a ${{ github.event_name }} event."
+
+    - if: github.event_name == 'merge_group'
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      with:
+        global-json-file: ${{ github.action_path }}/../../../global.json
+
+    - if: github.event_name == 'merge_group'
+      id: gate
+      shell: bash
+      env:
+        GATE_GITHUB_TOKEN: ${{ inputs.github-token }}
+        GATE_BOT_LOGIN: ${{ inputs.bot-login }}
+        DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+        DOTNET_NOLOGO: "1"
+      run: dotnet run --configuration Release --project "$GITHUB_ACTION_PATH/../../../src/MainWatcher.Gate"

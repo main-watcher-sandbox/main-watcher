@@ -112,7 +112,7 @@ Main Watcher has no datastore; GitHub holds all state (ADR-003):
 | A-1 | Fewer than 20 target repos | Worker API usage and dispatch volume grow; revisit ADR-010 | Platform lead | 2026-10-15 |
 | A-2 | Test suites finish in under 30 minutes | Slower detection; more superseded commits | Platform lead | Onboarding |
 | A-4 | Target test workflows run on GitHub-hosted runners, or on self-hosted runners the target team owns | None for the watcher; isolation is the target team's concern | Target owners | Onboarding |
-| A-5 | The merge-group payload's `base_sha`/`head_sha` identify every PR in a group | The gate cannot enforce grouped merges | Platform lead | Sandbox, before rollout |
+| A-5 | The gate can identify every PR in a merge group. **Tested in the sandbox on 2026-09-16 (TS-S5):** `base_sha...head_sha` does not work, because for a queue entry behind another, `base_sha` is the head of the entry ahead of it. The gate therefore compares the queue's target branch (`base_ref`) with `head_sha` | The gate cannot enforce grouped merges | Platform lead | Confirmed in the sandbox with the target-branch comparison; TS-S5 at onboarding |
 | A-6 | The cluster has outbound HTTPS to `api.github.com` and a secret store (no alerting stack; see C-8). Confirmed 2026-09-16: a pod in namespace `main-watcher-sandbox` got HTTP 200 from `api.github.com`; the sandbox holds the App keys in a plain Kubernetes Secret, and production will use the cluster's secret store | The worker cannot run there | Platform team | Confirmed 2026-09-16 |
 | A-7 | Re-running a successful required check makes it pending again for the merge group, and a failed re-run removes the group; queued groups appear as `gh-readonly-queue/main/*` branches | ADR-016 cannot stop groups that passed before a lock; replace it with its Option B or D | Platform lead | Sandbox TS-S17, before rollout |
 
@@ -385,7 +385,7 @@ sequenceDiagram
     else lock open, lease expired or invalid
         G-->>MQ: success, warning LOCK LEASE EXPIRED
     else lock open, lease valid
-        G->>GH: compare base_sha...head_sha, find PRs
+        G->>GH: compare base_ref...head_sha, find PRs
         alt every PR labelled fixes-main
             G-->>MQ: success
         else any PR unlabelled
@@ -398,6 +398,13 @@ sequenceDiagram
 **Notes:**
 - **Only App-authored issues lock the queue.**
 - **On `pull_request` events the gate always passes.**
+- **Implementation.** Targets copy `templates/main-watcher-gate.yml`. Its
+  `main-watcher-gate` job runs the gate action from the watcher repo at a pinned tag, which
+  builds `src/MainWatcher.Gate`. The group's PRs are the open PRs into the queue's branch
+  that are associated with a commit on `head_sha` not yet on the target branch (`base_ref`), named in a merge or
+  squash commit subject, or named in the queue branch; including an extra PR can only make
+  the gate stricter. When the gate fails open, a second job named
+  `main-watcher/gate-fail-open` runs, so the fail-open check run needs no `checks: write`.
 - **PRs removed by the gate** must be re-queued by hand (§17). The unlock comment lists
   them.
 - **Groups already queued when a lock opens (ADR-016).** A group whose gate started before
@@ -775,3 +782,5 @@ team subscribes to that label.
 | 2026-09-16 | A-6 confirmed: outbound HTTPS to `api.github.com` works from the cluster; sandbox namespace `main-watcher-sandbox` created with the App keys in a Kubernetes Secret; production keys will use the cluster's secret store (§8, §10). TS-001 §2 and §3 name the namespace | Platform team | — |
 | 2026-09-16 | Security approved Actions: write for `main-watcher` and Issues: read for `mw-observer`, on condition that the Apps are installed only on watched repos; recorded against R-11. §8 and §10 onboarding and removal steps updated; TS-001 §6 checklist extended | Security; platform team with Claude | ADR-009, ADR-013, ADR-014, ADR-016 (no change) |
 | 2026-09-16 | Sandbox targets `sample-target` and `sample-target-slow` seeded from `sandbox/sample-target`: xUnit v3 on .NET 10 with Microsoft Testing Platform, one CTRF report per test project, outcomes steered by `sandbox.json`, merge queue on `main`. TS-001 §3 names them | Platform team with Claude | — |
+| 2026-09-16 | Gate template v1 built (MainWatcher#5): `templates/main-watcher-gate.yml`, the gate action and `src/MainWatcher.Gate`; the `gate-fail-open` check run is a job in the template, so gate permissions stay read-only (§5.2). Watcher repo CI runs unit tests and actionlint | Platform team with Claude | ADR-002, ADR-008, ADR-014 (no change) |
+| 2026-09-16 | Sandbox TS-S4 passed. TS-S5 disproved A-5 as worded: a queue entry's `base_sha` is the head of the entry ahead of it, so the gate now compares `base_ref...head_sha` and sees every PR in a batch (§3, §5.2). Sandbox targets use the gate from the public `main-watcher-sandbox/gate` repo, because a public target cannot use an action from a private repo | Platform team with Claude | ADR-002 (no change) |

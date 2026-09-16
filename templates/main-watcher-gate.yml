@@ -1,0 +1,41 @@
+# Main Watcher gate, template v1. Copy to .github/workflows/main-watcher-gate.yml and make
+# the "main-watcher-gate" job a required check in the merge-queue ruleset on main.
+# While Main Watcher has main locked, merge groups fail unless every PR in them is labelled
+# fixes-main. It always passes on pull requests. Do not edit; update from the template.
+name: main-watcher-gate
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  issues: read
+  pull-requests: read
+  contents: read
+
+jobs:
+  gate:
+    name: main-watcher-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      fail-open-reason: ${{ steps.gate.outputs.fail-open-reason }}
+    steps:
+      - id: gate
+        uses: Actium-Group-Corporation/MainWatcher/.github/actions/gate@v1
+
+  # Records that the gate passed without enforcing a lock (ADR-008, ADR-014). Its check run is
+  # not required; the watcher's hourly sweep looks for it.
+  fail-open:
+    name: main-watcher/gate-fail-open
+    needs: gate
+    if: needs.gate.outputs.fail-open-reason != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - env:
+          REASON: ${{ needs.gate.outputs.fail-open-reason }}
+        run: |
+          echo "::warning title=Main Watcher gate failed open::reason=$REASON"
+          echo "reason=$REASON" >> "$GITHUB_STEP_SUMMARY"

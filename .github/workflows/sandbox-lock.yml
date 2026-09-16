@@ -1,0 +1,57 @@
+# Sandbox only: opens or closes a hand-made, App-authored lock on a sandbox target, for
+# scenario tests that need a lock before watch.yml exists (TS-S4, TS-S5, TS-S7). Runs only in
+# the main-watcher-sandbox organisation.
+name: sandbox-lock
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Sandbox target repo in main-watcher-sandbox
+        default: sample-target
+      action:
+        description: Open a lock, or close every open App-authored lock
+        type: choice
+        options: [open, close]
+      lease_hours:
+        description: lease_until is now plus this many hours. Negative gives an expired lease
+        default: "4"
+
+permissions: {}
+
+concurrency: sandbox-lock-${{ inputs.target }}
+
+jobs:
+  lock:
+    if: github.repository_owner == 'main-watcher-sandbox'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: reporter
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.MAIN_WATCHER_APP_ID }}
+          private-key: ${{ secrets.MAIN_WATCHER_PRIVATE_KEY }}
+          owner: main-watcher-sandbox
+          repositories: ${{ inputs.target }}
+          permission-issues: write
+
+      - env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: main-watcher-sandbox/${{ inputs.target }}
+          ACTION: ${{ inputs.action }}
+          LEASE_HOURS: ${{ inputs.lease_hours }}
+        run: |
+          set -euo pipefail
+          if [ "$ACTION" = open ]; then
+            [[ "$LEASE_HOURS" =~ ^-?[0-9]+$ ]] || { echo "::error::lease_hours must be a whole number"; exit 1; }
+            lease_until="$(date -u -d "${LEASE_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)"
+            gh label create main-broken -R "$REPO" --color b60205 --description "Main Watcher lock" --force
+            body="$(printf 'Hand-made sandbox lock from %s.\n\n<!-- main-watcher lease_until=%s -->' \
+              "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$lease_until")"
+            gh issue create -R "$REPO" --title "main is broken (sandbox lock)" --label main-broken --body "$body"
+          else
+            gh issue list -R "$REPO" --state open --label main-broken --author 'app/main-watcher' --json number --jq '.[].number' |
+              while read -r number; do gh issue close "$number" -R "$REPO" --comment "Closed by sandbox-lock."; done
+          fi
