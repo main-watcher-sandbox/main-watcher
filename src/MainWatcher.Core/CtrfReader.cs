@@ -11,8 +11,10 @@ public sealed record CtrfResult(bool Known, IReadOnlyList<FailedTest> Failures)
     public static CtrfResult Unknown { get; } = new(false, []);
 }
 
+/// <summary>Validates and merges project reports under the ADR-007 CTRF contract.</summary>
 public static class CtrfReader
 {
+    public const int MaxReportBytes = 32 * 1024 * 1024;
     static readonly JsonSchema Schema = LoadSchema();
     static JsonSchema LoadSchema()
     {
@@ -56,7 +58,7 @@ public static class CtrfReader
             using var zip = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
             var entries = zip.Entries.Where(e => e.FullName.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
                 && !e.FullName.EndsWith("timings.json", StringComparison.OrdinalIgnoreCase)).ToArray();
-            if (entries.Length > 1000 || entries.Sum(e => e.Length) > 32 * 1024 * 1024) return CtrfResult.Unknown;
+            if (entries.Length > 1000 || entries.Sum(e => e.Length) > MaxReportBytes) return CtrfResult.Unknown;
             return Read(entries.Select(e => { using var reader = new StreamReader(e.Open()); return reader.ReadToEnd(); }));
         }
         catch (InvalidDataException) { return CtrfResult.Unknown; }

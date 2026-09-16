@@ -17,20 +17,25 @@ try
     var planner = new Planner(github);
     var reporter = new Reporter(github);
     using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
+    var recoveryFailed = false;
     foreach (var pending in (await github.Checks(repo, timeout.Token)).Where(c => c.Status != "completed"))
     {
-        var check = pending;
-        if (string.IsNullOrEmpty(check.ExternalId))
+        try
         {
-            var id = await planner.FindRun(repo, check, timeout.Token);
-            if (id is null) throw new InvalidOperationException($"Cannot uniquely recover run for check {check.Id}; dispatch remains blocked.");
-            await github.Link(repo, check.Id, id.Value, timeout.Token);
-            check = check with { ExternalId = id.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) };
+            var check = await planner.Recover(repo, pending, timeout.Token);
+            Console.WriteLine(check.Status == "completed" || await reporter.Report(repo, check, timeout.Token)
+                ? $"Reported check {check.Id}." : $"Check {check.Id} remains pending.");
         }
-        Console.WriteLine(await reporter.Report(repo, check, timeout.Token) ? $"Reported check {check.Id}." : $"Check {check.Id} remains pending.");
+        catch (Exception e) when (!timeout.IsCancellationRequested)
+        {
+            recoveryFailed = true;
+            Console.Error.WriteLine($"Check {pending.Id}: {e.Message}");
+        }
     }
+    if (recoveryFailed) return 1;
     var planned = await planner.Plan(target, Environment.GetEnvironmentVariable("MW_FORCE") == "true", timeout.Token);
-    Console.WriteLine(planned is null ? "No eligible head." : $"Started check {planned.Id}, target run {planned.ExternalId}.");
+    Console.WriteLine(planned is null ? "No eligible head." : string.IsNullOrEmpty(planned.ExternalId)
+        ? $"Check {planned.Id} awaits dispatch recovery." : $"Started check {planned.Id}, target run {planned.ExternalId}.");
     return 0;
 }
 catch (Exception e)

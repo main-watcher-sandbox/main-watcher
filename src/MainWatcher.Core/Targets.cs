@@ -15,6 +15,7 @@ public sealed class Target
     public bool Enabled { get; set; } = true;
 }
 
+/// <summary>Strict targets.yml schema; caller workflow settings are verified before dispatch.</summary>
 public sealed class TargetConfiguration
 {
     public List<Target> Targets { get; set; } = [];

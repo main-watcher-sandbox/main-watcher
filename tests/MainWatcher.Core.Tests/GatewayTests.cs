@@ -35,7 +35,9 @@ public class GatewayTests
             var jobs = request.RequestUri!.Query.EndsWith("&page=1")
                 ? Enumerable.Range(0, 100).Select(i => new { name = $"other-{i}", status = "in_progress", steps = Array.Empty<object>() }).Cast<object>().ToArray()
                 : [new { name = "tests / main-watcher", status = "completed", steps = new[] { new { name = "main-watcher-test", conclusion = "failure" }, new { name = "main-watcher-tests-finished", conclusion = "success" } } }];
-            return Task.FromResult(Response(System.Text.Json.JsonSerializer.Serialize(new { jobs })));
+            var response = Response(System.Text.Json.JsonSerializer.Serialize(new { jobs }));
+            if (request.RequestUri.Query.EndsWith("&page=1")) response.Headers.Add("Link", "<https://api.github.com/repos/owner/repo/actions/runs/42/jobs?filter=latest&per_page=100&page=2>; rel=\"next\"");
+            return Task.FromResult(response);
         });
         using var http = Client(handler);
         var jobs = await new GitHubGateway(http, 1).Jobs("owner/repo", 42, TestContext.Current.CancellationToken);
@@ -50,7 +52,7 @@ public class GatewayTests
     public async Task OnlyDeletedRunsBecomeUnknown(HttpStatusCode status, bool deleted)
     {
         using var http = Client(new Handler(_ => Task.FromResult(new HttpResponseMessage(status))));
-        var gateway = new GitHubGateway(http, 1);
+        var gateway = new GitHubGateway(http, 1, (_, _) => Task.CompletedTask);
         if (deleted) Assert.Null(await gateway.Jobs("owner/repo", 1, TestContext.Current.CancellationToken));
         else await Assert.ThrowsAsync<HttpRequestException>(() => gateway.Jobs("owner/repo", 1, TestContext.Current.CancellationToken));
     }
@@ -71,6 +73,45 @@ public class GatewayTests
             ? "{\"jobs\":[]}" : $"{{\"status\":\"{status}\"}}"))));
         var jobs = await new GitHubGateway(http, 1).Jobs("owner/repo", 1, TestContext.Current.CancellationToken);
         Assert.Equal(conclusion, Outcomes.Read(jobs)?.Conclusion);
+    }
+
+    [Fact]
+    public async Task RepeatedPollsRefreshPendingChecksWithoutWalkingHistoryAgain()
+    {
+        var requests = new List<string>();
+        using var http = Client(new Handler(request =>
+        {
+            var path = request.RequestUri!.PathAndQuery;
+            requests.Add(path);
+            if (path.EndsWith("/commits/main")) return Task.FromResult(Response("{\"sha\":\"head\"}"));
+            if (path.Contains("/commits?")) return Task.FromResult(Response("[{\"sha\":\"head\"},{\"sha\":\"old\"},{\"sha\":\"ancient\"}]"));
+            if (path.Contains("/old/check-runs")) return Task.FromResult(Response("""
+                {"check_runs":[{"id":1,"head_sha":"old","status":"in_progress","conclusion":null,"started_at":"2026-09-16T18:00:00Z","app":{"id":7}}]}
+                """));
+            return Task.FromResult(Response("{\"check_runs\":[]}"));
+        }));
+        var gateway = new GitHubGateway(http, 7);
+        await gateway.Checks("owner/repo", TestContext.Current.CancellationToken);
+        requests.Clear();
+        var next = await gateway.Checks("owner/repo", TestContext.Current.CancellationToken);
+        Assert.Equal(3, requests.Count); // Head SHA, head checks, pending old-head checks.
+        Assert.DoesNotContain(requests, path => path.Contains("/commits?"));
+        Assert.DoesNotContain(requests, path => path.Contains("ancient"));
+        Assert.Equal("in_progress", Assert.Single(next).Status);
+    }
+
+    [Fact]
+    public async Task TransientReadsRetryButDispatchNeverRetries()
+    {
+        var requests = 0;
+        using var http = Client(new Handler(_ => Task.FromResult(++requests <= 2
+            ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) : Response("{\"sha\":\"head\"}"))));
+        var gateway = new GitHubGateway(http, 1, (_, _) => Task.CompletedTask);
+        Assert.Equal("head", await gateway.MainHead("owner/repo", TestContext.Current.CancellationToken));
+        Assert.Equal(3, requests);
+        requests = 0;
+        Assert.Null(await gateway.Dispatch("owner/repo", "head", 1, TestContext.Current.CancellationToken));
+        Assert.Equal(1, requests);
     }
 
     static HttpClient Client(HttpMessageHandler handler) => new(handler) { BaseAddress = new Uri("https://api.github.com/") };

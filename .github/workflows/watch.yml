@@ -14,7 +14,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: main-watcher
+  group: main-watcher-${{ inputs.target }}
   cancel-in-progress: false
 jobs:
   watch:

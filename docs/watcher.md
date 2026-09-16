@@ -1,3 +1,9 @@
+---
+owner: platform-team
+reviewed: 2026-09-16
+review_by: 2027-03-15
+---
+
 # Manual watcher
 
 Issue #9 supplies one Planner/Reporter cycle in `.github/workflows/watch.yml`.
@@ -24,8 +30,9 @@ keys or repositories are rejected. Each entry supports:
 | `notify` | Owner/team mentions, list of strings; used by future lock reporting | `[]` |
 | `enabled` | Whether the target participates | `true` |
 
-The command, glob and timeout must match `with` in the target's copied
-`templates/main-watcher-tests.yml`. That caller owns test execution and secrets;
+The Planner verifies the command, glob and timeout against literal `with` values in the target's copied
+`templates/main-watcher-tests.yml` before creating a check. Omitted values use the reusable
+workflow's documented defaults; expressions for these settings are rejected. That caller owns test execution and secrets;
 the watcher only dispatches its `sha` and `check_run_id` inputs. Its literal
 `run-name: main-watcher-tests ${{ inputs.sha }}` exposes the tested SHA for the
 fallback lookup; the workflow run's `head_sha` is not the tested SHA.
@@ -38,7 +45,7 @@ gh workflow run watch.yml -f target=owner/repo
 
 The first cycle creates a check and starts the target workflow. Dispatch again
 after the target's `main-watcher` job completes to report it. Until the worker
-is implemented, reporting is manual. All cycles share a concurrency group and
+is implemented, reporting is manual. Cycles for each target share a concurrency group and
 do not cancel a running cycle. Repeated dispatches do not retest a successful
 or failed head. `force=true` bypasses only the three-neutral-result cap, never
 an active check or the poll interval.
@@ -50,12 +57,23 @@ and validates and merges all JSON report files in `main-watcher-ctrf` (except
 Missing, malformed, oversized or undownloadable reports yield “failing tests
 unknown” but cannot turn a failed test step green or neutral.
 
-An ambiguous or invisible dispatch remains pending and blocks another start.
-The next cycle retries linking it, without dispatching again. Jobs API failures
-also leave checks pending. Automated cancellation and infrastructure alerts are
-tracked separately in #13 and #18. Check discovery currently walks main's commit
-history to find App-owned checks, favoring correctness for this manual first path;
-large-history targets will need a more economical index before production rollout.
+A dispatch rejected with HTTP 4xx completes its check as neutral, allowing a retry
+after `poll_interval` under the neutral retry rule. A lost response or missing run ID
+leaves the check pending; the next cycle tries to link it without dispatching again.
+After 30 minutes, a successful lookup finding no matching run completes the check as
+neutral. Ambiguous matches and failed API reads remain pending. A recovery error on
+one check does not prevent reporting other pending checks, but blocks new planning
+for that cycle. Automated cancellation and infrastructure alerts remain in #13 and #18.
+
+Check discovery bootstraps from main's history once per `GitHubGateway` instance.
+Reuse one instance per target in the worker: subsequent polls refresh the current
+and previous heads, pending-check commits, and newly added commits, retaining
+completed results in memory. Failed reads do not publish a partial snapshot.
+Cold starts still scan history; a durable index for large-history repositories is
+deferred to worker/production work rather than introducing new GitHub state in #9.
+Read calls retry transient failures up to three times with bounded exponential
+backoff, and collection reads follow GitHub's next-page links. Writes are not
+automatically retried: recovery inspects GitHub state before another dispatch.
 
 ## Validation
 

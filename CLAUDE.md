@@ -8,7 +8,8 @@ durations and the slowest tests.
 
 **Status:** architecture designed (2026-09-15). Build started (2026-09-16): the sandbox
 target repo template is in `sandbox/`; the gate is built (MainWatcher#5); the reusable test
-workflow is built (MainWatcher#7).
+workflow is built (MainWatcher#7). The manual Planner and Reporter are built (MainWatcher#9),
+with passing and failing sandbox checks verified.
 
 ## Where things are
 
@@ -32,6 +33,10 @@ workflow is built (MainWatcher#7).
 - `MainWatcher.slnx` — the watcher's .NET projects (`src/`, `tests/`; .NET 10, xUnit v3 on
   Microsoft Testing Platform). `src/MainWatcher.Gate` is the gate's logic;
   `src/MainWatcher.TestRunner` is the deadline-and-retry wrapper the test workflow runs.
+- `src/MainWatcher.Core` holds target configuration, GitHub access, eligibility, Planner
+  and Reporter logic. `src/MainWatcher.Watcher` runs a manual cycle through `watch.yml`.
+- `targets.yml` configures targets. For dispatch, recovery and caller validation, read
+  `docs/watcher.md`. Sandbox evidence is in `sandbox/issue-9-validation.md`.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
@@ -39,7 +44,8 @@ workflow is built (MainWatcher#7).
   `src/MainWatcher.TestRunner`.
 - `.github/workflows/` — `ci.yml` (`dotnet test` and actionlint on every PR) and
   `sandbox-lock.yml` (hand-made App-authored locks, sandbox org only), and
-  `run-integration-tests.yml`, the reusable test workflow targets call.
+  `run-integration-tests.yml`, the reusable test workflow targets call;
+  `watch.yml` runs a manual Planner/Reporter cycle for one configured target.
 - `.claude/skills/architecture-design/` — the design skill used to produce these documents,
   including its validation scripts.
 
@@ -107,7 +113,8 @@ metrics store (PostgreSQL + Grafana) is deferred.
    1. Gate workflow and sandbox (retires the biggest risk). Built (MainWatcher#5); TS-S4 and TS-S5
       passed in the sandbox on 2026-09-16.
    2. Reusable test workflow + caller template. Built (MainWatcher#7).
-   3. `watch.yml` (Planner and Reporter).
+   3. `watch.yml` (Planner and Reporter). Built (MainWatcher#9); automated triggers and
+      lock lifecycle remain in later tickets.
    4. Trigger worker.
    5. Onboarding docs.
 

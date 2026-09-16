@@ -1,3 +1,9 @@
+---
+owner: platform-team
+reviewed: 2026-09-16
+review_by: 2027-03-15
+---
+
 # Issue #9 sandbox validation
 
 Validated on 2026-09-16 with watcher implementation `9b59eb5`, deployed to the
