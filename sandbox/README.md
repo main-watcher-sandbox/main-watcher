@@ -6,6 +6,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 |---|---|
 | `issue-9-validation.md` | Passing/failing watcher checks and target restoration evidence for #9 |
 | `issue-10-validation.md` | A real lock opened and closed, TS-S4 with that lock, and restoration evidence for #10 |
+| `issue-11-validation.md` | TS-S2: three quick pushes during a slow run, the lock's push list and the later-failure comment, for #11 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |

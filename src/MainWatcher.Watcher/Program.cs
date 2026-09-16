@@ -44,6 +44,13 @@ try
             Console.Error.WriteLine($"Check {pending.Id}: {e.Message}");
         }
     }
+    foreach (var walk in reporter.WalkBacks)
+    {
+        // ADR-003: the walk-back length is logged in the job summary; revisit it if it regularly nears 50.
+        var line = $"Check {walk.CheckId}: walked back {walk.CommitsChecked} commits for the last green run (push list: {walk.Source}).";
+        Console.WriteLine(line);
+        if (Environment.GetEnvironmentVariable("GITHUB_STEP_SUMMARY") is { Length: > 0 } summary) File.AppendAllLines(summary, [line]);
+    }
     foreach (var failure in reporter.AlertFailures) Console.Error.WriteLine($"Alert not raised: {failure}");
     if (recoveryFailed || reporter.AlertFailures.Count > 0) return 1;
     var planned = await planner.Plan(target, Environment.GetEnvironmentVariable("MW_FORCE") == "true", timeout.Token);
