@@ -6,7 +6,7 @@ namespace MainWatcher.Core;
 
 /// <summary>Shared GitHub model and REST boundary. The caller supplies an installation token.</summary>
 public sealed class GitHubGateway(HttpClient http, long appId,
-    Func<TimeSpan, CancellationToken, Task>? delay = null) : IGitHubGateway
+    Func<TimeSpan, CancellationToken, Task>? delay = null, Action<string>? log = null) : IGitHubGateway
 {
     public const string CheckName = "main-watcher";
     public const string Workflow = "main-watcher-tests.yml";
@@ -169,10 +169,21 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         {
             var json = await Send(HttpMethod.Post, $"repos/{repo}/actions/workflows/{Workflow}/dispatches",
                 new { @ref = "main", return_run_details = true, inputs = new { sha, check_run_id = checkId.ToString(System.Globalization.CultureInfo.InvariantCulture) } }, ct);
-            return json.ValueKind == JsonValueKind.Object && json.TryGetProperty("workflow_run_id", out var id) ? id.GetInt64() : null;
+            if (json.ValueKind == JsonValueKind.Object && json.TryGetProperty("workflow_run_id", out var id)) return id.GetInt64();
+            return NoRun(repo, checkId, "the response carried no workflow_run_id");
         }
-        catch (HttpRequestException e) when (e.StatusCode is null || (int)e.StatusCode >= 500) { return null; }
-        catch (TaskCanceledException) when (!ct.IsCancellationRequested) { return null; }
+        // The reason is only logged: the POST is never retried, and recovery links or releases the check.
+        catch (HttpRequestException e) when (e.StatusCode is null || (int)e.StatusCode >= 500)
+        {
+            return NoRun(repo, checkId, e.StatusCode is { } status ? $"HTTP {(int)status} ({e.Message})" : $"network error ({e.Message})");
+        }
+        catch (TaskCanceledException e) when (!ct.IsCancellationRequested) { return NoRun(repo, checkId, $"timed out ({e.Message})"); }
+    }
+
+    long? NoRun(string repo, long checkId, string reason)
+    {
+        log?.Invoke($"Check {checkId}: dispatch of {Workflow} in {repo} returned no run: {reason}.");
+        return null;
     }
 
     public async Task<IReadOnlyList<WorkflowRun>> Runs(string repo, DateTimeOffset since, CancellationToken ct) =>

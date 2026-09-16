@@ -72,7 +72,10 @@ unknown” but cannot turn a failed test step green or neutral.
 A dispatch rejected with HTTP 4xx completes its check as neutral, allowing a retry
 after `poll_interval` under the neutral retry rule. A lost response or missing run ID
 leaves the check pending; the next cycle tries to link it without dispatching again.
-After 30 minutes, a successful lookup finding no matching run completes the check as
+The `watch.yml` log then records why the dispatch returned no run, for example
+`Check 123: dispatch of main-watcher-tests.yml in owner/repo returned no run: HTTP 502 (…).`
+The reason is the HTTP status, a network error or timeout message, or a response
+without `workflow_run_id`. After 30 minutes, a successful lookup finding no matching run completes the check as
 neutral. Ambiguous matches and failed API reads remain pending. A recovery error on
 one check does not prevent reporting other pending checks, but blocks new planning
 for that cycle. Automated cancellation and infrastructure alerts remain in #13 and #18.
