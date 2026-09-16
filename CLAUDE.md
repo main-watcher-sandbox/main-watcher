@@ -6,8 +6,8 @@ and every push since the last green run. While that issue is open, it blocks the
 GitHub merge queue; only PRs labelled `fixes-main` can still merge. It also reports test
 durations and the slowest tests.
 
-**Status:** architecture designed (2026-09-15). Build started: the sandbox target repo
-template is in `sandbox/` (2026-09-16).
+**Status:** architecture designed (2026-09-15). Build started (2026-09-16): the sandbox
+target repo template is in `sandbox/`; the gate is built (MainWatcher#5).
 
 ## Where things are
 
@@ -26,6 +26,12 @@ template is in `sandbox/` (2026-09-16).
   authoritative.
 - `sandbox/` — the sandbox target template (`sample-target/`, steered by `sandbox.json`), its
   merge-queue ruleset, and `seed-target.sh`, which pushes it to `main-watcher-sandbox` repos.
+- `MainWatcher.slnx` — the watcher's .NET projects (`src/`, `tests/`; .NET 10, xUnit v3 on
+  Microsoft Testing Platform). `src/MainWatcher.Gate` is the gate's logic.
+- `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
+  `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
+- `.github/workflows/` — `ci.yml` (`dotnet test` and actionlint on every PR) and
+  `sandbox-lock.yml` (hand-made App-authored locks, sandbox org only).
 - `.claude/skills/architecture-design/` — the design skill used to produce these documents,
   including its validation scripts.
 
@@ -90,7 +96,8 @@ metrics store (PostgreSQL + Grafana) is deferred.
 
 1. The `user-stories` backlog, or go straight to the build.
 2. Build order:
-   1. Gate workflow and sandbox (retires the biggest risk).
+   1. Gate workflow and sandbox (retires the biggest risk). Built (MainWatcher#5); TS-S4 and TS-S5
+      still to run in the sandbox.
    2. Reusable test workflow + caller template.
    3. `watch.yml` (Planner and Reporter).
    4. Trigger worker.

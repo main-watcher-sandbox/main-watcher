@@ -398,6 +398,13 @@ sequenceDiagram
 **Notes:**
 - **Only App-authored issues lock the queue.**
 - **On `pull_request` events the gate always passes.**
+- **Implementation.** Targets copy `templates/main-watcher-gate.yml`. Its
+  `main-watcher-gate` job runs the gate action from the watcher repo at a pinned tag, which
+  builds `src/MainWatcher.Gate`. The group's PRs are the open PRs into the queue's branch
+  that are associated with a commit between `base_sha` and `head_sha`, named in a merge or
+  squash commit subject, or named in the queue branch; including an extra PR can only make
+  the gate stricter. When the gate fails open, a second job named
+  `main-watcher/gate-fail-open` runs, so the fail-open check run needs no `checks: write`.
 - **PRs removed by the gate** must be re-queued by hand (§17). The unlock comment lists
   them.
 - **Groups already queued when a lock opens (ADR-016).** A group whose gate started before
@@ -775,3 +782,4 @@ team subscribes to that label.
 | 2026-09-16 | A-6 confirmed: outbound HTTPS to `api.github.com` works from the cluster; sandbox namespace `main-watcher-sandbox` created with the App keys in a Kubernetes Secret; production keys will use the cluster's secret store (§8, §10). TS-001 §2 and §3 name the namespace | Platform team | — |
 | 2026-09-16 | Security approved Actions: write for `main-watcher` and Issues: read for `mw-observer`, on condition that the Apps are installed only on watched repos; recorded against R-11. §8 and §10 onboarding and removal steps updated; TS-001 §6 checklist extended | Security; platform team with Claude | ADR-009, ADR-013, ADR-014, ADR-016 (no change) |
 | 2026-09-16 | Sandbox targets `sample-target` and `sample-target-slow` seeded from `sandbox/sample-target`: xUnit v3 on .NET 10 with Microsoft Testing Platform, one CTRF report per test project, outcomes steered by `sandbox.json`, merge queue on `main`. TS-001 §3 names them | Platform team with Claude | — |
+| 2026-09-16 | Gate template v1 built (MainWatcher#5): `templates/main-watcher-gate.yml`, the gate action and `src/MainWatcher.Gate`; the `gate-fail-open` check run is a job in the template, so gate permissions stay read-only (§5.2). Watcher repo CI runs unit tests and actionlint | Platform team with Claude | ADR-002, ADR-008, ADR-014 (no change) |

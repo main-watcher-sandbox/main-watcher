@@ -54,8 +54,12 @@ An unknown key makes every test except `Baseline.Runs` fail, so a typo in `sandb
 
 `main` has the ruleset `main merge queue` (`sandbox/rulesets/main-merge-queue.json`):
 merge limit 2, minimum group 1, 1-minute wait, so batched groups can be formed (TS-S5).
-Organisation admins bypass it, so scenario scripts can push to `main` directly. The gate
-workflow becomes a required check in MainWatcher#5.
+Organisation admins bypass it, so scenario scripts can push to `main` directly.
+
+`.github/workflows/main-watcher-gate.yml` is added by `seed-target.sh` from MainWatcher's
+`templates/`, using the gate action from `main-watcher-sandbox/main-watcher`. Its
+`main-watcher-gate` job is a required check. While an App-authored `main-broken` issue with a
+valid lease is open, merge groups fail unless every PR in them is labelled `fixes-main`.
 
 ## Self-test
 

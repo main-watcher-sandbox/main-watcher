@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MainWatcher.Gate/MainWatcher.Gate.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MainWatcher.Gate.Tests/MainWatcher.Gate.Tests.csproj" />
+  </Folder>
+</Solution>
