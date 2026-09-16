@@ -19,6 +19,8 @@ on:
 
 permissions:
   contents: read
+  # For timings and the report job's history of earlier runs (ADR-011). Nothing is written.
+  actions: read
 
 jobs:
   tests:
