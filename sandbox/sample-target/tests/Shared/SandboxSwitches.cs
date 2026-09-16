@@ -24,6 +24,9 @@ public sealed record SandboxSwitches
     [JsonPropertyName("fail_upload")] public bool FailUpload { get; init; }
     [JsonPropertyName("hang_upload")] public bool HangUpload { get; init; }
 
+    // Read by the sandbox-slow-check workflow, not by tests.
+    [JsonPropertyName("slow_check_minutes")] public double SlowCheckMinutes { get; init; }
+
     public static SandboxSwitches Current { get; } = Load();
 
     public bool ShouldFail(string testName) =>

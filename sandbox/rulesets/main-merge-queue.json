@@ -37,6 +37,10 @@
           {
             "context": "main-watcher-gate",
             "integration_id": 15368
+          },
+          {
+            "context": "sandbox-slow-check",
+            "integration_id": 15368
           }
         ]
       }

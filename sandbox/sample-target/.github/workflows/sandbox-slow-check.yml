@@ -1,0 +1,28 @@
+# A second required check that stands in for a target's own slow CI (TS-S17). It passes at
+# once on pull requests; on merge groups it waits slow_check_minutes from sandbox.json.
+name: sandbox-slow-check
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  slow-check:
+    name: sandbox-slow-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - if: github.event_name == 'merge_group'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: sandbox.json
+          sparse-checkout-cone-mode: false
+
+      - if: github.event_name == 'merge_group'
+        run: |
+          minutes="$(jq -r '.slow_check_minutes // 0' sandbox.json)"
+          echo "Waiting $minutes minute(s)"
+          sleep "$(awk -v m="$minutes" 'BEGIN { printf "%d", m * 60 }')"
