@@ -7,7 +7,7 @@ owner: platform-team
 reviewed: 2026-09-16
 review_by: 2027-03-15
 review_trigger: "more than 20 target repos, public webhook hosting becomes available, or GitHub ships a native merge-queue pause"
-sources: [FR-1, FR-2, FR-3, FR-4, FR-5, FR-6, C-1, C-2, C-6, C-7, ADR-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016, ADR-017]
+sources: [FR-1, FR-2, FR-3, FR-4, FR-5, FR-6, C-1, C-2, C-6, C-7, ADR-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016, ADR-017, ADR-018]
 confidence: assumed
 ---
 
@@ -230,7 +230,7 @@ flowchart LR
 | Trigger worker | Every `check_period`, detects work per target (eligible head, ADR-017; finished `main-watcher` job, stale run, lock lease due for renewal, closed lock not yet reconciled, unfinished queue sweep) and starts `watch.yml`. Exposes `/healthz`. Raises `watcher-infra` issues if the watcher hasn't completed a run in 2 h, if reporting has been pending, or a queue sweep unfinished, for more than 15 min, on repeated errors, or on token failures (ADR-012, ADR-013, ADR-014, ADR-016) | .NET 8+ `BackgroundService`, container, 1 replica | Platform team | FR-2, C-7 |
 | watch.yml — Planner | For the targets passed in (or all, on the hourly sweep): for an eligible head (ADR-017), creates an in-progress check run, starts the target's test workflow with `return_run_details`, stores the run ID in the check run's `external_id`. Handles stale runs: cancels a run past its queue or run deadline, and reports it once it has stopped (ADR-013); renews lock leases (ADR-014); finishes queue sweeps (ADR-016); reconciles merges made during a lock, through the lock's closure, judging labels at merge time (ADR-008, ADR-015); raises "worker appears down" if work waited more than 15 min | GitHub Actions job running the .NET watcher scripts | Platform team | FR-2, NFR-3, NFR-4 |
 | watch.yml — Reporter | When a target run's `main-watcher` job has completed (other jobs in the run are ignored): reads the outcome of the `main-watcher-test` step, trusted only when the `main-watcher-tests-finished` marker step succeeded, downloads CTRF, finds the last green commit, collects pushes, opens, updates or closes the lock issue (never re-locking a commit a human overrode), and only then completes the check run, so an interrupted report is replayed (ADR-013). After opening a lock, it re-runs the gate for merge groups queued before it (ADR-016). Adds a timing section to the check run: suite time, change from last green, 5 slowest tests, retry flag (ADR-011) | GitHub Actions job running the .NET watcher scripts | Platform team | FR-3, FR-4 |
-| run-integration-tests.yml | `main-watcher` job: checks out `sha` and restores (setup steps); builds and runs tests with one retry of failed tests in a single step, `main-watcher-test`, through a wrapper that enforces the target's timeout; a marker step, `main-watcher-tests-finished`, succeeds only if the tests ran to completion (ADR-013); then writes `timings.json` and uploads the `main-watcher-ctrf` artifact, even when that step failed. `report` job: no secrets, read-only token, publishes the CTRF job summary with the slowest tests and duration trends (ADR-011) | Reusable GitHub workflow, version-tagged; `ctrf-io/github-test-reporter` pinned by SHA | Platform team | FR-2, FR-6, ADR-007 |
+| run-integration-tests.yml | `main-watcher` job: checks out `sha` and restores (setup steps); builds and runs tests with one retry of failed tests in a single step, `main-watcher-test`, through a wrapper that enforces the target's timeout; a marker step, `main-watcher-tests-finished`, succeeds only if the tests ran to completion (ADR-013); then writes `timings.json` and uploads the `main-watcher-ctrf` artifact, even when that step failed. `report` job: no secrets, `actions: read` and `contents: read`, publishes the CTRF job summary with the slowest tests and duration trends, reading earlier runs from the `main-watcher-report` artifact it uploads (ADR-011, ADR-018) | Reusable GitHub workflow, version-tagged; `ctrf-io/github-test-reporter` pinned by SHA | Platform team | FR-2, FR-6, ADR-007 |
 | main-watcher-tests.yml | Caller: `workflow_dispatch` inputs → reusable workflow, `secrets: inherit`. The place where the target sets up OIDC or feeds | ~15-line workflow in target | Target owners (template from platform) | FR-5 |
 | Gate workflow | On `merge_group`: fails while an App-authored lock with an unexpired lease is open, unless every PR in the group has `fixes-main`. Fails open, with a warning, on API errors or an expired lease (ADR-008, ADR-014). On `pull_request`: always passes | ~40-line workflow in target | Target owners (template from platform) | FR-4, C-2 |
 | main | The branch under test | Git branch | Target owners | FR-2 |
@@ -477,6 +477,7 @@ Main Watcher has no datastore.
 | Last green commit, last reconciled activity, lease, last reported check, reconciliation complete, queue sweep | Check runs; hidden markers in the lock issue, open or closed | — | Internal | As above |
 | Test logs, CTRF reports | Actions run and artifact **in the target repo** | Excerpts in the issue | Internal; may contain secrets if tests print them | Target repo's artifact retention |
 | Test timings (`timings.json`: queue wait, step durations, wall time, summed test time, retry flag) | `main-watcher-ctrf` artifact in the target repo | Job summary; check run output | Internal | Target repo's artifact retention; phase 2 store deferred (ADR-011) |
+| Job-summary history (the reporter's merged CTRF report per run) | `main-watcher-report` artifact in the target repo | Duration trends and slowest tests in later job summaries | Internal | Target repo's artifact retention; the last 100 runs are read (ADR-018) |
 
 ## 8. Security
 
@@ -498,6 +499,10 @@ Main Watcher has no datastore.
 
 **Report job permissions (in the target's run):** `actions: read`, `contents: read`. It has
 no secret references, and the third-party reporter action is pinned by commit SHA (R-16).
+
+**Test job permissions (in the target's run):** `contents: read`, `actions: read`. The token
+is passed only to the step that writes `timings.json`, to read when the run and the job
+started; restore and tests never receive it (ADR-018).
 
 **Gate workflow permissions:** `issues: read`, `pull-requests: read`, `contents: read`.
 
@@ -629,9 +634,11 @@ repositories of `main-watcher` and `mw-observer` (R-11).
 All alerts arrive as de-duplicated `watcher-infra` issues in the watcher repo. The platform
 team subscribes to that label.
 
-**Test-duration metrics (FR-6, ADR-011):**
-- **Per run:** the job summary shows the slowest tests (top 10 by average across up to 100
-  previous runs), duration trends and flaky rates.
+**Test-duration metrics (FR-6, ADR-011, ADR-018):**
+- **Per run:** the job summary shows the slowest tests (top 10 across up to 100 previous
+  runs, ranked by 95th percentile, with the average beside it), each earlier run's
+  wall-clock time as the duration trend, and flaky rates. `timings.json` adds queue wait,
+  restore and build-and-test step times, and summed per-test time.
 - **Per commit:** the check run shows suite time, change from the last green run, and the
   5 slowest tests.
 - **Measurement rules:**
@@ -691,13 +698,14 @@ team subscribes to that label.
 | ADR-008 | Gate fails open on API errors; the watcher reconciles merges made during a lock | Accepted, amended by ADR-014 and ADR-015 | More than one unlabelled merge during a lock per quarter |
 | ADR-009 | Tests run as a workflow in each target repo, started by the watcher | Accepted | Security rejects `actions: write` on targets |
 | ADR-010 | Self-hosted .NET trigger worker; GitHub schedule only as an hourly backup | Accepted, amended by ADR-012, ADR-013, ADR-014 and ADR-017 | Webhook hosting becomes available |
-| ADR-011 | Test-duration metrics phase 1 in GitHub (job summary, check run, `timings.json`); own store deferred | Accepted | Need for cross-repo views or alerts |
+| ADR-011 | Test-duration metrics phase 1 in GitHub (job summary, check run, `timings.json`); own store deferred | Accepted, amended by ADR-018 | Need for cross-repo views or alerts |
 | ADR-012 | The worker alerts through `watcher-infra` GitHub issues | Accepted | A monitoring stack is adopted |
 | ADR-013 | The Reporter completes the check run last; an interrupted report is replayed | Accepted (CQ-10) | "Reporting pending" alert more than once a month |
 | ADR-014 | A lock is enforced only while the watcher renews its lease | Accepted (CQ-11) | A lock lapses more than once a quarter |
 | ADR-015 | Reconciliation follows each lock through its closure, judging labels at merge time | Accepted (CQ-12) | A closed lock unreconciled 24 h after closing |
 | ADR-016 | Opening a lock re-runs the gate for merge groups already in the queue; FR-4 narrowed to report a race of seconds | Accepted (CQ-13); A-7 confirmed by the sandbox spike on 2026-09-16 (MainWatcher#6) | TS-S17 disproves A-7 |
 | ADR-017 | A head whose newest result is neutral is tested again after a wait, up to 3 times | Accepted (CQ-14) | "Head untestable" more than once a month |
+| ADR-018 | The job summary keeps its history in `main-watcher-report`; the test job has `actions: read` for the timings step; previous-results report as the duration trend | Accepted | Reporter pin updated |
 
 ## 16. Risks and open questions
 
@@ -786,3 +794,4 @@ team subscribes to that label.
 | 2026-09-16 | Sandbox TS-S4 passed. TS-S5 disproved A-5 as worded: a queue entry's `base_sha` is the head of the entry ahead of it, so the gate now compares `base_ref...head_sha` and sees every PR in a batch (§3, §5.2). Sandbox targets use the gate from the public `main-watcher-sandbox/gate` repo, because a public target cannot use an action from a private repo | Platform team with Claude | ADR-002 (no change) |
 | 2026-09-16 | A-7 confirmed in the sandbox (MainWatcher#6): re-running a passed gate while another required check waits keeps the group queued; a failed re-run removes the group within seconds; queue branch naming recorded (§3). Sandbox targets gain a second required check, `sandbox-slow-check` | Platform team with Claude | ADR-016 (no change; its review trigger is not raised) |
 | 2026-09-16 | Reusable test workflow v1 and caller template built (MainWatcher#7): `run-integration-tests.yml`, `templates/main-watcher-tests.yml` and the deadline wrapper `src/MainWatcher.TestRunner`. The target's timeout is a workflow input; the job timeout adds 20 min through a lookup, as expressions have no arithmetic. Inherited secrets become environment variables for restore and tests. The retry appends `--ignore-exit-code 8 --filter-method …` to the test command, skips more than 100 failures, and folds its results into the first attempt's CTRF reports (`retries`, `flaky`). §4 row corrected: the job is `main-watcher`. In the sandbox, a caller's job is listed as `main-watcher-tests / main-watcher`, confirming ADR-013's `[assumption]` on called-workflow job names; passing and failing runs both uploaded `main-watcher-ctrf`, with the marker step `success` | Platform team with Claude | ADR-007, ADR-009, ADR-013 (no change) |
+| 2026-09-16 | Test timings built (MainWatcher#8, FR-6). The `main-watcher` job writes `timings.json` into `main-watcher-ctrf` (schema 1, whole milliseconds, null when unknown): queue wait (run start to job start, from the Actions API), restore and build-and-test step times, the tests' wall-clock time from the first attempt's CTRF summaries and their summed per-test time, and the retry flag. The job gains `actions: read`, given only to the timings step, and the caller template grants it (§8). The `report` job runs `ctrf-io/github-test-reporter` v1.3.0, pinned by SHA, with no secrets and only `actions: read` and `contents: read`. Changes from ADR-011's configuration, recorded in ADR-018: the reporter reads only the first JSON file of an earlier run's artifact, so it saves its merged report as `main-watcher-report` and reads history from that, not from `main-watcher-ctrf`; and v1.3.0's insights table has no duration trend, so `previous-results-report` is added. v1.3.0 ranks the slowest tests by 95th percentile, not by average as ADR-011 expected (§12). `fail_upload` also deletes `timings.json`. Sandbox TS-S13, job-summary half, passed: over three runs of the 50 ms, 2 s and 20 s tests, the average, 95th percentile and run durations shown match xUnit v3's CTRF milliseconds (20.1 s, 2.1 s, 136 ms; runs 20.2 s, 20.3 s, 20.2 s), so R-17 does not occur with this pin; a flaky run was flagged as retried | Requester; platform team with Claude | ADR-018 (amends ADR-011) |

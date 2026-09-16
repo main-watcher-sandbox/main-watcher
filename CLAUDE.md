@@ -8,15 +8,18 @@ durations and the slowest tests.
 
 **Status:** architecture designed (2026-09-15). Build started (2026-09-16): the sandbox
 target repo template is in `sandbox/`; the gate is built (MainWatcher#5); the reusable test
-workflow is built (MainWatcher#7).
+workflow is built (MainWatcher#7); test timings (`timings.json` and the CTRF job summary) are
+built (MainWatcher#8).
 
 ## Where things are
 
 - `docs/architecture/architecture.md` — the main document (ARCH-001). Start here.
-- `docs/architecture/decisions/` — ADR-001 to ADR-017.
+- `docs/architecture/decisions/` — ADR-001 to ADR-018.
   - ADR-005 is superseded by ADR-007; ADR-006 is superseded by ADR-009.
   - ADR-013 to ADR-017 were accepted on 2026-09-15 (CQ-10 to CQ-14). They amend
     ADR-002, ADR-003, ADR-008 and ADR-010, which carry a note saying so.
+  - ADR-018 (2026-09-16, MainWatcher#8) amends ADR-011: the job summary's history artifact
+    and the test job's `actions: read`.
   - Accepted ADRs are never edited. A changed decision gets a new ADR that supersedes or
     amends the old one, plus a note at the top of the old one.
 - `docs/architecture/test-strategy.md` — TS-001: scenario tests TS-S1–S18, unit tests
@@ -31,7 +34,8 @@ workflow is built (MainWatcher#7).
   `main-watcher-sandbox/gate` repo that the public sandbox targets use.
 - `MainWatcher.slnx` — the watcher's .NET projects (`src/`, `tests/`; .NET 10, xUnit v3 on
   Microsoft Testing Platform). `src/MainWatcher.Gate` is the gate's logic;
-  `src/MainWatcher.TestRunner` is the deadline-and-retry wrapper the test workflow runs.
+  `src/MainWatcher.TestRunner` is the deadline-and-retry wrapper the test workflow runs, and
+  writes `timings.json`.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
@@ -97,7 +101,9 @@ metrics store (PostgreSQL + Grafana) is deferred.
    - TS-S14, TS-S16 and TS-S18: the reporting, cancel and retry lifecycle (ADR-013,
      ADR-017), which relies on GitHub's job, step and timeout behaviour.
 2. Verify team @-mentions from an App notify the team (TS-S10, R-10).
-3. Verify CTRF duration units shown by the reporter action (TS-S13, R-17).
+3. TS-S13, check-run half: suite time, 5 slowest tests and retry flag, once the Reporter
+   exists. The job-summary half passed on 2026-09-16 (MainWatcher#8): reporter v1.3.0 shows
+   xUnit v3's millisecond durations in the right units (R-17).
 4. Remaining `[assumption]` tags: worker resource sizing and .NET version.
 
 ## Suggested next steps
@@ -106,7 +112,8 @@ metrics store (PostgreSQL + Grafana) is deferred.
 2. Build order:
    1. Gate workflow and sandbox (retires the biggest risk). Built (MainWatcher#5); TS-S4 and TS-S5
       passed in the sandbox on 2026-09-16.
-   2. Reusable test workflow + caller template. Built (MainWatcher#7).
+   2. Reusable test workflow + caller template. Built (MainWatcher#7); timings and the
+      `report` job built (MainWatcher#8).
    3. `watch.yml` (Planner and Reporter).
    4. Trigger worker.
    5. Onboarding docs.

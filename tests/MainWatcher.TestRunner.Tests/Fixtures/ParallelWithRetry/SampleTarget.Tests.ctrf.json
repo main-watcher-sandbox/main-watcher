@@ -1,0 +1,144 @@
+{
+  "reportFormat": "CTRF",
+  "specVersion": "0.0.0",
+  "reportId": "33cba6c1-9891-4fb9-a797-254db25a1c17",
+  "timestamp": "2026-09-16T18:20:34Z",
+  "results": {
+    "tool": {
+      "name": "xUnit.net v3",
+      "version": "3.2.2+728c1dce01"
+    },
+    "environment": {
+      "osPlatform": "Linux",
+      "osRelease": "Ubuntu 24.04"
+    },
+    "extra": {
+      "computer": "runner",
+      "user": "runner",
+      "suites": [
+        {
+          "id": "8b7b5715-f13c-429c-9a55-d1d38a5409a3",
+          "filePath": "/home/runner/work/sample-target/sample-target/tests/SampleTarget.Tests/bin/Debug/net10.0/SampleTarget.Tests.dll",
+          "environment": "64-bit (x64) .NET 10.0.12 [collection-per-class, parallel (20 threads)]",
+          "testFramework": "xUnit.net v3 3.2.2+728c1dce01",
+          "targetFramework": ".NETCoreApp,Version=v10.0",
+          "start": 1789582834287,
+          "stop": 1789582834422,
+          "duration": 140,
+          "collections": [
+            {
+              "id": "47f1f6bc-ea68-4aa9-9a37-4f25a9120fa9",
+              "name": "Test collection for SampleTarget.Tests.BehaviourTests (id: aec236427fec6ab308b944ec07df3df2868808474e7b3b64ca259025cce48b1c)"
+            },
+            {
+              "id": "2efbffec-b53d-4aaa-a68d-b110afbd4f52",
+              "name": "Test collection for SampleTarget.Tests.OutcomeTests (id: 10a4c0a0893da564a82f57522a1d7674769d939f63a051920b09cfae77de1235)"
+            }
+          ],
+          "errors": []
+        }
+      ]
+    },
+    "summary": {
+      "tests": 6,
+      "passed": 4,
+      "failed": 0,
+      "pending": 0,
+      "skipped": 2,
+      "other": 0,
+      "suites": 1,
+      "start": 1789582834287,
+      "stop": 1789582834422
+    },
+    "tests": [
+      {
+        "name": "SampleTarget.Tests.BehaviourTests.Hang",
+        "status": "skipped",
+        "duration": 0,
+        "suite": "8b7b5715-f13c-429c-9a55-d1d38a5409a3",
+        "filePath": "/home/runner/work/sample-target/sample-target/tests/SampleTarget.Tests/BehaviourTests.cs",
+        "line": 23,
+        "extra": {
+          "id": "285ef925-580c-4e27-bd3e-958c925cf3dc",
+          "collection": "47f1f6bc-ea68-4aa9-9a37-4f25a9120fa9",
+          "type": "SampleTarget.Tests.BehaviourTests",
+          "method": "Hang",
+          "reason": "hang_test is false"
+        }
+      },
+      {
+        "name": "SampleTarget.Tests.BehaviourTests.SlowSuite",
+        "status": "skipped",
+        "duration": 0,
+        "suite": "8b7b5715-f13c-429c-9a55-d1d38a5409a3",
+        "filePath": "/home/runner/work/sample-target/sample-target/tests/SampleTarget.Tests/BehaviourTests.cs",
+        "line": 10,
+        "extra": {
+          "id": "6c3216be-c328-4d47-a75a-cfef0703d130",
+          "collection": "47f1f6bc-ea68-4aa9-9a37-4f25a9120fa9",
+          "type": "SampleTarget.Tests.BehaviourTests",
+          "method": "SlowSuite",
+          "reason": "slow_suite_minutes is 0"
+        }
+      },
+      {
+        "name": "SampleTarget.Tests.BehaviourTests.Flaky",
+        "status": "passed",
+        "duration": 35,
+        "suite": "fdac3bbf-50b5-4fb3-b9d1-195dc897bd7d",
+        "filePath": "/home/runner/work/sample-target/sample-target/tests/SampleTarget.Tests/BehaviourTests.cs",
+        "line": 36,
+        "extra": {
+          "id": "c531d704-a15a-4dfe-a907-f685c9550f4c",
+          "collection": "0de4cd89-5b12-42d8-b72e-70d2d584d303",
+          "type": "SampleTarget.Tests.BehaviourTests",
+          "method": "Flaky"
+        },
+        "retries": 1,
+        "flaky": true
+      },
+      {
+        "name": "SampleTarget.Tests.OutcomeTests.Alpha",
+        "status": "passed",
+        "duration": 38,
+        "suite": "8b7b5715-f13c-429c-9a55-d1d38a5409a3",
+        "filePath": "/home/runner/work/sample-target/sample-target/tests/SampleTarget.Tests/OutcomeTests.cs",
+        "line": 8,
+        "extra": {
+          "id": "c3e775e7-6d9a-4159-924f-7636e90932da",
+          "collection": "2efbffec-b53d-4aaa-a68d-b110afbd4f52",
+          "type": "SampleTarget.Tests.OutcomeTests",
+          "method": "Alpha"
+        }
+      },
+      {
+        "name": "SampleTarget.Tests.OutcomeTests.Gamma",
+        "status": "passed",
+        "duration": 0,
+        "suite": "8b7b5715-f13c-429c-9a55-d1d38a5409a3",
+        "filePath": "/home/runner/work/sample-target/sample-target/tests/SampleTarget.Tests/OutcomeTests.cs",
+        "line": 14,
+        "extra": {
+          "id": "cbbdd0b4-478f-4599-87b2-cd325a3ffbba",
+          "collection": "2efbffec-b53d-4aaa-a68d-b110afbd4f52",
+          "type": "SampleTarget.Tests.OutcomeTests",
+          "method": "Gamma"
+        }
+      },
+      {
+        "name": "SampleTarget.Tests.OutcomeTests.Beta",
+        "status": "passed",
+        "duration": 0,
+        "suite": "8b7b5715-f13c-429c-9a55-d1d38a5409a3",
+        "filePath": "/home/runner/work/sample-target/sample-target/tests/SampleTarget.Tests/OutcomeTests.cs",
+        "line": 11,
+        "extra": {
+          "id": "327add08-3e93-48a0-bec0-93687c53f36e",
+          "collection": "2efbffec-b53d-4aaa-a68d-b110afbd4f52",
+          "type": "SampleTarget.Tests.OutcomeTests",
+          "method": "Beta"
+        }
+      }
+    ]
+  }
+}

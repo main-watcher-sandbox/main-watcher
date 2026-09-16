@@ -4,6 +4,10 @@ using MainWatcher.TestRunner;
 // Runs a target's tests inside the main-watcher-test step of run-integration-tests.yml.
 // Writes finished=true only when the tests ran to completion, and exits with their exit code;
 // the main-watcher-tests-finished marker step depends on that output (ADR-013).
+// With the argument "timings", writes timings.json instead (ADR-011).
+
+if (args is ["timings"])
+    return await TimingsCommand.RunAsync(Console.WriteLine);
 
 var command = Environment.GetEnvironmentVariable("MW_TEST_COMMAND");
 var timeout = Environment.GetEnvironmentVariable("MW_TIMEOUT_MINUTES");
@@ -25,8 +29,8 @@ var result = await TestRunner.RunAsync(
     },
     Console.WriteLine);
 
-Append("GITHUB_OUTPUT", $"retry-count={result.RetryCount}\n" + (result.Finished ? "finished=true\n" : ""));
-Append("GITHUB_STEP_SUMMARY", result switch
+StepFiles.Append("GITHUB_OUTPUT", $"retry-count={result.RetryCount}\n" + (result.Finished ? "finished=true\n" : ""));
+StepFiles.Append("GITHUB_STEP_SUMMARY", result switch
 {
     { Finished: false } => "## Tests stopped at their timeout\n",
     { RetryCount: 1 } => $"## Tests finished with exit code {result.ExitCode} after retrying\n\n{string.Concat(result.RetriedTests.Select(t => $"- `{t}`\n"))}",
@@ -34,9 +38,3 @@ Append("GITHUB_STEP_SUMMARY", result switch
 });
 
 return result.ExitCode;
-
-static void Append(string fileVariable, string text)
-{
-    if (Environment.GetEnvironmentVariable(fileVariable) is { Length: > 0 } path)
-        File.AppendAllText(path, text);
-}

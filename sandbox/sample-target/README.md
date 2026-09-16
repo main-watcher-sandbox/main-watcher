@@ -37,7 +37,7 @@ Microsoft Testing Platform exits with code 8 when a project runs no tests.
 | `hang_test` | `false` | `Hang` sleeps forever and ignores cancellation | TS-S16 (e) |
 | `flaky_test` | `false` | `Flaky` fails on the first attempt of a workflow run and passes on the retry | TS-S13 retry flag |
 | `fail_restore` | `false` | `Directory.Build.props` points restore at an unreachable feed, with an empty packages folder: `dotnet restore` fails with NU1301 | TS-S16, TS-S18 |
-| `fail_upload` | `false` | A failing step before the CTRF upload deletes the reports, so no `main-watcher-ctrf` artifact is uploaded. Read by the sandbox build of the reusable test workflow, not by this repo's tests | TS-S16 |
+| `fail_upload` | `false` | A failing step before the CTRF upload deletes the reports and `timings.json`, so no `main-watcher-ctrf` artifact is uploaded. Read by the sandbox build of the reusable test workflow, not by this repo's tests | TS-S16 |
 | `slow_check_minutes` | `0` | On merge groups, the required `sandbox-slow-check` job waits this many minutes before passing, like a target's own slow CI. Read from the merge group's commit | TS-S17, MainWatcher#6 |
 | `hang_upload` | `false` | A step before the CTRF upload hangs until its 5-minute timeout. Read by the sandbox build of the reusable test workflow, not by this repo's tests | TS-S16 (d) |
 
