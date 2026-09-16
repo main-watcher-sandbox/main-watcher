@@ -445,6 +445,42 @@ public class WatcherTests
     }
 
     [Fact]
+    public async Task AGreenPushOutsideTheActivityReadKeepsEveryPushReadInsteadOfStoppingAtALaterRollback()
+    {
+        var fake = new FakeGitHub
+        {
+            HistoryShas = [Sha('f'), Sha('a')],
+            CommitCheckRuns = new() { [Sha('a')] = [Result(10, 'a', "success", 60)] },
+            // The push that made a the head for its green run is older than the 100 entries read; the newest is a rollback to a.
+            Activity = [PushAt('f', 'a', "force_push", "alice", 3), .. Enumerable.Range(0, 99).Select(i => PushAt('a', 'f', "push", $"user{i}", 5 + i % 50))],
+        };
+        await new Reporter(fake).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('f')), TestContext.Current.CancellationToken);
+        var body = fake.Issues["owner/repo"].Single().Body;
+        Assert.DoesNotContain("No pushes found", body);
+        Assert.Contains("| alice | force push |", body);
+        Assert.Contains("| user98 | push |", body);
+        Assert.Contains("The repository activity read does not reach back far enough", body);
+    }
+
+    [Theory]
+    // A rollback more than ClockSkew after the green run started is not mistaken for the green run's push.
+    [InlineData(1, false)]
+    [InlineData(3, true)]
+    public async Task OnlyABoundedClockSkewLetsALaterPushToGreenBeTheBoundary(int minutesAfterStart, bool listed)
+    {
+        var fake = new FakeGitHub
+        {
+            HistoryShas = [Sha('f'), Sha('a')],
+            CommitCheckRuns = new() { [Sha('a')] = [Result(10, 'a', "success", 60)] },
+            Activity = [PushAt('f', 'a', "force_push", "alice", 60 - minutesAfterStart), PushAt('a', 'f', "push", "bob", 70)],
+        };
+        await new Reporter(fake).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('f')), TestContext.Current.CancellationToken);
+        var body = fake.Issues["owner/repo"].Single().Body;
+        Assert.Equal(listed, body.Contains("| alice | force push |"));
+        Assert.Equal(listed, body.Contains("The repository activity read does not reach back far enough"));
+    }
+
+    [Fact]
     public async Task AForcePushedGreenCommitListsActivityAfterItsCheckRun()
     {
         var fake = new FakeGitHub
@@ -478,7 +514,7 @@ public class WatcherTests
         Assert.Contains("No green Main Watcher run was found, so this lists the last 100 pushes.", body);
         Assert.Contains("| user99 |", body);
         Assert.DoesNotContain("| user100 |", body);
-        Assert.Contains("Only the newest 100 pushes were read", body);
+        Assert.Contains("The repository activity read does not reach back far enough", body);
         Assert.DoesNotContain("last_green=", body);
     }
 

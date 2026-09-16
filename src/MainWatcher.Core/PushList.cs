@@ -16,14 +16,17 @@ public enum PushSource
 public sealed record ListedPush(Push Push, int? Commits);
 
 /// <summary>What could have broken <c>main</c>. <see cref="Green"/> is the newest green check run found, if any.
-/// <see cref="CommitsChecked"/> is the walk-back length: commits whose check runs were read (ADR-003).</summary>
-public sealed record PushListResult(PushSource Source, CheckRun? Green, IReadOnlyList<ListedPush> Pushes, bool Truncated, int CommitsChecked);
+/// <see cref="CommitsChecked"/> is the walk-back length: commits whose check runs were read (ADR-003).
+/// <see cref="Incomplete"/> means the activity read may not reach back to the start of the list.</summary>
+public sealed record PushListResult(PushSource Source, CheckRun? Green, IReadOnlyList<ListedPush> Pushes, bool Incomplete, int CommitsChecked);
 
 /// <summary>Finds the newest green check run on <c>main</c> and lists repository activity since it (FR-3).</summary>
 public static class PushList
 {
     /// <summary>Walk-back cap from ADR-003, also the activity cap.</summary>
     public const int Limit = 100;
+    /// <summary>How far after its check run started a push to the green commit may be stamped and still count as the one it tested.</summary>
+    public static readonly TimeSpan ClockSkew = TimeSpan.FromMinutes(2);
 
     public static async Task<PushListResult> Collect(IGitHubGateway github, string repo, string failingSha, CancellationToken ct)
     {
@@ -40,10 +43,14 @@ public static class PushList
             var pushes = await github.Pushes(repo, Limit, ct);
             PushSource source;
             IEnumerable<Push> listed;
+            var incomplete = false;
             if (green is not null)
             {
                 source = PushSource.SinceGreen;
-                listed = pushes.Take(GreenPush(pushes, green) ?? pushes.Count);
+                var boundary = GreenPush(pushes, green);
+                // Without the green run's own push in the activity read, keep everything read, flagged as incomplete.
+                incomplete = boundary is null;
+                listed = pushes.Take(boundary ?? pushes.Count);
             }
             else
             {
@@ -59,10 +66,10 @@ public static class PushList
                 listed = green is null ? pushes : pushes.Where(p => p.Timestamp > green.StartedAt);
             }
             var rows = listed.ToArray();
-            var truncated = pushes.Count == Limit && rows.Length == pushes.Count;
+            incomplete |= pushes.Count == Limit && rows.Length == pushes.Count;
             var counted = new List<ListedPush>();
             foreach (var push in rows) counted.Add(new(push, await Count(github, repo, push, ct)));
-            return new(source, green, counted, truncated, commitsChecked);
+            return new(source, green, counted, incomplete, commitsChecked);
         }
         // The lock must still open: without a push list it links a comparison instead.
         catch (Exception) when (!ct.IsCancellationRequested)
@@ -74,19 +81,20 @@ public static class PushList
     /// <summary>
     /// The index, in newest-first <paramref name="pushes"/>, of the push that made the green commit the head its
     /// check run tested: the newest push to that commit at or before the run started. A later push back to the
-    /// same commit (a rollback) is listed, not taken as the boundary. If clock skew puts every push to the commit
-    /// after the run started, the oldest of them is closest to the start. Null when no listed push names it.
+    /// same commit (a rollback) is listed, not taken as the boundary. Failing that, the oldest push to it within
+    /// <see cref="ClockSkew"/> after the start, as clocks may differ. Null when the activity read holds neither,
+    /// for example when the push is older than the newest <see cref="Limit"/> entries.
     /// </summary>
     static int? GreenPush(IReadOnlyList<Push> pushes, CheckRun green)
     {
-        int? oldest = null;
+        int? skewed = null;
         for (var i = 0; i < pushes.Count; i++)
         {
             if (pushes[i].After != green.Sha) continue;
             if (pushes[i].Timestamp <= green.StartedAt) return i;
-            oldest = i;
+            if (pushes[i].Timestamp <= green.StartedAt + ClockSkew) skewed = i;
         }
-        return oldest;
+        return skewed;
     }
 
     /// <summary>A commit is green when its newest check run succeeded (ADR-017).</summary>

@@ -109,7 +109,10 @@ so a failed issue write leaves the check `in_progress` for the next cycle.
   and takes the first whose newest `main-watcher` check run succeeded (ADR-003, ADR-017).
   It lists repository activity on `main` newer than the push that made that commit the head
   for its green run: the newest push to it at or before that run started, so a later rollback
-  to the green commit is listed rather than ending the list. Each row shows
+  to the green commit is listed rather than ending the list. A push stamped up to 2 minutes
+  after the run started also counts, for clock differences. If the activity read holds no
+  such push (it is older than the newest 100 entries), every push read is listed and the
+  issue says older pushes may also be relevant. Each row shows
   time (UTC), pusher (plain login, never `@`), type (push, force push, PR merge,
   merge-queue merge), before→after with a compare link, and the commit count from the
   compare API (`?` when GitHub cannot compare, for example after a force push). At most 100

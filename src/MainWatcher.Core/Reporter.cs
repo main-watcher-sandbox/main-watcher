@@ -133,7 +133,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         var more = result.Pushes.Count - (lines.Count - 2);
         return source + "\n\n" + string.Join("\n", lines)
             + (more > 0 ? $"\n\n…and {more} more; see the repository activity." : "")
-            + (result.Truncated ? $"\n\nOnly the newest {PushList.Limit} pushes were read; older ones may also be relevant." : "");
+            + (result.Incomplete ? "\n\nThe repository activity read does not reach back far enough; older pushes may also be relevant." : "");
     }
 
     static string ShaRange(string repo, Push push)
