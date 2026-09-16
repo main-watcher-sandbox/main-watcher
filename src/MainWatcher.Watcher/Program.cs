@@ -24,7 +24,7 @@ try
     // Alerts go to the watcher repo with its own workflow token; the App token is scoped to the target.
     using var alertHttp = Client(Required("MW_ALERT_TOKEN"));
     var appId = long.Parse(Required("MW_APP_ID"));
-    var github = new GitHubGateway(http, appId);
+    var github = new GitHubGateway(http, appId, log: Console.WriteLine);
     var planner = new Planner(github);
     var reporter = new Reporter(github, new Alerts(new GitHubGateway(alertHttp, appId), Required("MW_ALERT_REPO")),
         Environment.GetEnvironmentVariable("MW_BOT_LOGIN") is { Length: > 0 } bot ? bot : Reporter.DefaultBotLogin);

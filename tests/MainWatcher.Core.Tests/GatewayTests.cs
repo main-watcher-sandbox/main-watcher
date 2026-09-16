@@ -114,6 +114,43 @@ public class GatewayTests
         Assert.Equal(1, requests);
     }
 
+    [Theory]
+    [InlineData("502", "Check 7: dispatch of main-watcher-tests.yml in owner/repo returned no run: HTTP 502 (")]
+    [InlineData("network", "Check 7: dispatch of main-watcher-tests.yml in owner/repo returned no run: network error (connection reset)")]
+    [InlineData("timeout", "Check 7: dispatch of main-watcher-tests.yml in owner/repo returned no run: timed out (")]
+    [InlineData("empty", "Check 7: dispatch of main-watcher-tests.yml in owner/repo returned no run: the response carried no workflow_run_id.")]
+    public async Task DispatchWithoutRunLogsWhyAndSendsOnce(string failure, string expected)
+    {
+        var requests = 0;
+        using var http = Client(new Handler(_ =>
+        {
+            requests++;
+            return failure switch
+            {
+                "502" => Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway)),
+                "network" => throw new HttpRequestException("connection reset"),
+                "timeout" => throw new TaskCanceledException("The request timed out."),
+                _ => Task.FromResult(Response("")),
+            };
+        }));
+        var log = new List<string>();
+        var gateway = new GitHubGateway(http, 1, (_, _) => Task.CompletedTask, log.Add);
+        Assert.Null(await gateway.Dispatch("owner/repo", "head", 7, TestContext.Current.CancellationToken));
+        Assert.Equal(1, requests);
+        Assert.StartsWith(expected, Assert.Single(log));
+    }
+
+    [Fact]
+    public async Task RejectedDispatchStillThrowsWithoutLogging()
+    {
+        using var http = Client(new Handler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.UnprocessableEntity))));
+        var log = new List<string>();
+        var gateway = new GitHubGateway(http, 1, log: log.Add);
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => gateway.Dispatch("owner/repo", "head", 7, TestContext.Current.CancellationToken));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, error.StatusCode);
+        Assert.Empty(log);
+    }
+
     [Fact]
     public async Task CommitHistoryFollowsNextLinkEvenWhenPageIsShort()
     {
