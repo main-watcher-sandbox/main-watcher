@@ -4,6 +4,8 @@
     <PackageReference Include="xunit.v3" Version="3.2.2" />
     <Using Include="Xunit" />
     <ProjectReference Include="../../src/MainWatcher.Core/MainWatcher.Core.csproj" />
+    <!-- The lock marker is read back with the gate's own parser. -->
+    <ProjectReference Include="../../src/MainWatcher.Gate/MainWatcher.Gate.csproj" />
     <None Update="Fixtures/*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../.github/workflows/run-integration-tests.yml" Link="Fixtures/run-integration-tests.yml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

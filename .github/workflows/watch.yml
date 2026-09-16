@@ -13,6 +13,8 @@ on:
         default: false
 permissions:
   contents: read
+  # watcher-infra alerts are issues in this repo (ADR-012).
+  issues: write
 concurrency:
   # GitHub group names are case-insensitive, matching target lookup in the CLI.
   # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
@@ -47,10 +49,15 @@ jobs:
           permission-checks: write
           permission-actions: write
           permission-contents: read
+          permission-issues: write
       - name: Plan and report
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           MW_APP_ID: ${{ vars.MAIN_WATCHER_APP_ID }}
+          # Lock issues count only when authored by this App (the gate's botLogin).
+          MW_BOT_LOGIN: ${{ steps.token.outputs.app-slug }}[bot]
+          MW_ALERT_TOKEN: ${{ github.token }}
+          MW_ALERT_REPO: ${{ github.repository }}
           MW_TARGET: ${{ inputs.target }}
           MW_FORCE: ${{ inputs.force }}
         run: dotnet src/MainWatcher.Watcher/bin/Release/net10.0/MainWatcher.Watcher.dll

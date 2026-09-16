@@ -20,14 +20,14 @@ try
         return 0;
     }
     if (args.Length != 0) throw new ArgumentException("Usage: MainWatcher.Watcher [--validate-target]");
-    using var http = new HttpClient { BaseAddress = new Uri("https://api.github.com/"), Timeout = TimeSpan.FromSeconds(60) };
-    http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Required("GH_TOKEN"));
-    http.DefaultRequestHeaders.UserAgent.ParseAdd("MainWatcher/1.0");
-    http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
-    http.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
-    var github = new GitHubGateway(http, long.Parse(Required("MW_APP_ID")));
+    using var http = Client(Required("GH_TOKEN"));
+    // Alerts go to the watcher repo with its own workflow token; the App token is scoped to the target.
+    using var alertHttp = Client(Required("MW_ALERT_TOKEN"));
+    var appId = long.Parse(Required("MW_APP_ID"));
+    var github = new GitHubGateway(http, appId);
     var planner = new Planner(github);
-    var reporter = new Reporter(github);
+    var reporter = new Reporter(github, new Alerts(new GitHubGateway(alertHttp, appId), Required("MW_ALERT_REPO")),
+        Environment.GetEnvironmentVariable("MW_BOT_LOGIN") is { Length: > 0 } bot ? bot : Reporter.DefaultBotLogin);
     using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
     var recoveryFailed = false;
     foreach (var pending in (await github.Checks(repo, timeout.Token)).Where(c => c.Status != "completed"))
@@ -35,7 +35,7 @@ try
         try
         {
             var check = await planner.Recover(repo, pending, timeout.Token);
-            Console.WriteLine(check.Status == "completed" || await reporter.Report(repo, check, timeout.Token)
+            Console.WriteLine(check.Status == "completed" || await reporter.Report(target, check, timeout.Token)
                 ? $"Reported check {check.Id}." : $"Check {check.Id} remains pending.");
         }
         catch (Exception e) when (!timeout.IsCancellationRequested)
@@ -44,7 +44,8 @@ try
             Console.Error.WriteLine($"Check {pending.Id}: {e.Message}");
         }
     }
-    if (recoveryFailed) return 1;
+    foreach (var failure in reporter.AlertFailures) Console.Error.WriteLine($"Alert not raised: {failure}");
+    if (recoveryFailed || reporter.AlertFailures.Count > 0) return 1;
     var planned = await planner.Plan(target, Environment.GetEnvironmentVariable("MW_FORCE") == "true", timeout.Token);
     Console.WriteLine(planned is null ? "No eligible head." : string.IsNullOrEmpty(planned.ExternalId)
         ? $"Check {planned.Id} awaits dispatch recovery." : $"Started check {planned.Id}, target run {planned.ExternalId}.");
@@ -54,6 +55,16 @@ catch (Exception e)
 {
     Console.Error.WriteLine($"Watcher failed: {e.Message}");
     return 1;
+}
+
+static HttpClient Client(string token)
+{
+    var http = new HttpClient { BaseAddress = new Uri("https://api.github.com/"), Timeout = TimeSpan.FromSeconds(60) };
+    http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+    http.DefaultRequestHeaders.UserAgent.ParseAdd("MainWatcher/1.0");
+    http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+    http.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+    return http;
 }
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

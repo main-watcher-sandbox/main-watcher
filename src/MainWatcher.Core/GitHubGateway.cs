@@ -190,4 +190,36 @@ public sealed class GitHubGateway(HttpClient http, long appId,
             status = "completed", conclusion, completed_at = DateTimeOffset.UtcNow,
             output = new { title = Outcomes.Title(conclusion), summary }
         }, ct);
+
+    public async Task<string?> File(string repo, string path, CancellationToken ct)
+    {
+        try
+        {
+            var file = await Send(HttpMethod.Get, $"repos/{repo}/contents/{path}?ref=main", null, ct);
+            // A directory is an array; files over 1 MB come without inline content.
+            return file.ValueKind == JsonValueKind.Object && Text(file, "content") is { Length: > 0 } content
+                ? System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(content)) : null;
+        }
+        catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.NotFound) { return null; }
+    }
+
+    static Issue ToIssue(JsonElement json) => new(json.GetProperty("number").GetInt32(), Text(json, "title") ?? "", Text(json, "body"),
+        Text(json.GetProperty("user"), "login") ?? "", Text(json.GetProperty("user"), "type") ?? "", Text(json, "html_url") ?? "");
+
+    public async Task<IReadOnlyList<Issue>> OpenIssues(string repo, string label, CancellationToken ct) =>
+        (await Pages($"repos/{repo}/issues?state=open&labels={Uri.EscapeDataString(label)}", null, ct))
+        .Where(i => !i.TryGetProperty("pull_request", out _)).Select(ToIssue).ToArray();
+
+    public async Task<Issue> CreateIssue(string repo, string title, string body, string label, CancellationToken ct)
+    {
+        try { await Send(HttpMethod.Post, $"repos/{repo}/labels", new { name = label, color = "b60205" }, ct); }
+        catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.UnprocessableEntity) { }
+        return ToIssue(await Send(HttpMethod.Post, $"repos/{repo}/issues", new { title, body, labels = new[] { label } }, ct));
+    }
+
+    public async Task Comment(string repo, int number, string body, CancellationToken ct) =>
+        await Send(HttpMethod.Post, $"repos/{repo}/issues/{number}/comments", new { body }, ct);
+
+    public async Task Close(string repo, int number, CancellationToken ct) =>
+        await Send(HttpMethod.Patch, $"repos/{repo}/issues/{number}", new { state = "closed", state_reason = "completed" }, ct);
 }

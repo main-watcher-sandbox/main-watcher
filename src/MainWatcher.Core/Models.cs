@@ -5,3 +5,4 @@ public sealed record CheckRun(long Id, string Sha, string Status, string? Conclu
 public sealed record WorkflowRun(long Id, string Title, DateTimeOffset CreatedAt, string Status);
 public sealed record JobStep(string Name, string? Conclusion);
 public sealed record WorkflowJob(string Name, string Status, IReadOnlyList<JobStep> Steps);
+public sealed record Issue(int Number, string Title, string? Body, string Author, string AuthorType, string Url);
