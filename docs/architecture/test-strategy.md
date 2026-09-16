@@ -37,7 +37,7 @@ confidence: assumed
 
 | Environment | Purpose | Production-like? | Data source |
 |---|---|---|---|
-| Sandbox org `main-watcher-sandbox` `[assumption]` | Scenario tests | Yes: same App manifests, a real merge queue, a worker deployment | Synthetic xUnit v3 repo whose tests pass or fail according to a file; a second synthetic repo with a "slow" suite |
+| Sandbox org `main-watcher-sandbox` | Scenario tests | Yes: same App manifests, a real merge queue, a worker deployment | Synthetic xUnit v3 repo whose tests pass or fail according to a file; a second synthetic repo with a "slow" suite |
 
 ## 4. Simulating dependencies
 
