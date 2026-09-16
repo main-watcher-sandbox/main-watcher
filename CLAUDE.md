@@ -7,7 +7,8 @@ GitHub merge queue; only PRs labelled `fixes-main` can still merge. It also repo
 durations and the slowest tests.
 
 **Status:** architecture designed (2026-09-15). Build started (2026-09-16): the sandbox
-target repo template is in `sandbox/`; the gate is built (MainWatcher#5).
+target repo template is in `sandbox/`; the gate is built (MainWatcher#5); the reusable test
+workflow is built (MainWatcher#7).
 
 ## Where things are
 
@@ -26,14 +27,19 @@ target repo template is in `sandbox/`; the gate is built (MainWatcher#5).
   authoritative.
 - `sandbox/` — the sandbox target template (`sample-target/`, steered by `sandbox.json`), its
   merge-queue ruleset, `seed-target.sh`, which pushes it to `main-watcher-sandbox` repos, and
-  `publish-gate.sh`, which publishes the gate to the public `main-watcher-sandbox/gate` repo
-  that the public sandbox targets use.
+  `publish-public.sh`, which publishes the gate and the reusable test workflow to the public
+  `main-watcher-sandbox/gate` repo that the public sandbox targets use.
 - `MainWatcher.slnx` — the watcher's .NET projects (`src/`, `tests/`; .NET 10, xUnit v3 on
-  Microsoft Testing Platform). `src/MainWatcher.Gate` is the gate's logic.
+  Microsoft Testing Platform). `src/MainWatcher.Gate` is the gate's logic;
+  `src/MainWatcher.TestRunner` is the deadline-and-retry wrapper the test workflow runs.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
+- `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
+  `.github/workflows/run-integration-tests.yml`, whose `.github/actions/test-runner` builds
+  `src/MainWatcher.TestRunner`.
 - `.github/workflows/` — `ci.yml` (`dotnet test` and actionlint on every PR) and
-  `sandbox-lock.yml` (hand-made App-authored locks, sandbox org only).
+  `sandbox-lock.yml` (hand-made App-authored locks, sandbox org only), and
+  `run-integration-tests.yml`, the reusable test workflow targets call.
 - `.claude/skills/architecture-design/` — the design skill used to produce these documents,
   including its validation scripts.
 
@@ -100,7 +106,7 @@ metrics store (PostgreSQL + Grafana) is deferred.
 2. Build order:
    1. Gate workflow and sandbox (retires the biggest risk). Built (MainWatcher#5); TS-S4 and TS-S5
       passed in the sandbox on 2026-09-16.
-   2. Reusable test workflow + caller template.
+   2. Reusable test workflow + caller template. Built (MainWatcher#7).
    3. `watch.yml` (Planner and Reporter).
    4. Trigger worker.
    5. Onboarding docs.

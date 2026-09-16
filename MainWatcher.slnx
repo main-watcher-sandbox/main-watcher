@@ -1,8 +1,10 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/MainWatcher.Gate/MainWatcher.Gate.csproj" />
+    <Project Path="src/MainWatcher.TestRunner/MainWatcher.TestRunner.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/MainWatcher.Gate.Tests/MainWatcher.Gate.Tests.csproj" />
+    <Project Path="tests/MainWatcher.TestRunner.Tests/MainWatcher.TestRunner.Tests.csproj" />
   </Folder>
 </Solution>

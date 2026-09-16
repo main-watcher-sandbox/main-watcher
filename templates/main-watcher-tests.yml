@@ -1,0 +1,34 @@
+# Main Watcher tests, template v1. Copy to .github/workflows/main-watcher-tests.yml.
+# Main Watcher dispatches it with the commit to test; it can also be run by hand. It calls the
+# shared test workflow with this repo's secrets, which become environment variables of the
+# same name for restore and tests (ADR-009). Set the inputs under "with" to match this repo's
+# targets.yml entry; change nothing else.
+name: main-watcher-tests
+run-name: main-watcher-tests ${{ inputs.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit to test
+        required: true
+      check_run_id:
+        description: Main Watcher check run; empty for a run by hand
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: main-watcher-tests
+    uses: Actium-Group-Corporation/MainWatcher/.github/workflows/run-integration-tests.yml@v1
+    with:
+      sha: ${{ inputs.sha }}
+      check-run-id: ${{ inputs.check_run_id }}
+      timeout-minutes: 30
+      # test-command: dotnet test --no-restore
+      # restore-command: dotnet restore
+      # results-glob: "**/TestResults/*.ctrf.json"
+    secrets: inherit
