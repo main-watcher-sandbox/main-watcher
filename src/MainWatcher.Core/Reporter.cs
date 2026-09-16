@@ -23,6 +23,9 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     /// <summary>Alerts that could not be raised. They never block the lock or the check run.</summary>
     public List<string> AlertFailures { get; } = [];
 
+    /// <summary>One entry per push list collected, for the job summary (ADR-003 walk-back length).</summary>
+    public List<WalkBack> WalkBacks { get; } = [];
+
     public async Task<bool> Report(Target target, CheckRun check, CancellationToken ct)
     {
         var repo = target.Repo;
@@ -73,6 +76,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         // GitHub notifies at most 50 mentions per issue; the cap also bounds the body.
         mentions = mentions.Take(MaxMentions).ToArray();
         var pushes = await PushList.Collect(github, target.Repo, check.Sha, ct);
+        WalkBacks.Add(new(check.Id, pushes.CommitsChecked, pushes.Source));
         var leaseUntil = (clock ?? (() => DateTimeOffset.UtcNow))().Add(LockLease).UtcDateTime;
         var body = (mentions.Count > 0 ? string.Join(" ", mentions) + "\n\n" : "")
             + $"Main Watcher tests failed on `main` at {Commit(target.Repo, check.Sha)}.\n\n"

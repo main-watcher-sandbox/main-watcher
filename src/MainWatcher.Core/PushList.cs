@@ -15,8 +15,9 @@ public enum PushSource
 
 public sealed record ListedPush(Push Push, int? Commits);
 
-/// <summary>What could have broken <c>main</c>. <see cref="Green"/> is the newest green check run found, if any.</summary>
-public sealed record PushListResult(PushSource Source, CheckRun? Green, IReadOnlyList<ListedPush> Pushes, bool Truncated);
+/// <summary>What could have broken <c>main</c>. <see cref="Green"/> is the newest green check run found, if any.
+/// <see cref="CommitsChecked"/> is the walk-back length: commits whose check runs were read (ADR-003).</summary>
+public sealed record PushListResult(PushSource Source, CheckRun? Green, IReadOnlyList<ListedPush> Pushes, bool Truncated, int CommitsChecked);
 
 /// <summary>Finds the newest green check run on <c>main</c> and lists repository activity since it (FR-3).</summary>
 public static class PushList
@@ -27,13 +28,14 @@ public static class PushList
     public static async Task<PushListResult> Collect(IGitHubGateway github, string repo, string failingSha, CancellationToken ct)
     {
         CheckRun? green = null;
+        var commitsChecked = 0;
         try
         {
             var history = await github.History(repo, failingSha, Limit, ct);
             foreach (var sha in history)
             {
                 if (sha == failingSha) continue;
-                if (await NewestGreen(github, repo, sha, ct) is { } found) { green = found; break; }
+                if (await NewestGreen(github, repo, sha, () => commitsChecked++, ct) is { } found) { green = found; break; }
             }
             var pushes = await github.Pushes(repo, Limit, ct);
             PushSource source;
@@ -41,8 +43,7 @@ public static class PushList
             if (green is not null)
             {
                 source = PushSource.SinceGreen;
-                // The push that made the green commit the head is where its run's coverage ends.
-                listed = pushes.TakeWhile(p => p.After != green.Sha);
+                listed = pushes.Take(GreenPush(pushes, green) ?? pushes.Count);
             }
             else
             {
@@ -52,7 +53,7 @@ public static class PushList
                 foreach (var sha in pushes.Select(p => p.After).Where(s => s.Length > 0 && !s.All(c => c == '0')).Distinct())
                 {
                     if (!walked.Add(sha)) continue;
-                    if (await NewestGreen(github, repo, sha, ct) is { } found) { green = found; break; }
+                    if (await NewestGreen(github, repo, sha, () => commitsChecked++, ct) is { } found) { green = found; break; }
                 }
                 source = green is null ? PushSource.LastPushes : PushSource.AfterGreenCheck;
                 listed = green is null ? pushes : pushes.Where(p => p.Timestamp > green.StartedAt);
@@ -61,18 +62,37 @@ public static class PushList
             var truncated = pushes.Count == Limit && rows.Length == pushes.Count;
             var counted = new List<ListedPush>();
             foreach (var push in rows) counted.Add(new(push, await Count(github, repo, push, ct)));
-            return new(source, green, counted, truncated);
+            return new(source, green, counted, truncated, commitsChecked);
         }
         // The lock must still open: without a push list it links a comparison instead.
         catch (Exception) when (!ct.IsCancellationRequested)
         {
-            return new(PushSource.Unavailable, green, [], false);
+            return new(PushSource.Unavailable, green, [], false, commitsChecked);
         }
     }
 
-    /// <summary>A commit is green when its newest check run succeeded (ADR-017).</summary>
-    static async Task<CheckRun?> NewestGreen(IGitHubGateway github, string repo, string sha, CancellationToken ct)
+    /// <summary>
+    /// The index, in newest-first <paramref name="pushes"/>, of the push that made the green commit the head its
+    /// check run tested: the newest push to that commit at or before the run started. A later push back to the
+    /// same commit (a rollback) is listed, not taken as the boundary. If clock skew puts every push to the commit
+    /// after the run started, the oldest of them is closest to the start. Null when no listed push names it.
+    /// </summary>
+    static int? GreenPush(IReadOnlyList<Push> pushes, CheckRun green)
     {
+        int? oldest = null;
+        for (var i = 0; i < pushes.Count; i++)
+        {
+            if (pushes[i].After != green.Sha) continue;
+            if (pushes[i].Timestamp <= green.StartedAt) return i;
+            oldest = i;
+        }
+        return oldest;
+    }
+
+    /// <summary>A commit is green when its newest check run succeeded (ADR-017).</summary>
+    static async Task<CheckRun?> NewestGreen(IGitHubGateway github, string repo, string sha, Action counted, CancellationToken ct)
+    {
+        counted();
         var newest = (await github.CommitChecks(repo, sha, ct)).OrderByDescending(c => c.StartedAt).ThenByDescending(c => c.Id).FirstOrDefault();
         return newest is { Status: "completed", Conclusion: "success" } ? newest : null;
     }
@@ -84,3 +104,6 @@ public static class PushList
         catch (Exception e) when (!ct.IsCancellationRequested && e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException) { return null; }
     }
 }
+
+/// <summary>How many commits' check runs one push list read to find the last green run, and the source it settled on.</summary>
+public sealed record WalkBack(long CheckId, int CommitsChecked, PushSource Source);

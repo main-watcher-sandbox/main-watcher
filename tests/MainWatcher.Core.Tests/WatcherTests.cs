@@ -403,7 +403,10 @@ public class WatcherTests
             ],
             Counts = new() { [Sha('f')] = 3, [Sha('c')] = 1, [Sha('b')] = 2 },
         };
-        await new Reporter(fake, clock: () => Now).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('f')) with { Id = 30 }, TestContext.Current.CancellationToken);
+        var reporter = new Reporter(fake, clock: () => Now);
+        await reporter.Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('f')) with { Id = 30 }, TestContext.Current.CancellationToken);
+        // The failing head is skipped; b (neutral over success) and a were checked.
+        Assert.Equal(new WalkBack(30, 2, PushSource.SinceGreen), Assert.Single(reporter.WalkBacks));
         var body = fake.Issues["owner/repo"].Single().Body;
         Assert.Contains($"Since the last green commit, [`aaaaaaa`](https://github.com/owner/repo/commit/{Sha('a')}).", body);
         Assert.Contains($"| 2026-09-16 18:50:00 | github-merge-queue\\[bot] | merge-queue merge | [`ccccccc` → `fffffff`](https://github.com/owner/repo/compare/{Sha('c')}...{Sha('f')}) | 3 |", body);
@@ -418,6 +421,29 @@ public class WatcherTests
         Assert.Equal(Now.Add(Reporter.LockLease), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
     }
 
+    [Theory]
+    // The push that made the green commit the head came before its run started, or seconds after it by clock skew.
+    [InlineData(70)]
+    [InlineData(59)]
+    public async Task ARollbackToTheGreenCommitStillListsThePushThatBrokeMain(int greenPushMinutesAgo)
+    {
+        var fake = new FakeGitHub
+        {
+            HistoryShas = [Sha('f'), Sha('a')],
+            CommitCheckRuns = new() { [Sha('a')] = [Result(10, 'a', "success", 60)] },
+            // Green a, then a→f was tested and failed, and f was reset back to a before the report.
+            Activity = [PushAt('f', 'a', "force_push", "alice", 5), PushAt('a', 'f', "push", "bob", 30), PushAt('9', 'a', "push", "carol", greenPushMinutesAgo)],
+        };
+        var reporter = new Reporter(fake);
+        await reporter.Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('f')) with { Id = 30 }, TestContext.Current.CancellationToken);
+        var body = fake.Issues["owner/repo"].Single().Body;
+        Assert.Contains($"Since the last green commit, [`aaaaaaa`]", body);
+        Assert.Contains("| alice | force push |", body);
+        Assert.Contains("| bob | push |", body);
+        Assert.DoesNotContain("carol", body);
+        Assert.Equal(new WalkBack(30, 1, PushSource.SinceGreen), Assert.Single(reporter.WalkBacks));
+    }
+
     [Fact]
     public async Task AForcePushedGreenCommitListsActivityAfterItsCheckRun()
     {
@@ -427,13 +453,16 @@ public class WatcherTests
             CommitCheckRuns = new() { [Sha('a')] = [Result(10, 'a', "success", 60)] },
             Activity = [PushAt('a', 'f', "force_push", "alice", 30), PushAt('0', 'a', "push", "bob", 70)],
         };
-        await new Reporter(fake).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('f')), TestContext.Current.CancellationToken);
+        var reporter = new Reporter(fake);
+        await reporter.Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('f')), TestContext.Current.CancellationToken);
         var body = fake.Issues["owner/repo"].Single().Body;
         Assert.Contains("The last green commit, `aaaaaaa`, is not among the newest 100 commits of `main`", body);
         Assert.Contains("after its check run started at 2026-09-16 18:00:00 UTC", body);
         Assert.Contains("| alice | force push |", body);
         Assert.DoesNotContain("bob", body);
         Assert.Contains($"last_green={Sha('a')} ", body);
+        // History commit e, then the activity's a; f was already walked.
+        Assert.Equal(new WalkBack(1, 2, PushSource.AfterGreenCheck), Assert.Single(reporter.WalkBacks));
     }
 
     [Fact]

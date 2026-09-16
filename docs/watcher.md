@@ -107,7 +107,9 @@ so a failed issue write leaves the check `in_progress` for the next cycle.
   owners and raises the alert.
 - **Push list.** The Reporter walks `main` back up to 100 commits from the failing commit
   and takes the first whose newest `main-watcher` check run succeeded (ADR-003, ADR-017).
-  It lists repository activity on `main` newer than the push that made that commit the head:
+  It lists repository activity on `main` newer than the push that made that commit the head
+  for its green run: the newest push to it at or before that run started, so a later rollback
+  to the green commit is listed rather than ending the list. Each row shows
   time (UTC), pusher (plain login, never `@`), type (push, force push, PR merge,
   merge-queue merge), before→after with a compare link, and the commit count from the
   compare API (`?` when GitHub cannot compare, for example after a force push). At most 100
@@ -121,7 +123,9 @@ so a failed issue write leaves the check `in_progress` for the next cycle.
 
   If history, check runs or activity cannot be read, the lock still opens with "Push list
   unavailable" and a link comparing the last green commit with the failing one, or, with no
-  green commit known, the commits up to the failing one.
+  green commit known, the commits up to the failing one. Each cycle writes the walk-back
+  length (commits whose check runs were read, including the activity fallback) to the log and
+  the job summary, as ADR-003 requires.
 - **Later red.** While an App lock is open, each further failing run adds one comment: the
   failing commit, the failing tests, the target run and a hidden `check=` marker. Comments
   mention nobody. The body, including its push list, keeps the state from when the lock
