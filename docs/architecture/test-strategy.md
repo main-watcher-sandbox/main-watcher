@@ -37,7 +37,7 @@ confidence: assumed
 
 | Environment | Purpose | Production-like? | Data source |
 |---|---|---|---|
-| Sandbox org `main-watcher-sandbox` | Scenario tests | Yes: same App manifests, a real merge queue, a worker deployment in the `main-watcher-sandbox` namespace | Synthetic xUnit v3 repo whose tests pass or fail according to a file; a second synthetic repo with a "slow" suite |
+| Sandbox org `main-watcher-sandbox` | Scenario tests | Yes: same App manifests, a real merge queue, a worker deployment in the `main-watcher-sandbox` namespace | Synthetic xUnit v3 repos `sample-target` and `sample-target-slow` (slow suite), seeded from `sandbox/sample-target`; their tests pass, fail, hang or run for known durations according to `sandbox.json` |
 
 ## 4. Simulating dependencies
 

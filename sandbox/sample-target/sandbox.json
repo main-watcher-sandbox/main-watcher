@@ -1,0 +1,10 @@
+{
+  "failing_tests": [],
+  "timed_tests": true,
+  "slow_suite_minutes": 0,
+  "hang_test": false,
+  "flaky_test": false,
+  "fail_restore": false,
+  "fail_upload": false,
+  "hang_upload": false
+}

@@ -6,7 +6,8 @@ and every push since the last green run. While that issue is open, it blocks the
 GitHub merge queue; only PRs labelled `fixes-main` can still merge. It also reports test
 durations and the slowest tests.
 
-**Status:** architecture designed (2026-09-15). No code has been written yet.
+**Status:** architecture designed (2026-09-15). Build started: the sandbox target repo
+template is in `sandbox/` (2026-09-16).
 
 ## Where things are
 
@@ -23,6 +24,8 @@ durations and the slowest tests.
   and why.
 - `docs/architecture/diagrams/` — PNG renders. The Mermaid sources inside the markdown are
   authoritative.
+- `sandbox/` — the sandbox target template (`sample-target/`, steered by `sandbox.json`), its
+  merge-queue ruleset, and `seed-target.sh`, which pushes it to `main-watcher-sandbox` repos.
 - `.claude/skills/architecture-design/` — the design skill used to produce these documents,
   including its validation scripts.
 

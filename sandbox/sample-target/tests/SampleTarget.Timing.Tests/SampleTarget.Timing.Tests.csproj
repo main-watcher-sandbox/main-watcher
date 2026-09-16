@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Tests of known duration for TS-S13. A second project, so runs write two CTRF reports. -->
+
+</Project>
