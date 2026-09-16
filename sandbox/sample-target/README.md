@@ -57,7 +57,7 @@ merge limit 2, minimum group 1, 1-minute wait, so batched groups can be formed (
 Organisation admins bypass it, so scenario scripts can push to `main` directly.
 
 `.github/workflows/main-watcher-gate.yml` is added by `seed-target.sh` from MainWatcher's
-`templates/`, using the gate action from `main-watcher-sandbox/main-watcher`. Its
+`templates/`, using the gate action from the public `main-watcher-sandbox/gate` repo. Its
 `main-watcher-gate` job is a required check. While an App-authored `main-broken` issue with a
 valid lease is open, merge groups fail unless every PR in them is labelled `fixes-main`.
 

@@ -12,7 +12,7 @@ public class GateTests
     static FakeGitHub LockedGroup(DateTimeOffset leaseUntil, string[] pr1Labels, string[] pr2Labels) =>
         new FakeGitHub()
             .LockIssues(Lock(7, leaseUntil))
-            .Compare(Sha('a'), Sha('f'),
+            .Compare("main", Sha('f'),
                 Commit(Sha('1')), Commit(Sha('b'), "Merge pull request #1 from team/fix"),
                 Commit(Sha('2')), Commit(Sha('c'), "Merge pull request #2 from team/feature"))
             .CommitPulls(Sha('1'), Pull(1, pr1Labels))
@@ -94,6 +94,21 @@ public class GateTests
         Assert.Contains("#1 PR 1", verdict.Detail);
     }
 
+    // TS-S5 in the sandbox: for a queue entry behind another, base_sha is the head of the entry ahead,
+    // so the gate compares from the target branch to see every PR in the batch.
+    [Fact]
+    public async Task A_batched_entry_is_checked_against_the_target_branch_not_base_sha()
+    {
+        var github = LockedGroup(ValidLease, [], ["fixes-main"]);
+        var entryBehind = new GateEvent("merge_group", Sha('c'), Sha('f'), $"gh-readonly-queue/main/pr-2-{Sha('c')}", "refs/heads/main");
+
+        var verdict = await github.Gate().DecideAsync(entryBehind, Now, TestContext.Current.CancellationToken);
+
+        Assert.Equal(GateOutcome.Fail, verdict.Outcome);
+        Assert.Contains("#1 PR 1", verdict.Detail);
+        Assert.DoesNotContain(github.Requests, request => request.Contains($"compare/{Sha('c')}"));
+    }
+
     [Fact]
     public async Task A_valid_lock_passes_a_group_where_every_pull_request_is_a_fix()
     {
@@ -103,7 +118,7 @@ public class GateTests
 
         Assert.Equal(GateOutcome.Pass, verdict.Outcome);
         Assert.Null(verdict.FailOpenReason);
-        // Every commit between base_sha and head_sha was checked.
+        // Every commit on head_sha that is not yet on main was checked.
         foreach (var sha in new[] { '1', 'b', '2', 'c' })
             Assert.Contains($"/repos/{Repo}/commits/{Sha(sha)}/pulls?per_page=100", github.Requests);
     }
@@ -114,7 +129,7 @@ public class GateTests
         // A squash-merged group: the rewritten commits have no associated PRs.
         var github = new FakeGitHub()
             .LockIssues(Lock(7, ValidLease))
-            .Compare(Sha('a'), Sha('f'), Commit(Sha('b'), "Fix the build (#1)\n\nDetails"), Commit(Sha('c'), "Add a feature"))
+            .Compare("main", Sha('f'), Commit(Sha('b'), "Fix the build (#1)\n\nDetails"), Commit(Sha('c'), "Add a feature"))
             .CommitPulls(Sha('b'))
             .CommitPulls(Sha('c'))
             .Respond($"/repos/{Repo}/pulls/1", Pull(1, "fixes-main"))
@@ -133,7 +148,7 @@ public class GateTests
         var otherBranch = new { number = 9, title = "stacked", state = "open", @base = new { @ref = "feature" }, labels = Array.Empty<object>() };
         var github = new FakeGitHub()
             .LockIssues(Lock(7, ValidLease))
-            .Compare(Sha('a'), Sha('f'), Commit(Sha('2')))
+            .Compare("main", Sha('f'), Commit(Sha('2')))
             .CommitPulls(Sha('2'), Pull(2, "fixes-main"), closed, otherBranch);
 
         var verdict = await github.Gate().DecideAsync(MergeGroup(headPr: 2), Now, TestContext.Current.CancellationToken);
@@ -236,7 +251,7 @@ public class GateTests
     {
         var github = new FakeGitHub()
             .LockIssues(Lock(7, ValidLease))
-            .Respond($"/repos/{Repo}/compare/{Sha('a')}...{Sha('f')}?per_page=100&page=1",
+            .Respond($"/repos/{Repo}/compare/main...{Sha('f')}?per_page=100&page=1",
                 () => Json(HttpStatusCode.ServiceUnavailable, new { message = "unavailable" }));
 
         var verdict = await github.Gate().DecideAsync(MergeGroup(), Now, TestContext.Current.CancellationToken);
@@ -259,8 +274,8 @@ public class GateTests
                 return response;
             })
             .Respond($"/repos/{Repo}/issues?state=open&labels=main-broken&per_page=100&page=2", new[] { Lock(7, ValidLease) })
-            .Respond($"/repos/{Repo}/compare/{Sha('a')}...{Sha('f')}?per_page=100&page=1", new { total_commits = 150, commits = commits[..100] })
-            .Respond($"/repos/{Repo}/compare/{Sha('a')}...{Sha('f')}?per_page=100&page=2", new { total_commits = 150, commits = commits[100..] });
+            .Respond($"/repos/{Repo}/compare/main...{Sha('f')}?per_page=100&page=1", new { total_commits = 150, commits = commits[..100] })
+            .Respond($"/repos/{Repo}/compare/main...{Sha('f')}?per_page=100&page=2", new { total_commits = 150, commits = commits[100..] });
         foreach (var i in Enumerable.Range(0, 150))
             github.CommitPulls(i.ToString("x40"), Pull(2));
 
@@ -274,7 +289,7 @@ public class GateTests
     public void Reads_the_merge_group_fields_from_the_event_payload()
     {
         using var payload = JsonDocument.Parse($$$"""
-            {"action":"checks_requested","merge_group":{"base_sha":"{{{Sha('a')}}}","head_sha":"{{{Sha('f')}}}","head_ref":"gh-readonly-queue/main/pr-2-{{{Sha('a')}}}"}}
+            {"action":"checks_requested","merge_group":{"base_sha":"{{{Sha('a')}}}","head_sha":"{{{Sha('f')}}}","head_ref":"gh-readonly-queue/main/pr-2-{{{Sha('a')}}}","base_ref":"refs/heads/main"}}
             """);
 
         Assert.Equal(MergeGroup(), GateEvent.Read("merge_group", payload.RootElement));

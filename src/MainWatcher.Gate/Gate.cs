@@ -20,11 +20,11 @@ public sealed record GateVerdict(GateOutcome Outcome, string Title, string Detai
 }
 
 /// <summary>The fields of the triggering event the gate uses.</summary>
-public sealed record GateEvent(string Name, string? BaseSha = null, string? HeadSha = null, string? HeadRef = null)
+public sealed record GateEvent(string Name, string? BaseSha = null, string? HeadSha = null, string? HeadRef = null, string? BaseRef = null)
 {
     public static GateEvent Read(string name, JsonElement payload) =>
         payload.TryGetProperty("merge_group", out var group) && group.ValueKind == JsonValueKind.Object
-            ? new(name, String(group, "base_sha"), String(group, "head_sha"), String(group, "head_ref"))
+            ? new(name, String(group, "base_sha"), String(group, "head_sha"), String(group, "head_ref"), String(group, "base_ref"))
             : new(name);
 
     static string? String(JsonElement element, string property) =>
@@ -112,15 +112,22 @@ public sealed class Gate(GitHubApi api, string repository, string botLogin = Gat
     }
 
     /// <summary>
-    /// Finds the PRs in a merge group from the commits between <c>base_sha</c> and <c>head_sha</c> (A-5):
-    /// the open PRs associated with each commit, PRs named in merge or squash commit subjects, and the
-    /// PR in the queue branch name. Only open PRs into the queue's branch count. Including a PR that is
-    /// not in the group can only make the gate stricter.
+    /// Finds the PRs in a merge group from the commits on <c>head_sha</c> that are not yet on the queue's
+    /// target branch: the open PRs associated with each commit, PRs named in merge or squash commit
+    /// subjects, and the PR in the queue branch name. Only open PRs into the target branch count.
+    /// Including a PR that is not in the group can only make the gate stricter.
     /// </summary>
+    /// <remarks>
+    /// The comparison starts from the target branch, not <c>base_sha</c>: for a queue entry behind
+    /// others, <c>base_sha</c> is the head of the entry ahead of it, so <c>base_sha...head_sha</c>
+    /// holds only that entry's own PR (sandbox TS-S5, 2026-09-16; A-5).
+    /// </remarks>
     async Task<List<PullRequest>> FindGroupPullRequestsAsync(GateEvent evt, CancellationToken ct)
     {
         var queueBranch = evt.HeadRef is null ? null : QueueBranch.Match(evt.HeadRef);
-        var targetBranch = queueBranch is { Success: true } ? queueBranch.Groups["branch"].Value : null;
+        var targetBranch = evt.BaseRef is { } baseRef && baseRef.StartsWith("refs/heads/", StringComparison.Ordinal)
+            ? baseRef["refs/heads/".Length..]
+            : queueBranch is { Success: true } ? queueBranch.Groups["branch"].Value : null;
         var found = new SortedDictionary<int, PullRequest>();
         var named = new SortedSet<int>();
 
@@ -140,9 +147,9 @@ public sealed class Gate(GitHubApi api, string repository, string botLogin = Gat
         if (queueBranch is { Success: true })
             named.Add(int.Parse(queueBranch.Groups["number"].Value));
 
-        if (evt.BaseSha is not null && evt.HeadSha is not null)
+        if ((targetBranch ?? evt.BaseSha) is { } compareBase && evt.HeadSha is not null)
         {
-            foreach (var commit in await CompareAsync(evt.BaseSha, evt.HeadSha, ct))
+            foreach (var commit in await CompareAsync(compareBase, evt.HeadSha, ct))
             {
                 foreach (var pr in await api.GetAllPagesAsync($"repos/{repository}/commits/{commit.Sha}/pulls?per_page=100", ct))
                     Add(pr);
@@ -160,13 +167,13 @@ public sealed class Gate(GitHubApi api, string repository, string botLogin = Gat
         return [.. found.Values];
     }
 
-    async Task<List<Commit>> CompareAsync(string baseSha, string headSha, CancellationToken ct)
+    async Task<List<Commit>> CompareAsync(string compareBase, string headSha, CancellationToken ct)
     {
         const int pageSize = 100;
         var commits = new List<Commit>();
         for (var page = 1; ; page++)
         {
-            var comparison = await api.GetAsync($"repos/{repository}/compare/{baseSha}...{headSha}?per_page={pageSize}&page={page}", ct);
+            var comparison = await api.GetAsync($"repos/{repository}/compare/{compareBase}...{headSha}?per_page={pageSize}&page={page}", ct);
             var pageCommits = comparison.GetProperty("commits").EnumerateArray()
                 .Select(c => new Commit(c.GetProperty("sha").GetString() ?? "", c.GetProperty("commit").GetProperty("message").GetString() ?? ""))
                 .ToList();

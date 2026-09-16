@@ -30,8 +30,8 @@ sealed class FakeGitHub : HttpMessageHandler
     public FakeGitHub LockIssues(params object[] issues) =>
         Respond($"/repos/{Repo}/issues?state=open&labels=main-broken&per_page=100", issues);
 
-    public FakeGitHub Compare(string baseSha, string headSha, params object[] commits) =>
-        Respond($"/repos/{Repo}/compare/{baseSha}...{headSha}?per_page=100&page=1", new { total_commits = commits.Length, commits });
+    public FakeGitHub Compare(string compareBase, string headSha, params object[] commits) =>
+        Respond($"/repos/{Repo}/compare/{compareBase}...{headSha}?per_page=100&page=1", new { total_commits = commits.Length, commits });
 
     public FakeGitHub CommitPulls(string sha, params object[] pulls) =>
         Respond($"/repos/{Repo}/commits/{sha}/pulls?per_page=100", pulls);
@@ -76,5 +76,5 @@ sealed class FakeGitHub : HttpMessageHandler
         };
 
     public static GateEvent MergeGroup(int headPr = 2) =>
-        new("merge_group", Sha('a'), Sha('f'), $"gh-readonly-queue/main/pr-{headPr}-{Sha('a')}");
+        new("merge_group", Sha('a'), Sha('f'), $"gh-readonly-queue/main/pr-{headPr}-{Sha('a')}", "refs/heads/main");
 }
