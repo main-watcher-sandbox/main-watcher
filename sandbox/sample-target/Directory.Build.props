@@ -1,0 +1,34 @@
+<Project>
+
+  <!--
+    Sandbox switch "fail_restore" (TS-S16, TS-S18): points restore at a feed that does not
+    exist, with an empty packages folder so nothing can come from the local cache.
+    MSBuild cannot parse JSON, so the switch is matched with a regular expression.
+  -->
+  <PropertyGroup>
+    <SandboxJson>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)sandbox.json'))</SandboxJson>
+    <SandboxFailRestore>$([System.Text.RegularExpressions.Regex]::IsMatch($(SandboxJson), '"fail_restore"\s*:\s*true'))</SandboxFailRestore>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(SandboxFailRestore)' == 'True'">
+    <RestoreSources>https://nuget.unreachable.invalid/v3/index.json</RestoreSources>
+    <RestorePackagesPath>$(MSBuildThisFileDirectory).sandbox-empty-packages</RestorePackagesPath>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <!-- One CTRF report per project, matching the default results_glob **/TestResults/*.ctrf.json (ADR-007). -->
+    <TestingPlatformCommandLineArguments>$(TestingPlatformCommandLineArguments) --report-ctrf --report-ctrf-filename $(MSBuildProjectName).ctrf.json</TestingPlatformCommandLineArguments>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <Using Include="Xunit" />
+    <Compile Include="$(MSBuildThisFileDirectory)tests/Shared/*.cs" LinkBase="Shared" />
+  </ItemGroup>
+
+</Project>

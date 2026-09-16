@@ -1,0 +1,43 @@
+# Checks that this sandbox target builds, obeys sandbox.json and writes CTRF reports.
+# Manual only: the Main Watcher tests run through main-watcher-tests.yml, not this workflow.
+name: sandbox-selftest
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - run: dotnet restore
+
+      - name: Test
+        run: dotnet test --no-restore
+
+      - name: Check CTRF reports
+        if: always()
+        run: |
+          shopt -s globstar nullglob
+          reports=(**/TestResults/*.ctrf.json)
+          echo "Found ${#reports[@]} report(s): ${reports[*]}"
+          [ "${#reports[@]}" -eq 2 ]
+          for r in "${reports[@]}"; do
+            jq -e '.reportFormat == "CTRF" and (.results.tests | length) > 0' "$r" > /dev/null
+            jq -r '.results.tests[] | "\(.status)\t\(.duration) ms\t\(.name)"' "$r"
+          done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: sandbox-selftest-ctrf
+          path: "**/TestResults/*.ctrf.json"

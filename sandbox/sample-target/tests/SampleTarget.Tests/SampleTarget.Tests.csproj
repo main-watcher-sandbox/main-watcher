@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Outcome, slow-suite, hang and flaky tests. Shared settings are in Directory.Build.props. -->
+
+</Project>
