@@ -37,8 +37,8 @@ public sealed class TargetConfiguration
             if (target is null || target.Repo is null || !Regex.IsMatch(target.Repo, @"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
                 || !repos.Add(target.Repo) || string.IsNullOrWhiteSpace(target.TestCommand)
                 || string.IsNullOrWhiteSpace(target.ResultsGlob) || target.Timeout is < 1 or > 340
-                || target.PollInterval < 1 || target.Notify is null || target.Notify.Any(string.IsNullOrWhiteSpace))
-                throw new InvalidDataException("Invalid or duplicate target; timeout is 1–340 minutes and poll_interval is positive minutes.");
+                || target.PollInterval < 1 || target.Notify is null || !target.Notify.All(n => n is not null && Mentions.IsHandle(n)))
+                throw new InvalidDataException("Invalid or duplicate target; timeout is 1–340 minutes and poll_interval is positive minutes; notify holds user or org/team handles.");
         }
         return config;
     }

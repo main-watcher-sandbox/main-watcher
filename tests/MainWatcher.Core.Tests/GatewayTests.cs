@@ -141,6 +141,38 @@ public class GatewayTests
         Assert.Contains(requests, path => path.Contains("cursor=older"));
     }
 
+    [Fact]
+    public async Task IssueCallsListOnlyIssuesCreateTheMissingLabelAndReadOnlyMissingFilesAsNull()
+    {
+        var requests = new List<string>();
+        using var http = Client(new Handler(async request =>
+        {
+            var path = request.RequestUri!.PathAndQuery;
+            requests.Add($"{request.Method} {path} {(request.Content is null ? "" : await request.Content.ReadAsStringAsync())}");
+            if (path.Contains("/contents/empty")) return Response("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"\"}");
+            if (path.Contains("/contents/owners"))
+                return Response("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"" + Convert.ToBase64String(Encoding.UTF8.GetBytes("* @team")) + "\\n\"}");
+            if (path.Contains("/contents/")) return new HttpResponseMessage(HttpStatusCode.NotFound);
+            if (path.EndsWith("/labels")) return new HttpResponseMessage(HttpStatusCode.UnprocessableEntity);
+            const string issue = """{"number":5,"title":"main is broken","body":"b","html_url":"https://github.com/owner/repo/issues/5","user":{"login":"main-watcher[bot]","type":"Bot"}}""";
+            return Response(request.Method == HttpMethod.Get
+                ? $$$"""[{{{issue}}},{"number":6,"title":"pr","html_url":"u","user":{"login":"x","type":"User"},"pull_request":{}}]"""
+                : issue);
+        }));
+        var gateway = new GitHubGateway(http, 1);
+        var ct = TestContext.Current.CancellationToken;
+        Assert.Null(await gateway.File("owner/repo", "CODEOWNERS", ct));
+        Assert.Equal("", await gateway.File("owner/repo", "empty", ct));
+        Assert.Equal("* @team", await gateway.File("owner/repo", "owners", ct));
+        var open = Assert.Single(await gateway.OpenIssues("owner/repo", "main-broken", ct));
+        Assert.Equal(new Issue(5, "main is broken", "b", "main-watcher[bot]", "Bot", "https://github.com/owner/repo/issues/5"), open);
+        Assert.Equal(5, (await gateway.CreateIssue("owner/repo", "t", "body", "main-broken", ct)).Number);
+        await gateway.Close("owner/repo", 5, ct);
+        Assert.Contains(requests, r => r.StartsWith("GET /repos/owner/repo/issues?state=open&labels=main-broken"));
+        Assert.Contains(requests, r => r.StartsWith("POST /repos/owner/repo/issues ") && r.Contains("\"labels\":[\"main-broken\"]"));
+        Assert.Contains(requests, r => r.StartsWith("PATCH /repos/owner/repo/issues/5 ") && r.Contains("\"state\":\"closed\""));
+    }
+
     static HttpClient Client(HttpMessageHandler handler) => new(handler) { BaseAddress = new Uri("https://api.github.com/") };
     static HttpResponseMessage Response(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
     sealed class Handler(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) : HttpMessageHandler

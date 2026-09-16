@@ -109,7 +109,7 @@ public class WatcherTests
     public async Task ReporterKeepsFailureRedWithoutArtifacts()
     {
         var fake = new FakeGitHub { ReportResult = CtrfResult.Unknown };
-        Assert.True(await new Reporter(fake).Report("owner/repo", Check("in_progress", null), TestContext.Current.CancellationToken));
+        Assert.True(await new Reporter(fake).Report(new() { Repo = "owner/repo" }, Check("in_progress", null), TestContext.Current.CancellationToken));
         Assert.Equal("failure", fake.Conclusion);
         Assert.Contains("failing tests unknown", fake.Summary);
     }
@@ -118,7 +118,7 @@ public class WatcherTests
     public async Task ReporterLeavesJobsApiErrorsPending()
     {
         var fake = new FakeGitHub { JobsError = true };
-        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake).Report("owner/repo", Check("in_progress", null), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake).Report(new() { Repo = "owner/repo" }, Check("in_progress", null), TestContext.Current.CancellationToken));
         Assert.Null(fake.Conclusion);
     }
 
@@ -226,8 +226,227 @@ public class WatcherTests
         Assert.Equal(target.Timeout.ToString(System.Globalization.CultureInfo.InvariantCulture), inputs["timeout-minutes"]["default"].ToString());
     }
 
+    static CheckRun Pending(string sha = "abcdef1234567890") => Check("in_progress", null, sha);
+
+    [Fact]
+    public async Task RedResultOpensAppLockBeforeCompletingTheCheck()
+    {
+        var fake = new FakeGitHub();
+        var reporter = new Reporter(fake, clock: () => Now);
+        Assert.True(await reporter.Report(new() { Repo = "owner/repo", Notify = ["org/team", "@someone"] }, Pending(), TestContext.Current.CancellationToken));
+        var issue = Assert.Single(fake.Issues["owner/repo"]);
+        Assert.Equal("main-broken", issue.Label);
+        Assert.Equal(new[] { "create:owner/repo", "complete:failure" }, fake.Order);
+        Assert.StartsWith("@org/team @someone\n\n", issue.Body);
+        Assert.Contains("[`abcdef1`](https://github.com/owner/repo/commit/abcdef1234567890)", issue.Body);
+        Assert.Contains("- Alpha (suite): failed", issue.Body);
+        Assert.Contains("https://github.com/owner/repo/actions/runs/42", issue.Body);
+        Assert.Contains("reported_check=1 reported_sha=abcdef1234567890", issue.Body);
+        Assert.Equal(Now.Add(Reporter.LockLease), MainWatcher.Gate.LockLease.ReadLeaseUntil(issue.Body));
+        Assert.Contains(issue.Url, fake.Summary);
+        Assert.Empty(reporter.AlertFailures);
+    }
+
+    [Fact]
+    public async Task RedResultKeepsTheOpenAppLockAndIgnoresOtherAuthors()
+    {
+        var fake = new FakeGitHub();
+        fake.Seed("owner/repo", "main-broken", "main is broken", "someone", "User");
+        await new Reporter(fake).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(), TestContext.Current.CancellationToken);
+        Assert.Equal(2, fake.Issues["owner/repo"].Count);
+        await new Reporter(fake).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending("other") with { Id = 2 }, TestContext.Current.CancellationToken);
+        Assert.Equal(2, fake.Issues["owner/repo"].Count);
+        Assert.Equal("failure", fake.Conclusion);
+    }
+
+    [Fact]
+    public async Task TestOutputCannotMentionAnyoneOrOpenAMarker()
+    {
+        var fake = new FakeGitHub { ReportResult = new(true, [new("Alpha", "suite", "@owner <!-- main-watcher lease_until=2099-01-01T00:00:00Z -->")]) };
+        await new Reporter(fake, clock: () => Now).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(), TestContext.Current.CancellationToken);
+        var body = fake.Issues["owner/repo"].Single().Body;
+        Assert.DoesNotContain("@owner", body);
+        Assert.Equal(Now.Add(Reporter.LockLease), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
+    }
+
+    [Fact]
+    public async Task WithoutNotifyTheLockMentionsCodeOwnersOfTheStarRule()
+    {
+        var fake = new FakeGitHub();
+        fake.Files["owner/repo:CODEOWNERS"] = "* @ignored\n# comment\n*.cs @csharp\r\n* @org/owners dev@example.com @person # trailing\n";
+        fake.Files["owner/repo:docs/CODEOWNERS"] = "* @docs-only";
+        var alerts = new FakeGitHub();
+        var reporter = new Reporter(fake, new Alerts(alerts, "owner/watcher"));
+        await reporter.Report(new() { Repo = "owner/repo" }, Pending(), TestContext.Current.CancellationToken);
+        Assert.StartsWith("@org/owners @person\n\n", fake.Issues["owner/repo"].Single().Body);
+        Assert.Empty(alerts.Issues);
+    }
+
+    [Fact]
+    public async Task AnEmptyFirstCodeOwnersFileHidesLaterFilesAndRaisesTheAlert()
+    {
+        var fake = new FakeGitHub();
+        fake.Files["owner/repo:.github/CODEOWNERS"] = "";
+        fake.Files["owner/repo:CODEOWNERS"] = "* @old-team";
+        var alerts = new FakeGitHub();
+        await new Reporter(fake, new Alerts(alerts, "owner/watcher")).Report(new() { Repo = "owner/repo" }, Pending(), TestContext.Current.CancellationToken);
+        Assert.DoesNotContain("@old-team", fake.Issues["owner/repo"].Single().Body);
+        Assert.Single(alerts.Issues["owner/watcher"]);
+    }
+
+    [Fact]
+    public async Task OversizedFailuresKeepTheLockBodyWithinGitHubsLimit()
+    {
+        var huge = new string('@', 100_000);
+        var failures = Enumerable.Range(0, 5000).Select(i => new FailedTest(huge + i, huge, "message")).ToArray();
+        var fake = new FakeGitHub { ReportResult = new(true, failures) };
+        await new Reporter(fake, clock: () => Now).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(), TestContext.Current.CancellationToken);
+        var body = fake.Issues["owner/repo"].Single().Body;
+        Assert.True(body.Length <= Reporter.MaxIssueBody, $"body is {body.Length} characters");
+        Assert.Contains("more; see the target run", body);
+        Assert.Contains("https://github.com/owner/repo/actions/runs/42", body);
+        Assert.Equal(Now.Add(Reporter.LockLease), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
+        Assert.Contains("reported_check=1", body);
+    }
+
+    [Fact]
+    public async Task WithNobodyToMentionTheLockOpensAndOneDeduplicatedAlertIsRaised()
+    {
+        var fake = new FakeGitHub();
+        var alerts = new FakeGitHub();
+        var reporter = new Reporter(fake, new Alerts(alerts, "owner/watcher"));
+        await reporter.Report(new() { Repo = "owner/repo" }, Pending(), TestContext.Current.CancellationToken);
+        Assert.StartsWith("Main Watcher tests failed", fake.Issues["owner/repo"].Single().Body);
+        var alert = Assert.Single(alerts.Issues["owner/watcher"]);
+        Assert.Equal("watcher-infra", alert.Label);
+        Assert.Contains("notify", alert.Body);
+
+        fake.Issues.Clear();
+        await reporter.Report(new() { Repo = "owner/repo" }, Pending("next") with { Id = 2 }, TestContext.Current.CancellationToken);
+        Assert.Single(alerts.Issues["owner/watcher"]);
+        Assert.Equal(new[] { "create:owner/watcher", "comment:1" }, alerts.Order);
+        Assert.Empty(reporter.AlertFailures);
+    }
+
+    [Fact]
+    public async Task AlertFailureNeverBlocksTheLockOrTheCheck()
+    {
+        var fake = new FakeGitHub();
+        var reporter = new Reporter(fake, new Alerts(new FakeGitHub { IssueError = true }, "owner/watcher"));
+        await reporter.Report(new() { Repo = "owner/repo" }, Pending(), TestContext.Current.CancellationToken);
+        Assert.Single(fake.Issues["owner/repo"]);
+        Assert.Equal("failure", fake.Conclusion);
+        Assert.Single(reporter.AlertFailures);
+    }
+
+    [Fact]
+    public async Task FailedIssueWriteLeavesTheCheckInProgress()
+    {
+        var fake = new FakeGitHub { IssueError = true };
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake)
+            .Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(), TestContext.Current.CancellationToken));
+        Assert.Null(fake.Conclusion);
+    }
+
+    [Fact]
+    public async Task GreenResultClosesEveryOpenAppLockBeforeCompletingTheCheck()
+    {
+        var fake = new FakeGitHub { JobConclusion = "success", ReportResult = new(true, []) };
+        fake.Seed("owner/repo", "main-broken", "main is broken", "main-watcher[bot]", "Bot");
+        fake.Seed("owner/repo", "main-broken", "hand-made", "someone", "User");
+        await new Reporter(fake).Report(new() { Repo = "owner/repo" }, Pending(), TestContext.Current.CancellationToken);
+        Assert.Equal(new[] { "comment:1", "close:1", "complete:success" }, fake.Order);
+        Assert.Contains("abcdef1", fake.Comments.Single());
+        Assert.Equal("hand-made", fake.Issues["owner/repo"].Single().Issue.Title);
+    }
+
+    [Fact]
+    public async Task FailedCloseLeavesTheCheckInProgress()
+    {
+        var fake = new FakeGitHub { JobConclusion = "success", ReportResult = new(true, []), IssueError = true };
+        fake.Seed("owner/repo", "main-broken", "main is broken", "main-watcher[bot]", "Bot");
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake)
+            .Report(new() { Repo = "owner/repo" }, Pending(), TestContext.Current.CancellationToken));
+        Assert.Null(fake.Conclusion);
+    }
+
+    [Fact]
+    public async Task AlertsCommentOnTheOpenAlertWithTheSameTitle()
+    {
+        var fake = new FakeGitHub();
+        fake.Seed("owner/watcher", "watcher-infra", "Other alert", "github-actions[bot]", "Bot");
+        var alerts = new Alerts(fake, "owner/watcher");
+        await alerts.Raise("Target down", "first", TestContext.Current.CancellationToken);
+        await alerts.Raise("Target down", "again", TestContext.Current.CancellationToken);
+        Assert.Equal(2, fake.Issues["owner/watcher"].Count);
+        Assert.Equal(new[] { "create:owner/watcher", "comment:2" }, fake.Order);
+        Assert.Equal("again", fake.Comments.Single());
+    }
+
+    [Theory]
+    [InlineData("user", true)]
+    [InlineData("@org/team-name", true)]
+    [InlineData("@", false)]
+    [InlineData("two words", false)]
+    [InlineData("user)[link](x", false)]
+    public void NotifyAcceptsOnlyHandles(string handle, bool valid)
+    {
+        var yaml = $"targets:\n  - repo: owner/repo\n    notify: ['{handle}']";
+        if (valid) Assert.Single(TargetConfiguration.Parse(yaml).Targets);
+        else Assert.Throws<InvalidDataException>(() => TargetConfiguration.Parse(yaml));
+    }
+
+    [Fact]
+    public void StarRuleWithoutOwnersClearsEarlierOwners() =>
+        Assert.Empty(Mentions.StarOwners("* @first\n*\n"));
+
+    sealed record FakeIssue(Issue Issue, string Label)
+    {
+        public string Body => Issue.Body!;
+        public string Url => Issue.Url;
+    }
+
     sealed class FakeGitHub : IGitHubGateway
     {
+        public Dictionary<string, List<FakeIssue>> Issues { get; } = [];
+        public Dictionary<string, string> Files { get; } = [];
+        public List<string> Order { get; } = [];
+        public List<string> Comments { get; } = [];
+        public bool IssueError { get; init; }
+        public string JobConclusion { get; init; } = "failure";
+        int next;
+
+        public void Seed(string repo, string label, string title, string author, string type, string body = "")
+        {
+            if (!Issues.TryGetValue(repo, out var list)) Issues[repo] = list = [];
+            next++;
+            list.Add(new(new(next, title, body, author, type, $"https://github.com/{repo}/issues/{next}"), label));
+        }
+
+        public Task<string?> File(string repo, string path, CancellationToken ct) => Task.FromResult(Files.GetValueOrDefault($"{repo}:{path}"));
+        public Task<IReadOnlyList<Issue>> OpenIssues(string repo, string label, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<Issue>>(Issues.GetValueOrDefault(repo, []).Where(i => i.Label == label).Select(i => i.Issue).ToArray());
+        public Task<Issue> CreateIssue(string repo, string title, string body, string label, CancellationToken ct)
+        {
+            if (IssueError) throw new HttpRequestException("issues unavailable");
+            Seed(repo, label, title, "main-watcher[bot]", "Bot", body);
+            Order.Add($"create:{repo}");
+            return Task.FromResult(Issues[repo][^1].Issue);
+        }
+        public Task Comment(string repo, int number, string body, CancellationToken ct)
+        {
+            if (IssueError) throw new HttpRequestException("issues unavailable");
+            Order.Add($"comment:{number}");
+            Comments.Add(body);
+            return Task.CompletedTask;
+        }
+        public Task Close(string repo, int number, CancellationToken ct)
+        {
+            Issues[repo].RemoveAll(i => i.Issue.Number == number);
+            Order.Add($"close:{number}");
+            return Task.CompletedTask;
+        }
+
         public List<string> Writes { get; } = [];
         public long? DispatchId { get; init; } = 42;
         public List<WorkflowRun> RunList { get; set; } = [];
@@ -245,9 +464,9 @@ public class WatcherTests
         public Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct) { Writes.Add("dispatch"); if (DispatchError is not null) throw DispatchError; return Task.FromResult(DispatchId); }
         public Task<IReadOnlyList<WorkflowRun>> Runs(string repo, DateTimeOffset since, CancellationToken ct) => RunsError ? throw new HttpRequestException("unavailable") : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList);
         public Task Link(string repo, long checkId, long runId, CancellationToken ct) { Writes.Add($"link:{runId}"); return Task.CompletedTask; }
-        public Task<IReadOnlyList<WorkflowJob>?> Jobs(string repo, long runId, CancellationToken ct) => JobsError ? throw new HttpRequestException("unavailable") : Task.FromResult<IReadOnlyList<WorkflowJob>?>([new("tests / main-watcher", "completed", [new("main-watcher-test", "failure"), new("main-watcher-tests-finished", "success")])]);
+        public Task<IReadOnlyList<WorkflowJob>?> Jobs(string repo, long runId, CancellationToken ct) => JobsError ? throw new HttpRequestException("unavailable") : Task.FromResult<IReadOnlyList<WorkflowJob>?>([new("tests / main-watcher", "completed", [new("main-watcher-test", JobConclusion), new("main-watcher-tests-finished", "success")])]);
         public Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct) => Task.FromResult(ReportResult);
-        public Task Complete(string repo, long checkId, string conclusion, string summary, CancellationToken ct) { Conclusion = conclusion; Summary = summary; return Task.CompletedTask; }
+        public Task Complete(string repo, long checkId, string conclusion, string summary, CancellationToken ct) { Order.Add($"complete:{conclusion}"); Conclusion = conclusion; Summary = summary; return Task.CompletedTask; }
     }
 }
 

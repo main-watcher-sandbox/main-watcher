@@ -7,12 +7,13 @@ review_by: 2027-03-15
 # Manual watcher
 
 Issue #9 supplies one Planner/Reporter cycle in `.github/workflows/watch.yml`.
-It creates and completes `main-watcher` check runs; lock issues, alerts, stale-run
-cancellation and the automatic trigger are separate backlog items.
+It creates and completes `main-watcher` check runs. Issue #10 adds the lock issue:
+a red result opens it and a green result closes it. Replay, the push list, lease
+renewal, stale-run cancellation and the automatic trigger are separate backlog items.
 
 Configure the `reporter` environment with `MAIN_WATCHER_APP_ID` (variable) and
 `MAIN_WATCHER_PRIVATE_KEY` (secret). Install that App on each target with
-Contents read, Actions write and Checks write. The workflow obtains a token
+Contents read, Actions write, Checks write and Issues write. The workflow obtains a token
 scoped to the selected repository after building the watcher.
 Before requesting that token, `--validate-target` uses the same configuration parser
 as the cycle and writes the configured owner/repository to the step outputs. Unknown,
@@ -30,7 +31,7 @@ keys or repositories are rejected. Each entry supports:
 | `results_glob` | Reports uploaded by the target caller | `**/TestResults/*.ctrf.json` |
 | `timeout` | Test deadline, integer minutes from 1 to 340 | 30 |
 | `poll_interval` | Minimum interval, positive integer minutes | 15 |
-| `notify` | Owner/team mentions, list of strings; used by future lock reporting | `[]` |
+| `notify` | Handles the lock issue mentions: `user` or `org/team`, with or without `@` | `[]` |
 | `enabled` | Whether the target participates | `true` |
 
 The Planner verifies the command, glob and timeout against literal `with` values in the target's copied
@@ -85,6 +86,37 @@ Read calls retry transient failures up to three times with bounded exponential
 backoff, and collection reads follow GitHub's next-page links. Writes are not
 automatically retried: recovery inspects GitHub state before another dispatch.
 
+## Lock issue
+
+The Reporter writes the issue side first and completes the check run last (ADR-013),
+so a failed issue write leaves the check `in_progress` for the next cycle.
+
+- **Red.** If no open `main-broken` issue authored by the App exists, the Reporter
+  opens one. Its body mentions the target's `notify` handles, else the owners of the
+  last `*` rule in the first CODEOWNERS file on `main` (`.github/`, root, `docs/`), then
+  shows the failing commit, the failing tests (or "failing tests unknown") and the target
+  run. The hidden marker holds `first_red`, `lease_until` (now + 4 h, read by the gate),
+  `reported_check` and `reported_sha`. An open lock is left as it is: later-failure
+  comments come with #11, lease renewal with #19 and replay against closed locks with #12.
+  Test output is HTML-encoded, so it cannot mention anyone or add a second marker.
+  The body stays well under GitHub's 65,536-character limit whatever the CTRF report holds:
+  names, suites and messages are clipped to 200 characters, the failure list stops at
+  20,000 characters with "…and N more", and at most 50 handles are mentioned. An existing
+  but empty CODEOWNERS file still takes precedence over later locations, so it gives no
+  owners and raises the alert.
+- **Green.** Every open App-authored lock gets a comment naming the green commit and is
+  closed.
+- **Author.** Only issues by the token's App (`MW_BOT_LOGIN`, `<app-slug>[bot]`) count;
+  a hand-made `main-broken` issue is neither reused nor closed, matching the gate.
+
+## Alerts
+
+`watch.yml` raises `watcher-infra` issues in its own repository with the workflow's
+`GITHUB_TOKEN` (`issues: write`), since the App token is scoped to the target. An open
+alert with the same title gets a comment instead of a new issue (ADR-012). A lock that
+mentions nobody raises "Lock issues on `owner/repo` mention nobody". A failed alert
+never blocks the lock or the check run; the cycle logs it and exits non-zero.
+
 ## Validation
 
 Run `dotnet test` and the CI-pinned actionlint. The core suite includes real xUnit
@@ -92,4 +124,5 @@ reports and a GitHub reusable-caller jobs response, with provenance in its fixtu
 directory. Sandbox execution uses the private watcher replica described in
 `sandbox/README.md`. The [issue #9 validation record](../sandbox/issue-9-validation.md)
 links the passing and failing checks, their Planner and Reporter cycles, and
-the target restoration evidence.
+the target restoration evidence. The [issue #10 validation record](../sandbox/issue-10-validation.md)
+covers a real lock opening and closing, and TS-S4 with that lock.

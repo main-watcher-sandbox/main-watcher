@@ -10,7 +10,8 @@ durations and the slowest tests.
 target repo template is in `sandbox/`; the gate is built (MainWatcher#5); the reusable test
 workflow is built (MainWatcher#7); test timings (`timings.json` and the CTRF job summary) are
 built (MainWatcher#8). The manual Planner and Reporter are built (MainWatcher#9),
-with passing and failing sandbox checks verified.
+with passing and failing sandbox checks verified. A red result opens the lock issue and a
+green one closes it (MainWatcher#10); TS-S4 passed again with a real lock.
 
 ## Where things are
 
@@ -40,7 +41,8 @@ with passing and failing sandbox checks verified.
 - `src/MainWatcher.Core` holds target configuration, GitHub access, eligibility, Planner
   and Reporter logic. `src/MainWatcher.Watcher` runs a manual cycle through `watch.yml`.
 - `targets.yml` configures targets. For dispatch, recovery and caller validation, read
-  `docs/watcher.md`. Sandbox evidence is in `sandbox/issue-9-validation.md`.
+  `docs/watcher.md`. Sandbox evidence is in `sandbox/issue-9-validation.md` and
+  `sandbox/issue-10-validation.md`.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
@@ -120,8 +122,8 @@ metrics store (PostgreSQL + Grafana) is deferred.
       passed in the sandbox on 2026-09-16.
    2. Reusable test workflow + caller template. Built (MainWatcher#7); timings and the
       `report` job built (MainWatcher#8).
-   3. `watch.yml` (Planner and Reporter). Built (MainWatcher#9); automated triggers and
-      lock lifecycle remain in later tickets.
+   3. `watch.yml` (Planner and Reporter). Built (MainWatcher#9); the lock opens and closes
+      (MainWatcher#10). Automated triggers, replay and lease renewal remain in later tickets.
    4. Trigger worker.
    5. Onboarding docs.
 
