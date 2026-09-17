@@ -72,6 +72,34 @@ token is requested; a sweep reads every enabled target from `targets.yml` with t
 the cycles use. The concurrency group is on the cycle job, so a sweep's cycle for one target
 never runs beside a dispatched cycle for it.
 
+The reusable caller's job and literal step names determine the outcome. The
+Reporter ignores unrelated jobs, reads all jobs pages from the latest attempt,
+and validates and merges all JSON report files in `main-watcher-ctrf` (except
+`timings.json`). It reads ZIP entries without extracting or executing files.
+Missing, malformed, oversized or undownloadable reports yield “failing tests
+unknown” but cannot turn a failed test step green or neutral.
+
+A dispatch rejected with HTTP 4xx completes its check as neutral, allowing a retry
+after `poll_interval` under the neutral retry rule. A lost response or missing run ID
+leaves the check pending; the next cycle tries to link it without dispatching again.
+The `watch.yml` log then records why the dispatch returned no run, for example
+`Check 123: dispatch of main-watcher-tests.yml in owner/repo returned no run: HTTP 502 (…).`
+The reason is the HTTP status, a network error or timeout message, or a response
+without `workflow_run_id`. After 30 minutes, a successful lookup finding no matching run completes the check as
+neutral. Ambiguous matches and failed API reads remain pending. A recovery error on
+one check does not prevent reporting other pending checks, but blocks new planning
+for that cycle. Automated cancellation of stale target runs remains in #18.
+
+Check discovery bootstraps from main's history once per `GitHubGateway` instance.
+Reuse one instance per target in the worker: subsequent polls refresh the current
+and previous heads, pending-check commits, and newly added commits, retaining
+completed results in memory. Failed reads do not publish a partial snapshot.
+Cold starts still scan history; a durable index for large-history repositories is
+deferred to worker/production work rather than introducing new GitHub state in #9.
+Read calls retry transient failures up to three times with bounded exponential
+backoff, and collection reads follow GitHub's next-page links. Writes are not
+automatically retried: recovery inspects GitHub state before another dispatch.
+
 ## Backup sweep
 
 GitHub's scheduler is delayed and sometimes drops events, so it is only a backup (C-7,
@@ -106,34 +134,6 @@ logged and fails the run, and the next sweep judges again. Neither delays the cy
   only a secondary signal: a gate that cannot reach the API usually cannot post that check run
   either, which is why merges made while a lock was open are reported by reconciliation instead
   (ADR-015, #20). A target that has not copied the gate workflow has no such runs.
-
-The reusable caller's job and literal step names determine the outcome. The
-Reporter ignores unrelated jobs, reads all jobs pages from the latest attempt,
-and validates and merges all JSON report files in `main-watcher-ctrf` (except
-`timings.json`). It reads ZIP entries without extracting or executing files.
-Missing, malformed, oversized or undownloadable reports yield “failing tests
-unknown” but cannot turn a failed test step green or neutral.
-
-A dispatch rejected with HTTP 4xx completes its check as neutral, allowing a retry
-after `poll_interval` under the neutral retry rule. A lost response or missing run ID
-leaves the check pending; the next cycle tries to link it without dispatching again.
-The `watch.yml` log then records why the dispatch returned no run, for example
-`Check 123: dispatch of main-watcher-tests.yml in owner/repo returned no run: HTTP 502 (…).`
-The reason is the HTTP status, a network error or timeout message, or a response
-without `workflow_run_id`. After 30 minutes, a successful lookup finding no matching run completes the check as
-neutral. Ambiguous matches and failed API reads remain pending. A recovery error on
-one check does not prevent reporting other pending checks, but blocks new planning
-for that cycle. Automated cancellation of stale target runs remains in #18.
-
-Check discovery bootstraps from main's history once per `GitHubGateway` instance.
-Reuse one instance per target in the worker: subsequent polls refresh the current
-and previous heads, pending-check commits, and newly added commits, retaining
-completed results in memory. Failed reads do not publish a partial snapshot.
-Cold starts still scan history; a durable index for large-history repositories is
-deferred to worker/production work rather than introducing new GitHub state in #9.
-Read calls retry transient failures up to three times with bounded exponential
-backoff, and collection reads follow GitHub's next-page links. Writes are not
-automatically retried: recovery inspects GitHub state before another dispatch.
 
 ## Lock issue
 
