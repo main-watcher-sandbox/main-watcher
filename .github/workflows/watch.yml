@@ -51,7 +51,7 @@ jobs:
           permission-checks: write
           permission-actions: write
           permission-contents: read
-          permission-issues: write
+          permission-issues: read
       - name: Plan and report
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
