@@ -20,7 +20,7 @@ public interface IGitHubGateway
     Task Link(string repo, long checkId, long runId, CancellationToken ct);
     Task<IReadOnlyList<WorkflowJob>?> Jobs(string repo, long runId, CancellationToken ct);
     Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct);
-    Task Complete(string repo, long checkId, string conclusion, string summary, CancellationToken ct);
+    Task Complete(string repo, long checkId, string conclusion, string title, string summary, CancellationToken ct);
     /// <summary>A file on <c>main</c>: null when it does not exist, "" when it is empty or too large to read inline.</summary>
     Task<string?> File(string repo, string path, CancellationToken ct);
     Task<IReadOnlyList<Issue>> OpenIssues(string repo, string label, CancellationToken ct);

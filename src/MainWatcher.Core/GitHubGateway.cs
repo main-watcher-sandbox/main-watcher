@@ -81,7 +81,8 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     static DateTimeOffset? Date(JsonElement json, string key) => DateTimeOffset.TryParse(Text(json, key), out var date) ? date : null;
     static CheckRun Check(JsonElement json) => new(json.GetProperty("id").GetInt64(), Text(json, "head_sha")!,
         Text(json, "status")!, Text(json, "conclusion"), Date(json, "started_at") ?? DateTimeOffset.MinValue,
-        Date(json, "completed_at"), Text(json, "external_id"));
+        Date(json, "completed_at"), Text(json, "external_id"),
+        json.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.Object ? Text(output, "title") : null);
 
     public async Task<string> MainHead(string repo, CancellationToken ct) =>
         (await Send(HttpMethod.Get, $"repos/{repo}/commits/main", null, ct)).GetProperty("sha").GetString()!;
@@ -239,11 +240,11 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         catch (TaskCanceledException) when (!ct.IsCancellationRequested) { return CtrfResult.Unknown; }
     }
 
-    public async Task Complete(string repo, long checkId, string conclusion, string summary, CancellationToken ct) =>
+    public async Task Complete(string repo, long checkId, string conclusion, string title, string summary, CancellationToken ct) =>
         await Send(HttpMethod.Patch, $"repos/{repo}/check-runs/{checkId}", new
         {
             status = "completed", conclusion, completed_at = DateTimeOffset.UtcNow,
-            output = new { title = Outcomes.Title(conclusion), summary }
+            output = new { title, summary }
         }, ct);
 
     public async Task<string?> File(string repo, string path, CancellationToken ct)

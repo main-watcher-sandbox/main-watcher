@@ -436,11 +436,14 @@ public class WatcherTests
         Assert.Contains(description, alert.Body, StringComparison.OrdinalIgnoreCase);
     }
 
+    // The previous check run's conclusion and output title, as the Reporter or the Planner completed it.
     [Theory]
-    [InlineData("neutral", true)]
-    [InlineData("success", false)]
-    [InlineData("failure", false)]
-    public async Task TwoInfrastructureErrorsInARowRaiseAnAlert(string previous, bool expected)
+    [InlineData("neutral", "Infrastructure error", true)]
+    [InlineData("neutral", "Outcome contract broken", false)]
+    [InlineData("neutral", "Outcome unknown", false)]
+    [InlineData("success", "Tests passed", false)]
+    [InlineData("failure", "Tests failed", false)]
+    public async Task TwoInfrastructureErrorsInARowRaiseAnAlert(string previous, string previousTitle, bool expected)
     {
         var ct = TestContext.Current.CancellationToken;
         var check = Pending(Sha('b')) with { Id = 7 };
@@ -449,8 +452,8 @@ public class WatcherTests
             JobList = [RestoreFailed],
             CheckList =
             [
-                new(5, Sha('a'), "completed", "neutral", check.StartedAt.AddHours(-2), check.StartedAt.AddHours(-2), "40"),
-                new(6, Sha('a'), "completed", previous, check.StartedAt.AddMinutes(-20), check.StartedAt.AddMinutes(-15), "41"),
+                new(5, Sha('a'), "completed", "neutral", check.StartedAt.AddHours(-2), check.StartedAt.AddHours(-2), "40", "Infrastructure error"),
+                new(6, Sha('a'), "completed", previous, check.StartedAt.AddMinutes(-20), check.StartedAt.AddMinutes(-15), "41", previousTitle),
                 check,
             ],
         };
@@ -461,33 +464,69 @@ public class WatcherTests
         var titles = alerts.Issues["owner/watcher"].Select(i => i.Issue.Title).ToArray();
         Assert.Equal(expected, titles.Contains("Infrastructure errors twice in a row on owner/repo"));
         Assert.Equal(expected ? 2 : 1, titles.Length);
-        if (expected) Assert.Contains("The previous check run, 6 on [`aaaaaaa`]", alerts.Issues["owner/watcher"][1].Body);
+        if (expected) Assert.Contains($"The previous check run, 6 on [`aaaaaaa`](https://github.com/owner/repo/commit/{Sha('a')}), was also an infrastructure error.", alerts.Issues["owner/watcher"][1].Body);
         Assert.Empty(alerts.Comments);
-        Assert.Equal("neutral", fake.Conclusion);
+        Assert.Equal(("neutral", "Infrastructure error"), (fake.Conclusion, fake.Title));
     }
 
     [Fact]
-    public async Task ContractErrorsDoNotCountTowardsTheInfrastructureStreak()
+    public async Task ContractErrorsDoNotStartOrContinueAnInfrastructureStreak()
     {
+        var ct = TestContext.Current.CancellationToken;
         var check = Pending(Sha('b')) with { Id = 7 };
-        var fake = new FakeGitHub
-        {
-            RunDeleted = true,
-            CheckList = [new(6, Sha('a'), "completed", "neutral", check.StartedAt.AddMinutes(-20), check.StartedAt.AddMinutes(-15), "41")],
-        };
+        var previous = new CheckRun(6, Sha('a'), "completed", "neutral", check.StartedAt.AddMinutes(-20), check.StartedAt.AddMinutes(-15), "41", "Infrastructure error");
+        var fake = new FakeGitHub { RunDeleted = true, CheckList = [previous] };
         var alerts = new FakeGitHub();
-        await new Reporter(fake, new Alerts(alerts, "owner/watcher")).Report(Watched, check, TestContext.Current.CancellationToken);
+        await new Reporter(fake, new Alerts(alerts, "owner/watcher")).Report(Watched, check, ct);
         Assert.Equal("Outcome unknown on owner/repo", alerts.Issues["owner/watcher"].Single().Issue.Title);
+        Assert.Equal("Outcome unknown", fake.Title);
     }
 
     [Fact]
-    public async Task NeutralAlertFailuresNeverBlockTheCheck()
+    public async Task NeutralOutputTitlesRecordTheKind()
     {
-        var fake = new FakeGitHub { JobList = [RestoreFailed], ChecksError = true };
-        var reporter = new Reporter(fake, new Alerts(new FakeGitHub { IssueError = true }, "owner/watcher"));
-        Assert.True(await reporter.Report(Watched, Pending(Sha('b')), TestContext.Current.CancellationToken));
+        var ct = TestContext.Current.CancellationToken;
+        var renamed = new FakeGitHub { JobList = [new("tests / main-watcher", "completed", [new("main-watcher-tests-finished", "success")])] };
+        await new Reporter(renamed, new Alerts(new FakeGitHub(), "owner/watcher")).Report(Watched, Pending(Sha('b')), ct);
+        Assert.Equal(("neutral", "Outcome contract broken"), (renamed.Conclusion, renamed.Title));
+        var red = new FakeGitHub();
+        await new Reporter(red).Report(Watched, Pending(Sha('b')), ct);
+        Assert.Equal(("failure", "Tests failed"), (red.Conclusion, red.Title));
+    }
+
+    [Fact]
+    public async Task FailedNeutralAlertLeavesTheCheckInProgressAndTheReplayRaisesEachAlertOnce()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var check = Pending(Sha('b')) with { Id = 7 };
+        var previous = new CheckRun(6, Sha('a'), "completed", "neutral", check.StartedAt.AddMinutes(-20), check.StartedAt.AddMinutes(-15), "41", "Infrastructure error");
+
+        // The alert sink is down: nothing is completed.
+        var fake = new FakeGitHub { JobList = [RestoreFailed], CheckList = [previous] };
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake, new Alerts(new FakeGitHub { IssueError = true }, "owner/watcher")).Report(Watched, check, ct));
+        Assert.Null(fake.Conclusion);
+
+        // The first alert is raised, then the check runs cannot be read for the streak: still nothing is completed.
+        var alerts = new FakeGitHub();
+        fake.ChecksError = true;
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake, new Alerts(alerts, "owner/watcher")).Report(Watched, check, ct));
+        Assert.Null(fake.Conclusion);
+        Assert.Equal(new[] { "create:owner/watcher" }, alerts.Order);
+
+        // The replay skips the alert already raised, raises the streak alert, and completes the check.
+        fake.ChecksError = false;
+        Assert.True(await new Reporter(fake, new Alerts(alerts, "owner/watcher")).Report(Watched, check, ct));
+        Assert.Equal(new[] { "create:owner/watcher", "create:owner/watcher" }, alerts.Order);
+        Assert.Equal("Infrastructure errors twice in a row on owner/repo", alerts.Issues["owner/watcher"][1].Issue.Title);
         Assert.Equal("neutral", fake.Conclusion);
-        Assert.Equal(2, reporter.AlertFailures.Count);
+    }
+
+    [Fact]
+    public async Task NeutralResultWithoutAnAlertSinkIsNotCompleted()
+    {
+        var fake = new FakeGitHub { JobList = [RestoreFailed] };
+        await Assert.ThrowsAsync<InvalidOperationException>(() => new Reporter(fake).Report(Watched, Pending(Sha('b')), TestContext.Current.CancellationToken));
+        Assert.Null(fake.Conclusion);
     }
 
     [Fact]
@@ -1048,7 +1087,7 @@ public class WatcherTests
         public Task ValidateTarget(Target target, CancellationToken ct) => InvalidCaller ? throw new InvalidDataException("mismatch") : Task.CompletedTask;
         public Task<string> MainHead(string repo, CancellationToken ct) => Task.FromResult("head");
         public List<CheckRun> CheckList { get; init; } = [];
-        public bool ChecksError { get; init; }
+        public bool ChecksError { get; set; }
         public Task<IReadOnlyList<CheckRun>> Checks(string repo, CancellationToken ct) =>
             ChecksError ? throw new HttpRequestException("checks unavailable") : Task.FromResult<IReadOnlyList<CheckRun>>(CheckList);
         public List<string> HistoryShas { get; init; } = [];
@@ -1074,7 +1113,8 @@ public class WatcherTests
         public Task<IReadOnlyList<WorkflowJob>?> Jobs(string repo, long runId, CancellationToken ct) => JobsError ? throw new HttpRequestException("unavailable")
             : Task.FromResult(RunDeleted ? null : JobList ?? [new("tests / main-watcher", "completed", [new("main-watcher-test", JobConclusion), new("main-watcher-tests-finished", "success")])]);
         public Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct) => Task.FromResult(ReportResult);
-        public Task Complete(string repo, long checkId, string conclusion, string summary, CancellationToken ct) { Order.Add($"complete:{conclusion}"); Conclusion = conclusion; Summary = summary; return Task.CompletedTask; }
+        public string? Title { get; private set; }
+        public Task Complete(string repo, long checkId, string conclusion, string title, string summary, CancellationToken ct) { Order.Add($"complete:{conclusion}"); Conclusion = conclusion; Title = title; Summary = summary; return Task.CompletedTask; }
     }
 }
 

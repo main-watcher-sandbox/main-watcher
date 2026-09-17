@@ -217,14 +217,21 @@ result. A job still running leaves the report pending, and any other jobs API er
 cycle with the check still `in_progress`.
 
 A neutral result never creates, comments on or closes a lock. The alert comes first, then the
-check run completes as `neutral` with the same explanation. Alerts for contract errors and
-infrastructure errors list the job's steps and their conclusions. When an infrastructure error
-follows a target's previous completed check run that was also `neutral`, a second alert,
-"Infrastructure errors twice in a row on `owner/repo`", says so: a restore failure caused by
-the code keeps `main` untested without ever locking it. Each alert carries the check's hidden
-`<!-- main-watcher check=<id> -->` marker, and an open alert with the same title that already
-holds it is not repeated, so a replayed report raises nothing new. A neutral head is tested
-again after `poll_interval`.
+check run completes as `neutral` with the same explanation. Its output title records the kind:
+"Outcome unknown", "Outcome contract broken" or "Infrastructure error". The Planner's own neutral
+results, a rejected dispatch or no run found, are titled "Outcome unknown". Alerts for contract
+errors and infrastructure errors list the job's steps and their conclusions. When an
+infrastructure error follows a target's previous completed check run titled "Infrastructure
+error", a second alert, "Infrastructure errors twice in a row on `owner/repo`", says so: a
+restore failure caused by the code keeps `main` untested without ever locking it. A contract
+error or deleted run in between ends the streak.
+
+These alerts are the report of a neutral result, so, like a lock write, they must succeed
+before the check run completes (ADR-013). If an alert or the check-run read for the streak
+fails, the check run stays `in_progress`, the cycle fails, and the next cycle replays the
+report. Each alert carries the check's hidden `<!-- main-watcher check=<id> -->` marker, and an
+open alert with the same title that already holds it is not repeated, so the replay raises only
+what is missing. A neutral head is tested again after `poll_interval`.
 
 ## Alerts
 
@@ -232,8 +239,9 @@ again after `poll_interval`.
 `GITHUB_TOKEN` (`issues: write`), since the App token is scoped to the target. An open
 alert with the same title gets a comment instead of a new issue (ADR-012). A lock that
 mentions nobody raises "Lock issues on `owner/repo` mention nobody". Neutral results raise the
-alerts [above](#neutral-results). A failed alert
-never blocks the lock or the check run; the cycle logs it and exits non-zero.
+alerts [above](#neutral-results). A failed "mention nobody" alert never blocks the lock or the
+check run; the cycle logs it and exits non-zero. A failed neutral-result alert leaves the check
+run `in_progress` for a replay.
 
 ## Validation
 

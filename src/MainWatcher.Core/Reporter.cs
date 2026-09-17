@@ -64,13 +64,14 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         }
         else
         {
-            // Infrastructure and contract errors never lock the queue (CQ-5): alert, then complete as neutral.
+            // Infrastructure and contract errors never lock the queue (CQ-5): alert, then complete as neutral. The alert is this
+            // result's report, so a failure to raise it leaves the check in progress, to be replayed (ADR-013).
             await ReportNeutral(target, check, outcome, runUrl, ct);
             summary += "\n\nNo lock was opened. The head is tested again after `poll_interval`.";
         }
         // GitHub caps check output at 65535 bytes. Conservatively bound UTF-16 length.
         if (summary.Length > 15000) summary = summary[..15000] + "\n\nOutput truncated; see target run.";
-        await github.Complete(repo, check.Id, outcome.Conclusion, summary, ct);
+        await github.Complete(repo, check.Id, outcome.Conclusion, outcome.Title, summary, ct);
         return true;
     }
 
@@ -110,16 +111,18 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
 
     /// <summary>
     /// Raises the <c>watcher-infra</c> alert for a neutral outcome (ADR-013) and, for an infrastructure error, "twice in a row"
-    /// when the target's previous completed check run was also neutral. Each alert names the check in a hidden marker,
-    /// so a replay of this report does not repeat it.
+    /// when the target's previous completed check run was an infrastructure error too, as its output title records. Each alert
+    /// names the check in a hidden marker, so a replay of this report does not repeat it. Unlike the "mention nobody" alert,
+    /// these are required writes: a failure is thrown, and the check run stays <c>in_progress</c>.
     /// </summary>
     async Task ReportNeutral(Target target, CheckRun check, TestOutcome outcome, string runUrl, CancellationToken ct)
     {
+        if (alerts is null) throw new InvalidOperationException("A neutral result cannot be reported without an alert sink.");
         var repo = target.Repo;
         var key = $"<!-- main-watcher check={check.Id} -->";
         var what = $"Check run {check.Id} on {Commit(repo, check.Sha)} in `{repo}` completed as `neutral` and opened no lock "
             + $"([target run]({runUrl})).\n\n{outcome.Description}\n\n";
-        await Alert(Outcomes.AlertTitle(outcome.Kind, repo)!, what + outcome.Kind switch
+        await alerts.Raise(Outcomes.AlertTitle(outcome.Kind, repo)!, what + outcome.Kind switch
         {
             OutcomeKind.Unknown => "The target run no longer exists, so its steps cannot be read.",
             OutcomeKind.ContractBroken => $"The Reporter looks for the job `main-watcher` and the steps `{Outcomes.TestStep}` and `{Outcomes.MarkerStep}`, "
@@ -127,16 +130,12 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
             _ => "Setup failed or the tests did not finish: for example a restore failure, the test deadline, a timeout, a cancellation or a lost runner."
         } + " The head is tested again after `poll_interval`.", ct, key);
         if (outcome.Kind != OutcomeKind.InfrastructureError) return;
-        const string streak = "Infrastructure errors twice in a row";
-        try
-        {
-            var previous = (await github.Checks(repo, ct))
-                .Where(c => c.Id != check.Id && c.Status == "completed" && c.StartedAt <= check.StartedAt).MaxBy(c => c.StartedAt);
-            if (previous?.Conclusion != "neutral") return;
-            await Alert($"{streak} on {repo}", what + $"The previous check run, {previous.Id} on {Commit(repo, previous.Sha)}, was also neutral. "
-                + "A lasting infrastructure problem, or a restore failure caused by the code, is keeping `main` untested.", ct, key);
-        }
-        catch (Exception e) when (!ct.IsCancellationRequested) { AlertFailures.Add($"{streak} on {repo}: {e.Message}"); }
+        var previous = (await github.Checks(repo, ct))
+            .Where(c => c.Id != check.Id && c.Status == "completed" && c.StartedAt <= check.StartedAt).MaxBy(c => c.StartedAt);
+        if (previous is not { Conclusion: "neutral" } || previous.Title != Outcomes.Title(OutcomeKind.InfrastructureError)) return;
+        await alerts.Raise($"Infrastructure errors twice in a row on {repo}", what
+            + $"The previous check run, {previous.Id} on {Commit(repo, previous.Sha)}, was also an infrastructure error. "
+            + "A lasting infrastructure problem, or a restore failure caused by the code, is keeping `main` untested.", ct, key);
     }
 
     /// <summary>
@@ -360,10 +359,11 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         return [];
     }
 
-    async Task Alert(string title, string body, CancellationToken ct, string? key = null)
+    /// <summary>An alert that never blocks the report: a failure is recorded in <see cref="AlertFailures"/>.</summary>
+    async Task Alert(string title, string body, CancellationToken ct)
     {
         if (alerts is null) { AlertFailures.Add($"{title}: no alert sink configured"); return; }
-        try { await alerts.Raise(title, body, ct, key); }
+        try { await alerts.Raise(title, body, ct); }
         catch (Exception e) when (!ct.IsCancellationRequested) { AlertFailures.Add($"{title}: {e.Message}"); }
     }
 
@@ -390,7 +390,5 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     static string Short(string sha) => sha.Length > 7 ? sha[..7] : sha;
     static string Commit(string repo, string sha) => $"[`{Short(sha)}`](https://github.com/{repo}/commit/{sha})";
 
-    // HTML-encoding also stops test output from opening a hidden marker; &#64; stops it mentioning anyone.
-    static string Escape(string text) => System.Net.WebUtility.HtmlEncode(text)
-        .Replace("\r", " ").Replace("\n", " ").Replace("`", "\\`").Replace("*", "\\*").Replace("[", "\\[").Replace("@", "&#64;");
+    static string Escape(string text) => Markdown.Escape(text);
 }

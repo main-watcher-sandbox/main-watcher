@@ -22,6 +22,9 @@ public sealed record TestOutcome(OutcomeKind Kind, string Description)
         OutcomeKind.Failed => "failure",
         _ => "neutral"
     };
+
+    /// <summary>The check run's output title. For a neutral result it records the kind, which the infrastructure streak reads.</summary>
+    public string Title => Outcomes.Title(Kind);
 }
 
 /// <summary>ADR-013 outcome table: trust test results only with a successful finished marker.</summary>
@@ -30,10 +33,12 @@ public static class Outcomes
     public const string TestStep = "main-watcher-test";
     public const string MarkerStep = "main-watcher-tests-finished";
 
-    public static string Title(string conclusion) => conclusion switch
+    public static string Title(OutcomeKind kind) => kind switch
     {
-        "success" => "Tests passed",
-        "failure" => "Tests failed",
+        OutcomeKind.Passed => "Tests passed",
+        OutcomeKind.Failed => "Tests failed",
+        OutcomeKind.ContractBroken => "Outcome contract broken",
+        OutcomeKind.InfrastructureError => "Infrastructure error",
         _ => "Outcome unknown"
     };
 
@@ -64,18 +69,15 @@ public static class Outcomes
             return new(OutcomeKind.InfrastructureError, $"Infrastructure error: the tests did not finish.\n\n{Steps(job)}");
         return tests.SingleOrDefault()?.Conclusion switch
         {
-            "success" => new(OutcomeKind.Passed, Title("success")),
-            "failure" => new(OutcomeKind.Failed, Title("failure")),
+            "success" => new(OutcomeKind.Passed, Title(OutcomeKind.Passed)),
+            "failure" => new(OutcomeKind.Failed, Title(OutcomeKind.Failed)),
             _ => new(OutcomeKind.ContractBroken, $"Outcome contract broken: `{MarkerStep}` succeeded without a `{TestStep}` result.\n\n{Steps(job)}")
         };
     }
 
     /// <summary>The job's step conclusions, in order, as a Markdown list.</summary>
     static string Steps(WorkflowJob job) => job.Steps.Count == 0
-        ? $"Job {Escape(job.Name)} has no steps."
-        : $"Steps of job {Escape(job.Name)}:\n\n" + string.Join("\n", job.Steps.Select(s => $"- {Escape(s.Name)}: {Escape(s.Conclusion ?? "no conclusion")}"));
-
-    // Names come from the target's workflow: they must not mention anyone or open a hidden marker.
-    static string Escape(string text) => System.Net.WebUtility.HtmlEncode(text)
-        .Replace("\r", " ").Replace("\n", " ").Replace("`", "\\`").Replace("*", "\\*").Replace("[", "\\[").Replace("@", "&#64;");
+        ? $"Job {Markdown.Escape(job.Name)} has no steps."
+        : $"Steps of job {Markdown.Escape(job.Name)}:\n\n"
+            + string.Join("\n", job.Steps.Select(s => $"- {Markdown.Escape(s.Name)}: {Markdown.Escape(s.Conclusion ?? "no conclusion")}"));
 }
