@@ -133,6 +133,25 @@ were closed with a comment pointing here; #2 stays open until `notify` is config
 
 The replica's `targets.yml` went to `timeout: 2` and back in two commits of its own
 (`eb506a0`, `6a55be7`) on top of `551ab9c`, so its content matches MainWatcher's again, but
-its `main` is no longer an ancestor of later MainWatcher commits. The next deployment needs
-`git push --force` to the replica. The three workflow variant branches stay in the gate repo
+its `main` is no longer an ancestor of later MainWatcher commits. The PR #43 re-check below
+deployed with a merge commit on top of it instead of a force push. The three workflow variant branches stay in the gate repo
 for re-runs.
+
+## PR #43 review re-check
+
+The review found that any neutral check run started the "twice in a row" streak, and that a
+failed neutral alert still let the check run complete. `89b1ea0` records the kind in the check
+run's output title, counts only a previous "Infrastructure error", and makes the neutral alerts
+required writes. It was deployed to the replica as `d834e6a`, a merge of `89b1ea0` onto the
+replica's `main` with `89b1ea0`'s tree.
+
+| Step | Evidence |
+| --- | --- |
+| Contract error: caller on `@ts-s16-renamed-step` (`f3692fc`), Alpha failing (`7f76634`) | Planner [35250678471](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35250678471), target run [35250758697](https://github.com/main-watcher-sandbox/sample-target/actions/runs/35250758697), Reporter [35250867744](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35250867744): check 105302210433 `neutral`, output title "Outcome contract broken"; alert [main-watcher#6](https://github.com/main-watcher-sandbox/main-watcher/issues/6) |
+| Restore fails next: caller on `@main` (`c307f3e`), `fail_restore: true` (`12725c7`) | Planner [35251115276](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35251115276), target run [35251187850](https://github.com/main-watcher-sandbox/sample-target/actions/runs/35251187850), Reporter [35251245736](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35251245736): check 105303634120 `neutral`, title "Infrastructure error"; alert [main-watcher#7](https://github.com/main-watcher-sandbox/main-watcher/issues/7); no "twice in a row", because the previous check was a contract error |
+| Retest of the same head | Planner [35251468249](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35251468249), target run [35251547891](https://github.com/main-watcher-sandbox/sample-target/actions/runs/35251547891), Reporter [35251625197](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35251625197): check 105304837737 `neutral`, title "Infrastructure error"; a comment on #7 and alert [main-watcher#8](https://github.com/main-watcher-sandbox/main-watcher/issues/8) "Infrastructure errors twice in a row", read from the previous check run's title through the check-runs API |
+| Restored: `sandbox.json` (`327ee4e`) | Planner [35251860075](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35251860075), target run [35251942609](https://github.com/main-watcher-sandbox/sample-target/actions/runs/35251942609) `success`, Reporter [35252036143](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35252036143): check `success`, title "Tests passed" |
+
+`sandbox.json` and `main-watcher-tests.yml` again have blobs `248577d` and `9c73ed7`, no lock
+is open, and alerts #6 to #8 were closed with a comment pointing here. A failed neutral alert
+leaving the check `in_progress` was not forced in the sandbox; unit tests cover it.
