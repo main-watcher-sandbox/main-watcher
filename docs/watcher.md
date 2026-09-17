@@ -299,4 +299,8 @@ covers a real lock opening and closing, and TS-S4 with that lock. The
 [issue #11 validation record](../sandbox/issue-11-validation.md) covers TS-S2: the push list
 and the later-failure comment. The [issue #12 validation record](../sandbox/issue-12-validation.md)
 covers TS-S14 (a), (b) and (d) and the override part of TS-S3. The
-[issue #13 validation record](../sandbox/issue-13-validation.md) covers TS-S16 (a) to (f).
+[issue #13 validation record](../sandbox/issue-13-validation.md) covers TS-S16 (a) to (f). The
+[issue #16 validation record](../sandbox/issue-16-validation.md) covers TS-S11: with the worker
+scaled to zero, a sweep tested a push that had waited two hours and raised "trigger worker
+appears down", and a merge group whose gate met an expired lease was reported once. It also
+records that GitHub ran neither scheduled slot during that test, so the cron itself is unproven.

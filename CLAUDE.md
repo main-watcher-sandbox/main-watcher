@@ -23,8 +23,10 @@ TS-S2 end to end with no hand-run cycle. The worker raises its own de-duplicated
 `watcher-infra` alerts, for failing cycles, uncompleted `watch.yml` runs, refused
 credentials, a low rate limit and a report owed for more than 15 minutes (MainWatcher#15);
 TS-S14 (c) passed. The hourly sweep at minute 17 gives every enabled target a cycle and
-raises "trigger worker appears down" and gate fail-open alerts (MainWatcher#16); TS-S11
-passed.
+raises "trigger worker appears down" and gate fail-open alerts (MainWatcher#16). In the
+sandbox a sweep tested a push that had waited two hours with the worker down, and reported a
+real `gate-fail-open` check run once, but GitHub ran neither scheduled slot during the test,
+so the cron firing at all is still unproven (C-7).
 
 ## Where things are
 

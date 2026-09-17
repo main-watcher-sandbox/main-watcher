@@ -6,22 +6,113 @@ review_by: 2027-03-15
 
 # Issue #16 sandbox validation
 
-Validated on 2026-09-17 with the sweep implementation pushed to
-`main-watcher-sandbox/main-watcher` (the private watcher replica) as
-[`09d4b44`](https://github.com/main-watcher-sandbox/main-watcher/commit/09d4b44844a96b6ff439a6c477662c85dd147d0a),
-whose tree is MainWatcher `982dbd3`. The target is `main-watcher-sandbox/sample-target` with
-`poll_interval: 1`, and the trigger worker was scaled to zero throughout:
+Validated on 2026-09-17 with the sweep pushed to `main-watcher-sandbox/main-watcher` (the
+private watcher replica) as
+[`09d4b44`](https://github.com/main-watcher-sandbox/main-watcher/commit/09d4b44844a96b6ff439a6c477662c85dd147d0a)
+at 21:23Z, whose tree is MainWatcher `982dbd3`. The target is
+`main-watcher-sandbox/sample-target` with `poll_interval: 1`. The trigger worker was scaled to
+zero throughout (`kubectl -n main-watcher-sandbox get deploy trigger-worker` → 0 replicas), so
+nothing but a sweep or a hand-run cycle could act. "By hand" means the `pat-actium` account.
 
-```
-kubectl -n main-watcher-sandbox get deploy trigger-worker   # 0 replicas
-```
+**The one thing not observed: GitHub never ran the schedule.** See
+[below](#the-schedule-itself-did-not-fire). Every sweep recorded here was dispatched by hand
+with no `target`, which is the same run as a scheduled one in everything but the event: the
+same `sweep` run name, the same `targets` and matrix jobs, and `MW_SWEEP: true`.
 
-"By hand" means the `pat-actium` account.
+## Shape: a run with no target sweeps every enabled target
 
-## Shape: a dispatch with no target sweeps every enabled target
+[Run 35276541006](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35276541006),
+21:25Z.
 
-TBD
+| Step | Evidence |
+| --- | --- |
+| Run name | `sweep`, not `watch <target>`, so the worker never counts it as a target's cycle |
+| `targets` job, 21:25:44Z → 21:26:04Z | `--list-targets` gave `["main-watcher-sandbox/sample-target"]` without a token |
+| `watch` matrix leg | One leg, `watch (main-watcher-sandbox/sample-target)`, `MW_SWEEP: true` |
+| The leg is an ordinary cycle | `Started check 105388936455, target run 35276702018` |
+| No alert | The push it tested was 2 minutes old, well inside the 15-minute threshold |
+| `Sweep: no gate failed open.` | No merge-group gate run in the past hour |
 
-## TS-S11: with the worker scaled to 0, a push is tested by the next sweep and the alert is raised
+## TS-S11: with the worker scaled to 0, a waiting push is tested by the sweep and the alert is raised
 
-TBD
+| Time (UTC) | Event |
+| --- | --- |
+| 21:28:15Z | A cycle dispatched by hand reported the previous check; the target was left clean |
+| 21:29:35Z | Push [`96c87c4`](https://github.com/main-watcher-sandbox/sample-target/commit/96c87c4ce9ade84f59f518d54c2efcd0a28c6775) to `main`. Nothing tested it: the worker was down, and no cycle was dispatched after 21:28 |
+| 22:17Z, 23:17Z | The two scheduled slots passed with no run (below) |
+| 23:29:36Z | Sweep dispatched by hand: [run 35287073574](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35287073574) |
+| 23:30:46Z | `Sweep: the trigger worker appears down; head 96c87c4 is eligible for a test.` → alert [main-watcher#10](https://github.com/main-watcher-sandbox/main-watcher/issues/10) |
+| 23:30:50Z | `Started check 105421959319, target run 35287169685` — the waiting push is tested by the sweep |
+| 23:32:35Z | The target run passed |
+| 23:33:48Z | A cycle dispatched by hand reported it: check 105421959319 `success` |
+
+The alert's body dated the work from the push itself, not from the sweep that found it, and
+said what it could rule out:
+
+> The hourly sweep found work on `main-watcher-sandbox/sample-target` that has waited 121
+> minutes, since 2026-09-17 21:29 UTC: head 96c87c4 is eligible for a test.
+>
+> No `watch.yml` cycle has been dispatched for it in that time. …
+
+121 minutes is 23:30:46Z minus the 21:29:35Z push, so the work was dated by the activity entry
+for that push and not by anything the sweep did. The "no cycle dispatched" line is the read of
+the replica's own `watch.yml` runs since 23:15Z, which found none: the 21:28 cycle is an hour
+older. The sweep 8 minutes later ([run
+35287831053](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35287831053))
+raised nothing, because by then the only work was a head pushed 2 minutes earlier.
+
+## `gate-fail-open` check runs raise an alert
+
+An expired lease makes the gate fail open without any API failure (ADR-014), which is the
+cheapest way to produce a real `gate-fail-open` check run.
+
+| Time (UTC) | Event |
+| --- | --- |
+| 23:34:11Z | `sandbox-lock.yml` with `lease_hours=-1` opened App-authored lock [sample-target#29](https://github.com/main-watcher-sandbox/sample-target/issues/29) with a lease an hour in the past |
+| 23:35:15Z | PR [sample-target#28](https://github.com/main-watcher-sandbox/sample-target/pull/28) added to the merge queue (`enqueuePullRequest`; the repo has auto-merge off, so `gh pr merge` cannot do it) |
+| 23:35:36Z | Merge-group gate [run 35287526099](https://github.com/main-watcher-sandbox/sample-target/actions/runs/35287526099) on `gh-readonly-queue/main/pr-28-96c87c4…`: `main-watcher-gate` `success`, then `main-watcher/gate-fail-open` `success` |
+| 23:36:05Z | The group merged, since `slow_check_minutes` is 0 |
+| 23:38:04Z | Sweep [run 35287603448](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35287603448): `Sweep: reported 1 merge group(s) whose gate failed open.` → alert [main-watcher#11](https://github.com/main-watcher-sandbox/main-watcher/issues/11) |
+| 23:41:11Z | The next sweep found the same run and wrote nothing: alert #11 still has no comments |
+
+The alert listed the run, its queue branch and the merged commit, and carried the marker
+`<!-- main-watcher gate-fail-open runs=35287526099 -->`, which is what makes the second sweep
+silent. The alert is separate from the lock: the sweep raised it while the lock was open and
+`main` was being tested, and a merge during a lock is still reconciliation's job (#20).
+
+The query behind it was also checked against the sandbox's whole gate history: of the 14
+merge-group gate runs on this target, the three examined by hand
+([35228722242](https://github.com/main-watcher-sandbox/sample-target/actions/runs/35228722242),
+35146938518, 35124692434, one passing gate and two failing ones) all carry
+`main-watcher/gate-fail-open` with conclusion `skipped`, so a gate that enforced the lock
+correctly is never reported.
+
+## The schedule itself did not fire
+
+The cron `17 * * * *` reached the replica's default branch at 21:23Z. Neither the 22:17Z nor
+the 23:17Z slot produced a run of any kind: `gh run list` shows nothing between the 21:28
+dispatch and the 23:29 one, and nothing queued at either 22:27Z or 23:29Z.
+
+What was ruled out: the workflow is `state=active` at `.github/workflows/watch.yml` on the
+default branch `main`; Actions are enabled on the repository (`{"enabled":true,
+"allowed_actions":"all"}`); githubstatus.com reported Actions "Normal" at 22:28Z; and the
+replica started hand-dispatched runs at 23:29Z, 23:36Z and 23:39Z, so it was not out of
+Actions minutes or otherwise unable to start runs. A malformed `on.schedule` would have
+produced a failed run rather than none, and actionlint 1.7.12 accepts the file.
+
+What is left is GitHub's own scheduler: `schedule` events are delayed under load and are
+sometimes dropped altogether, and a newly registered cron often misses its first slots. That is
+C-7, the constraint this whole design rests on, and the reason ADR-010 makes the schedule a
+backup rather than the trigger. It does mean the first acceptance criterion of #16, that the
+workflow **runs** on a schedule at minute 17, is unproven here: what is proven is that a sweep
+does the right thing, and that the cron is on the default branch in a form GitHub accepts.
+Re-check the replica's run list for a `schedule` event before relying on the sweep in
+production.
+
+## State afterwards
+
+- `main` of `sample-target` is [`a15eeb3`](https://github.com/main-watcher-sandbox/sample-target/commit/a15eeb35), green, with check 105423591210 `success` and nothing pending.
+- Lock #29 was closed by the App's own green report, with its closing comment; no target issue is open.
+- The probe branch `ts-s11-fail-open` is deleted and PR #28 is merged.
+- Alerts #10 and #11 are left open in the replica, as the evidence above.
+- The trigger worker is still scaled to zero, as it was found.
