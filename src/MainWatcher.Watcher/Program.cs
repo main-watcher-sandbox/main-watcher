@@ -4,6 +4,13 @@ using MainWatcher.Core;
 try
 {
     var config = TargetConfiguration.Parse(File.ReadAllText(Environment.GetEnvironmentVariable("MW_TARGETS_FILE") ?? "targets.yml"));
+    if (args is ["--list-targets"])
+    {
+        // The sweep's matrix: every enabled target, from the same parser the cycles use. Each leg validates its own target again.
+        File.AppendAllLines(Required("GITHUB_OUTPUT"),
+            [$"targets={System.Text.Json.JsonSerializer.Serialize(config.Targets.Where(t => t.Enabled).Select(t => t.Repo))}"]);
+        return 0;
+    }
     var repo = Environment.GetEnvironmentVariable("MW_TARGET") ?? "";
     var target = config.Targets.SingleOrDefault(t => t.Repo.Equals(repo, StringComparison.OrdinalIgnoreCase))
         ?? throw new InvalidOperationException("MW_TARGET must identify a configured target.");
@@ -19,16 +26,19 @@ try
         File.AppendAllLines(Required("GITHUB_OUTPUT"), [$"owner={parts[0]}", $"repo={parts[1]}"]);
         return 0;
     }
-    if (args.Length != 0) throw new ArgumentException("Usage: MainWatcher.Watcher [--validate-target]");
+    if (args.Length != 0) throw new ArgumentException("Usage: MainWatcher.Watcher [--validate-target|--list-targets]");
     using var http = Client(Required("GH_TOKEN"));
     // Alerts go to the watcher repo with its own workflow token; the App token is scoped to the target.
     using var alertHttp = Client(Required("MW_ALERT_TOKEN"));
     var appId = long.Parse(Required("MW_APP_ID"));
     var github = new GitHubGateway(http, appId, log: Console.WriteLine);
     var planner = new Planner(github);
+    var alertRepo = Required("MW_ALERT_REPO");
+    var watcherGithub = new GitHubGateway(alertHttp, appId);
+    var alerts = new Alerts(watcherGithub, alertRepo);
     // Sandbox fault injection (TS-S14): exit right after the named Reporter write, so the next cycle replays the report.
     var exitAfter = Environment.GetEnvironmentVariable("MW_SANDBOX_EXIT_AFTER") ?? "";
-    var reporter = new Reporter(github, new Alerts(new GitHubGateway(alertHttp, appId), Required("MW_ALERT_REPO")),
+    var reporter = new Reporter(github, alerts,
         Environment.GetEnvironmentVariable("MW_BOT_LOGIN") is { Length: > 0 } bot ? bot : Reporter.DefaultBotLogin,
         afterWrite: write =>
         {
@@ -37,6 +47,25 @@ try
             Environment.Exit(3);
         });
     using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
+    // The hourly backup sweep (C-7, ADR-010): every enabled target gets a cycle, and this one also reports what only the
+    // sweep looks for. A dispatch with no target sweeps too, which is how the scenario is run by hand.
+    var sweep = Environment.GetEnvironmentVariable("MW_SWEEP") == "true"
+        ? new Sweep(github, watcherGithub, alertRepo, alerts, new WorkFinder()) : null;
+    var sweepFailed = false;
+    if (sweep is not null)
+    {
+        // Before the cycle, which is what does the work the trigger worker left waiting.
+        try
+        {
+            if (await sweep.WorkerDown(target, timeout.Token) is { } waiting)
+                Console.WriteLine($"Sweep: the trigger worker appears down; {waiting.Reason}.");
+        }
+        catch (Exception e) when (!timeout.IsCancellationRequested)
+        {
+            sweepFailed = true;
+            Console.Error.WriteLine($"Sweep: the waiting-work check failed: {e.Message}");
+        }
+    }
     var recoveryFailed = false;
     foreach (var pending in (await github.Checks(repo, timeout.Token)).Where(c => c.Status != "completed"))
     {
@@ -60,14 +89,28 @@ try
         if (Environment.GetEnvironmentVariable("GITHUB_STEP_SUMMARY") is { Length: > 0 } summary) File.AppendAllLines(summary, [line]);
     }
     foreach (var failure in reporter.AlertFailures) Console.Error.WriteLine($"Alert not raised: {failure}");
-    if (recoveryFailed || reporter.AlertFailures.Count > 0) return 1;
+    if (recoveryFailed || reporter.AlertFailures.Count > 0 || sweepFailed) return 1;
     var planned = await planner.Plan(target, Environment.GetEnvironmentVariable("MW_FORCE") == "true", timeout.Token);
     Console.WriteLine(planned is null ? "No eligible head." : string.IsNullOrEmpty(planned.ExternalId)
         ? $"Check {planned.Id} awaits dispatch recovery." : $"Started check {planned.Id}, target run {planned.ExternalId}.");
     // After planning, so a lock whose comments cannot be written (for example, a locked conversation) never stops testing.
     var overrides = await reporter.NoteOverrides(target, timeout.Token);
     if (overrides > 0) Console.WriteLine($"Posted {overrides} override comment(s) on locks closed by hand.");
-    return 0;
+    if (sweep is not null)
+    {
+        // Last: a gate that failed open is a secondary signal (ADR-008), and never delays testing or reporting.
+        try
+        {
+            var open = await sweep.GateFailedOpen(target, timeout.Token);
+            Console.WriteLine(open > 0 ? $"Sweep: reported {open} merge group(s) whose gate failed open." : "Sweep: no gate failed open.");
+        }
+        catch (Exception e) when (!timeout.IsCancellationRequested)
+        {
+            sweepFailed = true;
+            Console.Error.WriteLine($"Sweep: the gate fail-open check failed: {e.Message}");
+        }
+    }
+    return sweepFailed ? 1 : 0;
 }
 catch (Exception e)
 {

@@ -10,6 +10,16 @@ public sealed class GitHubGateway(HttpClient http, long appId,
 {
     public const string CheckName = "main-watcher";
     public const string Workflow = "main-watcher-tests.yml";
+    /// <summary>The watcher's own workflow in the watcher repo, dispatched per target and swept hourly (ADR-010).</summary>
+    public const string WatchWorkflow = "watch.yml";
+    /// <summary>The prefix of a per-target <c>watch.yml</c> <c>run-name</c>: how a cycle for one target is recognised.</summary>
+    public const string WatchRunPrefix = "watch ";
+    /// <summary>The gate workflow targets copy from <c>templates/main-watcher-gate.yml</c>.</summary>
+    public const string GateWorkflow = "main-watcher-gate.yml";
+    /// <summary>The gate template's job that runs only when the gate could not enforce a lock (ADR-008).</summary>
+    public const string FailOpenJob = "main-watcher/gate-fail-open";
+    /// <summary>At most this many gate runs are examined in one sweep, newest first, so a busy queue cannot lengthen it.</summary>
+    public const int FailOpenRuns = 50;
     readonly Dictionary<string, (string Head, List<CheckRun> Checks)> snapshots = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -206,6 +216,27 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     public async Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct) =>
         (await Pages($"repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&created={Uri.EscapeDataString(">=" + since.ToString("O"))}", "workflow_runs", ct))
         .Select(r => new WorkflowRun(r.GetProperty("id").GetInt64(), Text(r, "display_title")!, Date(r, "created_at")!.Value, Text(r, "status")!, Date(r, "updated_at"))).ToArray();
+
+    public async Task<IReadOnlyList<FailOpen>> FailOpens(string repo, DateTimeOffset since, CancellationToken ct)
+    {
+        List<JsonElement> runs;
+        try
+        {
+            runs = await Pages($"repos/{repo}/actions/workflows/{GateWorkflow}/runs?event=merge_group&created={Uri.EscapeDataString(">=" + since.ToString("O"))}", "workflow_runs", ct);
+        }
+        // A target that has not copied the gate workflow, or has renamed it, has no such runs to report.
+        catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.NotFound) { return []; }
+        var found = new List<FailOpen>();
+        foreach (var run in runs.OrderByDescending(r => r.GetProperty("id").GetInt64()).Take(FailOpenRuns))
+        {
+            var id = run.GetProperty("id").GetInt64();
+            // The template skips this job unless the gate failed open, so a job with any other conclusion, or none yet, is one.
+            var jobs = await Pages($"repos/{repo}/actions/runs/{id}/jobs?filter=latest", "jobs", ct);
+            if (!jobs.Any(j => Text(j, "name") == FailOpenJob && Text(j, "conclusion") != "skipped")) continue;
+            found.Add(new(id, Text(run, "head_sha") ?? "", Text(run, "head_branch") ?? "", Date(run, "created_at") ?? since));
+        }
+        return found;
+    }
 
     public async Task Link(string repo, long checkId, long runId, CancellationToken ct) =>
         await Send(HttpMethod.Patch, $"repos/{repo}/check-runs/{checkId}", new { external_id = runId.ToString(System.Globalization.CultureInfo.InvariantCulture), details_url = $"https://github.com/{repo}/actions/runs/{runId}" }, ct);

@@ -11,8 +11,9 @@ It creates and completes `main-watcher` check runs. Issue #10 adds the lock issu
 a red result opens it and a green result closes it. Issue #11 adds the push list and
 a comment for each later failure. Issue #12 replays interrupted reports and records human
 overrides. Issue #13 gives infrastructure errors a neutral result with an alert. #14 adds the trigger worker,
-which dispatches this workflow whenever a target has work; see [worker.md](worker.md). Lease
-renewal and stale-run cancellation are separate backlog items.
+which dispatches this workflow whenever a target has work; see [worker.md](worker.md). #16 adds
+the hourly backup sweep, which processes every enabled target and watches the worker in turn.
+Lease renewal and stale-run cancellation are separate backlog items.
 
 Configure the `reporter` environment with `MAIN_WATCHER_APP_ID` (variable) and
 `MAIN_WATCHER_PRIVATE_KEY` (secret). Install that App on each target with
@@ -64,6 +65,47 @@ an active check or the poll interval.
 GitHub treats concurrency group names as case-insensitive, so differently cased
 spellings of the same repository share a group, consistent with target lookup
 ([GitHub workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency)).
+
+The run's first job decides which targets it acts on, and the cycle job runs once for each as a
+matrix. A dispatched target is taken as given there and validated in its own leg, before any App
+token is requested; a sweep reads every enabled target from `targets.yml` with the same parser
+the cycles use. The concurrency group is on the cycle job, so a sweep's cycle for one target
+never runs beside a dispatched cycle for it.
+
+## Backup sweep
+
+GitHub's scheduler is delayed and sometimes drops events, so it is only a backup (C-7,
+ADR-010). `watch.yml` also runs on a schedule at minute 17, away from the congested start of
+the hour. A scheduled run, or a dispatch with no `target`, is a **sweep**: it gives every
+enabled target a cycle, at most five at a time, and is named `sweep` rather than
+`watch <target>`, so the worker never mistakes it for one target's cycle.
+
+```sh
+gh workflow run watch.yml
+```
+
+A sweep also reports the two things only it looks for. Neither is a required write: a failure is
+logged and fails the run, and the next sweep judges again. Neither delays the cycle's own work.
+
+- **Trigger worker appears down.** Before the cycle, the sweep asks the question the worker
+  asks — does this target have work? — and how long that work has waited: since the
+  `main-watcher` job completed for a report the Reporter owes, since the check run was created
+  for one awaiting linking, since the 30-minute dispatch window closed for one that never got a
+  target run, and, for an eligible head, since the push that made it current or since
+  `poll_interval` expired, whichever is later. Work older than 15 minutes raises "Trigger worker
+  appears down (work waiting on `owner/repo`)". Two kinds of work are never reported: work
+  GitHub does not date, a deleted target run or a head whose push is not in the activity read;
+  and work on a target the worker has dispatched a cycle for within those 15 minutes, since the
+  worker is then alive and something else is stuck, which its own "reporting pending" alert
+  covers (ADR-013). Reading the dispatched cycles needs `actions: read` on the watcher repo; a
+  read that fails suppresses nothing, and the alert says the cycles could not be read.
+- **Gate failed open.** After the cycle, the sweep lists the target's `main-watcher-gate.yml`
+  merge-group runs of the past hour, at most 50, newest first, and keeps those whose
+  `main-watcher/gate-fail-open` job was not skipped (ADR-008 point 3). One alert per sweep lists
+  them, with a hidden marker naming the runs, so the same set is never reported twice. This is
+  only a secondary signal: a gate that cannot reach the API usually cannot post that check run
+  either, which is why merges made while a lock was open are reported by reconciliation instead
+  (ADR-015, #20). A target that has not copied the gate workflow has no such runs.
 
 The reusable caller's job and literal step names determine the outcome. The
 Reporter ignores unrelated jobs, reads all jobs pages from the latest attempt,
@@ -241,7 +283,7 @@ what is missing. A neutral head is tested again after `poll_interval`.
 `GITHUB_TOKEN` (`issues: write`), since the App token is scoped to the target. An open
 alert with the same title gets a comment instead of a new issue (ADR-012). A lock that
 mentions nobody raises "Lock issues on `owner/repo` mention nobody". Neutral results raise the
-alerts [above](#neutral-results). A failed "mention nobody" alert never blocks the lock or the
+alerts [above](#neutral-results), and a sweep raises the two [above](#backup-sweep). A failed "mention nobody" alert never blocks the lock or the
 check run; the cycle logs it and exits non-zero. A failed neutral-result alert leaves the check
 run `in_progress` for a replay.
 

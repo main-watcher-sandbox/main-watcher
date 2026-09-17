@@ -11,10 +11,11 @@ target has work (ADR-010). It is a `BackgroundService` beside a single HTTP endp
 `/healthz`, for the Kubernetes liveness probe. It makes outbound HTTPS calls only, and
 needs no inbound Service or Ingress.
 
-Issues #14 and #15 cover the cycle and the alerts described here. The hourly backup sweep
-with "worker appears down" (#16), stale-run cancellation (#18), lease renewal (#19), merge
-reconciliation (#20) and the queue sweep (#21) are separate backlog items; a target whose
-only work is one of those is not flagged yet.
+Issues #14 and #15 cover the cycle and the alerts described here, and #16 the hourly backup
+sweep, which does this work when the worker is not and says so; see
+[watcher.md](watcher.md#backup-sweep). Stale-run cancellation (#18), lease renewal (#19), merge
+reconciliation (#20) and the queue sweep (#21) are separate backlog items; a target whose only
+work is one of those is not flagged yet.
 
 ## A cycle
 
@@ -50,6 +51,10 @@ For each in-progress `main-watcher` check run on the target, oldest first:
 | No `external_id`, and no matching run for 30 minutes | Yes | `Planner.Recover` completes it as neutral |
 | No `external_id`, and several matching runs | No | Recovery leaves it pending; a person decides |
 
+Each kind of work is also dated, which is what lets the hourly sweep say how long it waited for
+the worker. The worker itself uses that time for one thing only, the "reporting pending" alert
+below.
+
 Otherwise the head of `main` is work when `Eligibility.CanStart` says it is: no check run and
 the last test started more than `poll_interval` ago, or a newest `neutral` result older than
 `poll_interval` while the head has fewer than 3 neutral results (ADR-017). The worker calls
@@ -59,7 +64,9 @@ fixtures, `tests/MainWatcher.Core.Tests/Fixtures/eligibility.json`, are read by 
 own tests, the Planner's and the worker's (TS-U3, TS-U5, TS-U13).
 
 The worker therefore makes about three read calls per target per cycle while a target is
-idle, plus one for the watcher repo's `watch.yml` runs (R-13).
+idle, plus one for the watcher repo's `watch.yml` runs (R-13). A cycle that finds an eligible
+head reads that target's repository activity as well, to date the head's push; an idle target
+never pays for that read.
 
 ## Configuration
 
