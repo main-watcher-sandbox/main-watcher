@@ -3,7 +3,11 @@ namespace MainWatcher.Core;
 /// <summary>A check run. <see cref="Title"/> is its output title, such as "Infrastructure error"; null when it has none.</summary>
 public sealed record CheckRun(long Id, string Sha, string Status, string? Conclusion,
     DateTimeOffset StartedAt, DateTimeOffset? CompletedAt, string? ExternalId, string? Title = null);
-public sealed record WorkflowRun(long Id, string Title, DateTimeOffset CreatedAt, string Status);
+/// <summary>
+/// A workflow run. <see cref="UpdatedAt"/> is when GitHub last changed it, which for a completed run is when it finished;
+/// null when GitHub did not say.
+/// </summary>
+public sealed record WorkflowRun(long Id, string Title, DateTimeOffset CreatedAt, string Status, DateTimeOffset? UpdatedAt = null);
 public sealed record JobStep(string Name, string? Conclusion);
 /// <summary>
 /// A job of a workflow run. <see cref="CompletedAt"/> is null while it is queued or running, and is how long a report has been

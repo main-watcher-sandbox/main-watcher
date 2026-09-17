@@ -33,8 +33,11 @@ public class AlertTests
 
         public Setup() => Alerts = new(new Alerts(Doorbell, WatcherRepo), Access, NullLogger.Instance, Start, () => Now);
 
-        public Task Cycle(CycleObservations? observations = null, string? failure = null) =>
-            Alerts.Review(observations ?? new(), failure, Ct);
+        /// <summary>A cycle that finished and reported what it saw.</summary>
+        public Task Cycle(CycleObservations? observations = null) => Alerts.Review(observations ?? new(), null, Ct);
+
+        /// <summary>A cycle that threw, so it says nothing about its targets.</summary>
+        public Task Failed(string message) => Alerts.Review(null, message, Ct);
 
         public string[] Titles => Doorbell.IssueList.Select(i => i.Title).ToArray();
         public string[] Comments(string title) =>
@@ -81,10 +84,10 @@ public class AlertTests
     public async Task ThreeFailingCyclesInARowAlert()
     {
         var setup = new Setup();
-        await setup.Cycle(failure: "the cycle failed: 502");
+        await setup.Failed("the cycle failed: 502");
         await setup.Cycle(new() { Problems = ["owner/repo: checks unavailable"] });
         Assert.Empty(setup.Titles);
-        await setup.Cycle(failure: "the cycle failed: 502");
+        await setup.Failed("the cycle failed: 502");
         Assert.Equal(["The trigger worker's cycles keep failing"], setup.Titles);
         Assert.Contains("last 3 cycles failed", setup.Doorbell.IssueList[0].Body);
         Assert.Contains("owner/repo: checks unavailable", setup.Doorbell.IssueList[0].Body);
@@ -92,8 +95,8 @@ public class AlertTests
         // One clean cycle starts the count again.
         await setup.Cycle();
         setup.Now = Start.AddHours(2);
-        await setup.Cycle(failure: "the cycle failed: 502");
-        await setup.Cycle(failure: "the cycle failed: 502");
+        await setup.Failed("the cycle failed: 502");
+        await setup.Failed("the cycle failed: 502");
         Assert.Empty(setup.Comments("The trigger worker's cycles keep failing"));
     }
 
@@ -111,7 +114,7 @@ public class AlertTests
     public async Task RunsStartedButNeverCompletedAlertAfterTwoHours()
     {
         var setup = new Setup();
-        await setup.Cycle(new() { WatchRunStarted = true, WatchRunCompleted = true });
+        await setup.Cycle(new() { WatchRunStarted = true, WatchRunCompleted = Start });
         setup.Now = Start.Add(WorkerAlerts.NoRunWindow).AddSeconds(-1);
         await setup.Cycle(new() { WatchRunStarted = true });
         Assert.Empty(setup.Titles);
@@ -122,10 +125,26 @@ public class AlertTests
         Assert.Equal(["No `watch.yml` run has completed in 2 hours"], setup.Titles);
 
         setup.Now = setup.Now.AddMinutes(1);
-        await setup.Cycle(new() { WatchRunStarted = true, WatchRunCompleted = true });
+        await setup.Cycle(new() { WatchRunStarted = true, WatchRunCompleted = setup.Now });
         setup.Now = setup.Now.AddMinutes(1);
         await setup.Cycle(new() { WatchRunStarted = true });
         Assert.Empty(setup.Comments("No `watch.yml` run has completed in 2 hours"));
+    }
+
+    // The same finished run is listed on every cycle until it ages out of the two-hour window; re-reading it is not a completion.
+    [Fact]
+    public async Task ReadingTheSameCompletedRunAgainDoesNotPostponeTheAlert()
+    {
+        var setup = new Setup();
+        var completed = Start;
+        for (var minute = 0; minute <= WorkerAlerts.NoRunWindow.TotalMinutes; minute++)
+        {
+            setup.Now = Start.AddMinutes(minute);
+            // GitHub keeps returning the run that finished at Start, while newer ones are started and never finish.
+            await setup.Cycle(new() { WatchRunStarted = true, WatchRunCompleted = minute < 120 ? completed : null });
+        }
+        Assert.Equal(["No `watch.yml` run has completed in 2 hours"], setup.Titles);
+        Assert.Contains("none has completed since 2026-09-17 09:00 UTC", setup.Doorbell.IssueList[0].Body);
     }
 
     [Theory]
@@ -153,11 +172,21 @@ public class AlertTests
         Assert.Empty(setup.Comments("GitHub rate limit below 20%"));
     }
 
+    const string Reason = "check 7: the main-watcher job of target run 41 has completed";
+
+    /// <summary>A cycle that looked at the target and found a report owed, dated <paramref name="since"/>.</summary>
     static CycleObservations Owed(DateTimeOffset since) => new()
     {
+        Targets = ["owner/repo"],
         Examined = ["owner/repo"],
-        Pending = [new("owner/repo", 7, "check 7: the main-watcher job of target run 41 has completed", since)]
+        Pending = [new("owner/repo", 7, Reason, since)]
     };
+
+    /// <summary>A cycle that skipped the target because its own <c>watch.yml</c> run is queued or running.</summary>
+    static CycleObservations Skipped => new() { Targets = ["owner/repo"], WatchRunStarted = true };
+
+    /// <summary>A cycle that looked at the target and found nothing owed.</summary>
+    static CycleObservations Reported => new() { Targets = ["owner/repo"], Examined = ["owner/repo"] };
 
     // ADR-013 point 6: reporting pending is timed from the test job, so it survives a worker restart.
     [Fact]
@@ -176,9 +205,9 @@ public class AlertTests
 
         // Once the Reporter catches up, the condition clears without a second alert.
         setup.Now = Start.AddMinutes(2);
-        await setup.Cycle(new() { Examined = ["owner/repo"] });
+        await setup.Cycle(Reported);
         setup.Now = Start.AddHours(3);
-        await setup.Cycle(new() { Examined = ["owner/repo"] });
+        await setup.Cycle(Reported);
         Assert.Empty(setup.Comments("Reporting pending on owner/repo"));
     }
 
@@ -187,31 +216,67 @@ public class AlertTests
     {
         var setup = new Setup();
         // A deleted run has no job to date the report, so the first cycle that saw it owed starts the clock.
-        await setup.Cycle(new() { Examined = ["owner/repo"], Pending = [new("owner/repo", 7, "target run 41 was deleted", default)] });
+        CycleObservations Deleted() => new()
+        {
+            Targets = ["owner/repo"],
+            Examined = ["owner/repo"],
+            Pending = [new("owner/repo", 7, "check 7: target run 41 was deleted", default)]
+        };
+        await setup.Cycle(Deleted());
         setup.Now = Start.Add(WorkerAlerts.ReportPendingAfter).AddSeconds(-1);
-        await setup.Cycle(new() { Examined = ["owner/repo"], Pending = [new("owner/repo", 7, "target run 41 was deleted", default)] });
+        await setup.Cycle(Deleted());
         Assert.Empty(setup.Titles);
         setup.Now = Start.Add(WorkerAlerts.ReportPendingAfter);
-        await setup.Cycle(new() { Examined = ["owner/repo"], Pending = [new("owner/repo", 7, "target run 41 was deleted", default)] });
+        await setup.Cycle(Deleted());
         Assert.Equal(["Reporting pending on owner/repo"], setup.Titles);
     }
 
+    // The cycle skips a target whose own watch.yml run is queued, so a Reporter waiting for a runner is never seen again while
+    // it waits. The alert must still come: that wait is exactly what the alert is for.
     [Fact]
-    public async Task ATargetSkippedForItsOwnRunningCycleKeepsItsPendingClock()
+    public async Task AReportStaysJudgedWhileItsOwnCycleIsQueued()
     {
         var setup = new Setup();
-        // A deleted run, so only the worker's own clock dates the report.
-        CycleObservations Deleted() => new()
+        await setup.Cycle(Owed(Start));
+        for (var minute = 1; minute <= WorkerAlerts.ReportPendingAfter.TotalMinutes; minute++)
         {
-            Examined = ["owner/repo"],
-            Pending = [new("owner/repo", 7, "target run 41 was deleted", default)]
-        };
-        await setup.Cycle(Deleted());
-        // The next cycle skips the target because its watch.yml run is queued, so nothing examined it: the clock keeps running.
-        setup.Now = Start.AddMinutes(10);
-        await setup.Cycle(new() { WatchRunStarted = true });
+            setup.Now = Start.AddMinutes(minute);
+            await setup.Cycle(Skipped);
+        }
+        Assert.Equal(["Reporting pending on owner/repo"], setup.Titles);
+        Assert.Contains(Reason, setup.Doorbell.IssueList[0].Body);
+
+        // It clears only once a cycle looks at the target again and finds nothing owed.
+        setup.Now = Start.AddHours(2);
+        await setup.Cycle(Skipped);
+        Assert.Single(setup.Comments("Reporting pending on owner/repo"));
+        await setup.Cycle(Reported);
+        setup.Now = Start.AddHours(4);
+        await setup.Cycle(Skipped);
+        Assert.Single(setup.Comments("Reporting pending on owner/repo"));
+    }
+
+    [Fact]
+    public async Task ATargetThatLeavesTargetsYmlIsNoLongerOwedAnything()
+    {
+        var setup = new Setup();
+        await setup.Cycle(Owed(Start));
+        // Nothing will ever report a target the watcher no longer watches, so the clock stops with it.
+        setup.Now = Start.AddMinutes(5);
+        await setup.Cycle(new() { Targets = ["owner/other"], Examined = ["owner/other"] });
+        setup.Now = Start.AddHours(2);
+        await setup.Cycle(new() { Targets = ["owner/other"], Examined = ["owner/other"] });
+        Assert.Empty(setup.Titles);
+    }
+
+    [Fact]
+    public async Task ACycleThatFailedForgetsNoOwedReport()
+    {
+        var setup = new Setup();
+        await setup.Cycle(Owed(Start));
         setup.Now = Start.Add(WorkerAlerts.ReportPendingAfter);
-        await setup.Cycle(Deleted());
+        // The cycle threw, so it names no targets. That is no evidence that the target is gone, or that it has been reported.
+        await setup.Failed("the cycle failed: 502");
         Assert.Equal(["Reporting pending on owner/repo"], setup.Titles);
     }
 
@@ -222,6 +287,7 @@ public class AlertTests
         setup.Now = Start.AddHours(1);
         await setup.Cycle(new()
         {
+            Targets = ["owner/a", "owner/b"],
             Examined = ["owner/a", "owner/b"],
             Pending = [new("owner/a", 7, "run 41 completed", Start), new("owner/b", 8, "run 42 completed", Start)]
         });

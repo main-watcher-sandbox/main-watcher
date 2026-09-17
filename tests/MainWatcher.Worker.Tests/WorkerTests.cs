@@ -153,27 +153,39 @@ public class WorkerTests
 
         var seen = (await setup.Cycle.Run(Ct)).Observations;
 
+        Assert.Equal(["owner/owed", "owner/deleted", "owner/idle"], seen.Targets);
         Assert.Equal(["owner/owed", "owner/deleted", "owner/idle"], seen.Examined);
         Assert.Equal([new("owner/owed", 7, "check 7: the main-watcher job of target run 41 has completed", Now.AddMinutes(-20)),
             new PendingReport("owner/deleted", 8, "check 8: target run 42 was deleted", default)], seen.Pending);
         Assert.True(seen.WatchRunStarted);
-        Assert.False(seen.WatchRunCompleted);
+        Assert.Null(seen.WatchRunCompleted);
     }
 
+    // The newest completion's own time, not "a completed run was seen": the same run is read again on every cycle for two hours.
     [Fact]
-    public async Task ACycleSaysWhetherAWatchRunHasCompleted()
+    public async Task ACycleReportsWhenTheNewestWatchRunCompleted()
     {
         var setup = new Setup("targets:\n  - repo: owner/repo");
         setup.Targets["owner/repo"] = new() { CheckList = [Done()] };
-        setup.Watcher.RunList = [new(1, "watch owner/other", Now, "completed")];
+        setup.Watcher.RunList = [
+            new(1, "watch owner/other", Now.AddHours(-2), "completed", Now.AddMinutes(-100)),
+            new(2, "watch owner/other", Now.AddHours(-1), "completed", Now.AddMinutes(-55))];
         var seen = (await setup.Cycle.Run(Ct)).Observations;
-        Assert.True(seen.WatchRunCompleted);
+        Assert.Equal(Now.AddMinutes(-55), seen.WatchRunCompleted);
         Assert.False(seen.WatchRunStarted);
+
+        // A run GitHub gave no update time for is dated by its creation: earlier than the truth, so it never hides a stall.
+        setup.Watcher.RunList = [new(3, "watch owner/other", Now.AddMinutes(-30), "completed")];
+        Assert.Equal(Now.AddMinutes(-30), (await setup.Cycle.Run(Ct)).Observations.WatchRunCompleted);
 
         // An unreadable run list says nothing either way, so the "no run completed" clock does not move.
         setup.Watcher.RunsError = true;
-        seen = (await setup.Cycle.Run(Ct)).Observations;
-        Assert.False(seen.WatchRunCompleted);
+        Assert.Null((await setup.Cycle.Run(Ct)).Observations.WatchRunCompleted);
+
+        // Nor does a window holding only unfinished runs.
+        setup.Watcher.RunsError = false;
+        setup.Watcher.RunList = [new(4, "watch owner/other", Now, "in_progress", Now)];
+        Assert.Null((await setup.Cycle.Run(Ct)).Observations.WatchRunCompleted);
     }
 
     [Fact]

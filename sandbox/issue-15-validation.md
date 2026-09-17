@@ -12,6 +12,14 @@ watching `main-watcher-sandbox/main-watcher` (the private watcher replica) and i
 configured target, `main-watcher-sandbox/sample-target` with `poll_interval: 1`. Every
 `watch.yml` run below was started by the worker; "by hand" means the `pat-actium` account.
 
+The PR #45 review found two ways the alerts could fire later than they should, fixed after
+this run. Both only widen when an alert is raised — a report is now judged on every cycle
+rather than only on one that looked at the target, and the "no run completed" clock takes the
+run's own finishing time — so neither changes the path recorded below, where every cycle
+looked at the target and the job's `completed_at` was known. The two cases they do change are
+covered by unit tests, each of which fails against the code as it was.
+
+
 ## TS-S14 (c): with issue writes failing for 20 min the alert is raised, and the lock appears once writes succeed
 
 **The fault.** The replica's `watch.yml` asks `actions/create-github-app-token` for

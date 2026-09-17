@@ -65,6 +65,7 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
         {
             Problems = problems,
             Pending = pending,
+            Targets = targets.Select(t => t.Repo).ToArray(),
             Examined = examined,
             WatchRunStarted = dispatched > 0 || cycles.Active.Count > 0,
             WatchRunCompleted = cycles.Completed
@@ -88,11 +89,15 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
     }
 
     /// <summary>
-    /// Targets with a <c>watch.yml</c> run still queued or running, from its <c>run-name</c>, and whether any run in the window
-    /// has completed. Such a run acts on the current state, so another dispatch would only queue a cycle with nothing left to do.
-    /// A failed read skips nothing, and says nothing about completions: duplicates are harmless, and a silent alert is not.
+    /// Targets with a <c>watch.yml</c> run still queued or running, from its <c>run-name</c>, and when the newest run in the
+    /// window finished. Such a run acts on the current state, so another dispatch would only queue a cycle with nothing left to
+    /// do. A failed read skips nothing, and says nothing about completions: duplicates are harmless, and a silent alert is not.
     /// </summary>
-    async Task<(HashSet<string> Active, bool Completed)> ActiveCycles(CancellationToken ct)
+    /// <returns>
+    /// <c>Completed</c> is the newest completion time seen, not the fact that one was seen, so reading the same finished run on
+    /// every cycle for the next two hours cannot keep pushing the "no run completed" clock forward.
+    /// </returns>
+    async Task<(HashSet<string> Active, DateTimeOffset? Completed)> ActiveCycles(CancellationToken ct)
     {
         var active = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
@@ -102,12 +107,14 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
             foreach (var run in runs)
                 if (run.Status != "completed" && run.Title.StartsWith(RunNamePrefix, StringComparison.Ordinal))
                     active.Add(run.Title[RunNamePrefix.Length..]);
-            return (active, runs.Any(r => r.Status == "completed"));
+            // A run GitHub gives no update time for is dated by its creation: earlier than the truth, so it never hides a stall.
+            return (active, runs.Where(r => r.Status == "completed").Select(r => r.UpdatedAt ?? r.CreatedAt)
+                .DefaultIfEmpty().Max() is { Ticks: > 0 } newest ? newest : null);
         }
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
             log.LogWarning("Could not read {Workflow} runs, so no target is skipped: {Message}", WorkerSettings.WatchWorkflow, e.Message);
-            return (active, false);
+            return (active, null);
         }
     }
 

@@ -118,7 +118,7 @@ conditions are:
 | Condition | Alert title |
 | --- | --- |
 | Three cycles in a row failed: the cycle itself threw, or any target errored | The trigger worker's cycles keep failing |
-| `watch.yml` runs are being started, and none has completed for 2 h | No `watch.yml` run has completed in 2 hours |
+| `watch.yml` runs are being started, and none has finished for 2 h | No `watch.yml` run has completed in 2 hours |
 | GitHub answered 401, 403 or 404 to an installation-token request | A GitHub App credential is being refused |
 | A response left less than 20% of a rate-limit budget (R-13) | GitHub rate limit below 20% |
 | A report has been owed for more than 15 min (ADR-013 point 6) | Reporting pending on `owner/repo` |
@@ -135,7 +135,10 @@ is failing. The whole review has its own 2-minute budget, so it cannot delay a c
 
 An idle watcher raises nothing: with no `watch.yml` run started, completing none is exactly
 right, however long it lasts. The "no run completed" clock starts at start-up, so a restart
-gives the watcher 2 h before the alert can fire.
+gives the watcher 2 h before the alert can fire. It is then set from the newest completed
+run's own finishing time, not from the cycle that read it: the run list covers two hours, so
+the same finished run is read again on every cycle until it ages out, and counting each of
+those readings as a completion would let the alert take nearly four hours.
 
 **Reporting pending.** A check run that is still `in_progress` while its target run's
 `main-watcher` job has completed is a report the Reporter owes (ADR-013 point 3). The
@@ -145,9 +148,13 @@ so the first cycle that saw the report owed starts the clock instead. Such a che
 pending, never stale: the deadlines of ADR-013 point 5 apply to a job that has **not**
 completed, and come with #18.
 
-A target skipped because its own `watch.yml` run is queued or running keeps whatever the
-last cycle found: only a cycle that looked at a target can conclude that it owes nothing.
-That matters while a Reporter keeps failing, because each cycle starts a new run for it.
+Every target still owing a report is judged on every cycle, whether or not that cycle looked
+at it. A target whose own `watch.yml` run is queued or running is skipped by the cycle, so
+judging only what the cycle saw would hold the alert back exactly when reporting is slowest:
+a Reporter that is itself waiting for a runner. A target stops owing a report when a cycle
+looks at it and finds nothing owed, or when it leaves `targets.yml`, since nothing will
+report a target the watcher no longer watches. A cycle that threw names no targets, so it
+forgets none.
 
 **Rate limit.** Every GitHub response the worker receives is read for
 `x-ratelimit-remaining` and `x-ratelimit-limit`, across both Apps and every installation,

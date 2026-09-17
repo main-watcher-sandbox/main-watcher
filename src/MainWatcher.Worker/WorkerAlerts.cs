@@ -8,20 +8,22 @@ namespace MainWatcher.Worker;
 public sealed record PendingReport(string Repo, long Check, string Reason, DateTimeOffset Since);
 
 /// <summary>
-/// What one cycle saw, beyond its counts. <see cref="WatchRunStarted"/> and <see cref="WatchRunCompleted"/> stay false when the
-/// run list could not be read, so an unreadable list never moves the "no run completed" clock either way.
+/// What one cycle saw, beyond its counts. <see cref="WatchRunStarted"/> stays false and <see cref="WatchRunCompleted"/> null
+/// when the run list could not be read, so an unreadable list never moves the "no run completed" clock either way.
 /// </summary>
 public sealed record CycleObservations
 {
     /// <summary>What went wrong, one line each, for the alert body.</summary>
     public IReadOnlyList<string> Problems { get; init; } = [];
     public IReadOnlyList<PendingReport> Pending { get; init; } = [];
+    /// <summary>The enabled targets of this cycle. One that is gone from <c>targets.yml</c> is no longer owed anything.</summary>
+    public IReadOnlyCollection<string> Targets { get; init; } = [];
     /// <summary>Targets whose work was looked at. A target skipped because its own cycle is running keeps its pending state.</summary>
     public IReadOnlyCollection<string> Examined { get; init; } = [];
     /// <summary>A <c>watch.yml</c> run was dispatched this cycle, or one is queued or running.</summary>
     public bool WatchRunStarted { get; init; }
-    /// <summary>A <c>watch.yml</c> run created within <see cref="TriggerCycle.ActiveRunWindow"/> has completed.</summary>
-    public bool WatchRunCompleted { get; init; }
+    /// <summary>When the newest completed <c>watch.yml</c> run in <see cref="TriggerCycle.ActiveRunWindow"/> finished.</summary>
+    public DateTimeOffset? WatchRunCompleted { get; init; }
 }
 
 /// <summary>
@@ -57,7 +59,7 @@ public sealed class WorkerAlerts(Alerts alerts, IAccessHealth access, ILogger lo
     public const double RateLimitFloor = 0.2;
 
     readonly Dictionary<string, DateTimeOffset> firing = new(StringComparer.Ordinal);
-    readonly Dictionary<string, DateTimeOffset> pendingSince = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, PendingReport> owed = new(StringComparer.OrdinalIgnoreCase);
     readonly List<string> streak = [];
     int consecutiveErrors;
     DateTimeOffset lastCompletedRun = started;
@@ -79,7 +81,8 @@ public sealed class WorkerAlerts(Alerts alerts, IAccessHealth access, ILogger lo
             streak.AddRange(problems.Select(p => $"{now.UtcDateTime:HH:mm} {p}"));
             if (streak.Count > 10) streak.RemoveRange(0, streak.Count - 10);
         }
-        if (seen.WatchRunCompleted) lastCompletedRun = now;
+        // The completion's own time, so reading the same finished run on every cycle does not push the clock forward with it.
+        if (seen.WatchRunCompleted > lastCompletedRun) lastCompletedRun = seen.WatchRunCompleted.Value;
         if (seen.WatchRunStarted) lastStartedRun = now;
 
         await Judge(consecutiveErrors >= ErrorsInARow, "The trigger worker's cycles keep failing",
@@ -108,34 +111,43 @@ public sealed class WorkerAlerts(Alerts alerts, IAccessHealth access, ILogger lo
                 + $"({limit.Left * 100:0}%{(limit.Reset is { } reset ? $", resetting at {reset.UtcDateTime:yyyy-MM-dd HH:mm} UTC" : "")}). "
                 + "Reduce the number of targets or raise `check_period` (R-13).", now, ct);
 
-        await Pending(seen, now, ct);
+        await Pending(seen, observations is not null, now, ct);
     }
 
     /// <summary>
     /// Alerts for each report pending longer than <see cref="ReportPendingAfter"/>, one condition per target so a second stuck
-    /// target is not hidden by the first. A check whose report is no longer owed is forgotten.
+    /// target is not hidden by the first.
+    /// <para>
+    /// Every target still owing a report is judged, whether or not this cycle looked at it. A target whose own
+    /// <c>watch.yml</c> run is queued or running is skipped by the cycle (ADR-010), so judging only what the cycle saw would
+    /// hold the alert back exactly when reporting is slowest: a Reporter that is itself waiting for a runner.
+    /// </para>
     /// </summary>
-    async Task Pending(CycleObservations seen, DateTimeOffset now, CancellationToken ct)
+    /// <param name="ran">Whether the cycle got far enough to name its targets. A cycle that threw says nothing about them.</param>
+    async Task Pending(CycleObservations seen, bool ran, DateTimeOffset now, CancellationToken ct)
     {
-        // Only a target the cycle looked at can be said to owe nothing: one skipped for its own running cycle keeps its clock.
-        foreach (var gone in pendingSince.Keys.Intersect(seen.Examined, StringComparer.OrdinalIgnoreCase)
-            .Except(seen.Pending.Select(p => p.Repo), StringComparer.OrdinalIgnoreCase).ToArray())
+        foreach (var report in seen.Pending)
+            // The job's own completion time survives a restart; without one, the first cycle that saw the report owed dates it.
+            owed[report.Repo] = report with
+            {
+                Since = report.Since != default ? report.Since
+                    : owed.TryGetValue(report.Repo, out var known) ? known.Since : now
+            };
+        // A target the cycle looked at and found owing nothing has been reported, and one no longer configured owes nothing.
+        // A target merely skipped for its own running cycle is neither, and keeps its clock.
+        foreach (var gone in owed.Keys.Except(seen.Pending.Select(p => p.Repo), StringComparer.OrdinalIgnoreCase)
+            .Where(repo => seen.Examined.Contains(repo, StringComparer.OrdinalIgnoreCase)
+                || ran && !seen.Targets.Contains(repo, StringComparer.OrdinalIgnoreCase)).ToArray())
         {
-            pendingSince.Remove(gone);
+            owed.Remove(gone);
             await Judge(false, PendingTitle(gone), "", now, ct);
         }
-        foreach (var report in seen.Pending)
-        {
-            // The job's own completion time survives a restart; without one, the first cycle that saw the report owed dates it.
-            if (report.Since != default) pendingSince[report.Repo] = report.Since;
-            else if (!pendingSince.ContainsKey(report.Repo)) pendingSince[report.Repo] = now;
-            var since = pendingSince[report.Repo];
-            await Judge(now - since >= ReportPendingAfter, PendingTitle(report.Repo),
-                $"A report has been owed on `{report.Repo}` since {since.UtcDateTime:yyyy-MM-dd HH:mm} UTC "
-                + $"({(now - since).TotalMinutes:0} minutes): {report.Reason}.\n\n"
+        foreach (var report in owed.Values.ToArray())
+            await Judge(now - report.Since >= ReportPendingAfter, PendingTitle(report.Repo),
+                $"A report has been owed on `{report.Repo}` since {report.Since.UtcDateTime:yyyy-MM-dd HH:mm} UTC "
+                + $"({(now - report.Since).TotalMinutes:0} minutes): {report.Reason}.\n\n"
                 + "The Reporter writes the lock issue before it completes the check run, so an issue write that keeps failing "
                 + "leaves the report owed, and no newer head of this target is tested meanwhile (ADR-013, R-20).", now, ct);
-        }
     }
 
     static string PendingTitle(string repo) => $"Reporting pending on {repo}";
