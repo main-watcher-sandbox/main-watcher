@@ -10,8 +10,9 @@ Issue #9 supplies one Planner/Reporter cycle in `.github/workflows/watch.yml`.
 It creates and completes `main-watcher` check runs. Issue #10 adds the lock issue:
 a red result opens it and a green result closes it. Issue #11 adds the push list and
 a comment for each later failure. Issue #12 replays interrupted reports and records human
-overrides. Issue #13 gives infrastructure errors a neutral result with an alert. Lease renewal, stale-run cancellation and the automatic trigger are separate
-backlog items.
+overrides. Issue #13 gives infrastructure errors a neutral result with an alert. #14 adds the trigger worker,
+which dispatches this workflow whenever a target has work; see [worker.md](worker.md). Lease
+renewal and stale-run cancellation are separate backlog items.
 
 Configure the `reporter` environment with `MAIN_WATCHER_APP_ID` (variable) and
 `MAIN_WATCHER_PRIVATE_KEY` (secret). Install that App on each target with
@@ -53,10 +54,11 @@ defaults, so workflow changes cannot silently drift from the validator.
 gh workflow run watch.yml -f target=owner/repo
 ```
 
-The first cycle creates a check and starts the target workflow. Dispatch again
-after the target's `main-watcher` job completes to report it. Until the worker
-is implemented, reporting is manual. Cycles for each target share a concurrency group and
-do not cancel a running cycle. Repeated dispatches do not retest a successful
+The first cycle creates a check and starts the target workflow. A second cycle, after the
+target's `main-watcher` job completes, reports it; the trigger worker dispatches both, so a
+hand-run cycle is only needed when the worker is down or for `force`. Cycles for each target
+share a concurrency group and do not cancel a running cycle. The run name, `watch <target>`,
+is how the worker sees whose cycle is already queued or running. Repeated dispatches do not retest a successful
 or failed head. `force=true` bypasses only the three-neutral-result cap, never
 an active check or the poll interval.
 GitHub treats concurrency group names as case-insensitive, so differently cased

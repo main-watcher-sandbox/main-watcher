@@ -22,6 +22,21 @@ jobs:
 
       - run: dotnet test
 
+  # The trigger worker's container: it builds, fails fast without configuration and answers /healthz (#14).
+  worker-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the worker image
+        run: docker build --file src/MainWatcher.Worker/Dockerfile --tag main-watcher-worker:ci .
+
+      - name: Smoke test
+        run: src/MainWatcher.Worker/smoke-test.sh main-watcher-worker:ci
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 5

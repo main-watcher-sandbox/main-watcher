@@ -41,23 +41,25 @@ public class WatcherTests
         Assert.Equal(new string('x', 200), result.Failures[0].Message);
     }
 
+    // TS-U13 and TS-U3: the shared rule, read from the fixtures the trigger worker's tests also use.
     [Theory]
-    [InlineData("success", false)]
-    [InlineData("failure", false)]
-    [InlineData("neutral", true)]
-    public void EligibilityUsesNewestHeadResult(string conclusion, bool expected) =>
-        Assert.Equal(expected, Eligibility.CanStart("head", [Check(conclusion: conclusion)], TimeSpan.FromMinutes(15), Now));
-
-    [Fact]
-    public void EligibilityBlocksOlderActiveRunsAndHonorsIntervalAndCap()
+    [MemberData(nameof(EligibilityFixtures.Names), true, MemberType = typeof(EligibilityFixtures))]
+    public void EligibilityRule(string name)
     {
-        Assert.False(Eligibility.CanStart("new", [Check("in_progress", null, "old")], TimeSpan.FromMinutes(15), Now, true));
-        Assert.False(Eligibility.CanStart("new", [Check() with { StartedAt = Now.AddMinutes(-1) }], TimeSpan.FromMinutes(15), Now, true));
-        var neutral = Check(conclusion: "neutral");
-        Assert.False(Eligibility.CanStart("head", [neutral with { CompletedAt = Now.AddMinutes(-1) }], TimeSpan.FromMinutes(15), Now, true));
-        Assert.False(Eligibility.CanStart("head", [neutral, neutral, neutral], TimeSpan.FromMinutes(15), Now));
-        Assert.True(Eligibility.CanStart("head", [neutral, neutral, neutral], TimeSpan.FromMinutes(15), Now, true));
-        Assert.True(Eligibility.CanStart("new", [Check()], TimeSpan.FromMinutes(15), Now));
+        var c = EligibilityFixtures.Named(name);
+        Assert.Equal(c.Eligible, Eligibility.CanStart(c.Head, c.Checks, c.PollInterval, c.Now, c.Force));
+    }
+
+    [Theory]
+    [MemberData(nameof(EligibilityFixtures.Names), true, MemberType = typeof(EligibilityFixtures))]
+    public async Task PlannerStartsOnlyEligibleHeads(string name)
+    {
+        var c = EligibilityFixtures.Named(name);
+        var fake = new FakeGitHub { CheckList = c.Checks.ToList() };
+        var started = await new Planner(fake, () => c.Now).Plan(new() { Repo = "owner/repo", PollInterval = (int)c.PollInterval.TotalMinutes },
+            c.Force, TestContext.Current.CancellationToken);
+        Assert.Equal(c.Eligible, started is not null);
+        Assert.Equal(c.Eligible ? ["create", "dispatch", "link:42"] : [], fake.Writes);
     }
 
     // TS-U11. Steps are "name=conclusion" in job order; "-" is a step with no conclusion.
@@ -1105,7 +1107,8 @@ public class WatcherTests
             Task.FromResult<int?>(Counts.TryGetValue(after, out var count) ? count : null);
         public Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct) { Writes.Add("create"); return Task.FromResult(new CheckRun(1, sha, "in_progress", null, now, null, null)); }
         public Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct) { Writes.Add("dispatch"); if (DispatchError is not null) throw DispatchError; return Task.FromResult(DispatchId); }
-        public Task<IReadOnlyList<WorkflowRun>> Runs(string repo, DateTimeOffset since, CancellationToken ct) => RunsError ? throw new HttpRequestException("unavailable") : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList);
+        public Task DispatchWorkflow(string repo, string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct) => throw new NotSupportedException();
+        public Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct) => RunsError ? throw new HttpRequestException("unavailable") : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList);
         public Task Link(string repo, long checkId, long runId, CancellationToken ct) { Writes.Add($"link:{runId}"); return Task.CompletedTask; }
         /// <summary>The run's jobs; null when the run was deleted. By default, a completed job with <see cref="JobConclusion"/> and a successful marker.</summary>
         public IReadOnlyList<WorkflowJob>? JobList { get; init; }

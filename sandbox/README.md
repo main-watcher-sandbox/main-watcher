@@ -9,6 +9,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-11-validation.md` | TS-S2: three quick pushes during a slow run, the lock's push list and the later-failure comment, for #11 |
 | `issue-12-validation.md` | TS-S14 (a), (b) and (d) with the Reporter fault switch, and the override part of TS-S3, for #12 |
 | `issue-13-validation.md` | TS-S16 (a) to (f): neutral results, their alerts, and red results that survive upload failures and late cancels, for #13 |
+| `issue-14-validation.md` | The trigger worker's sandbox deployment and its TS-S1 and TS-S2 evidence, for #14 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
@@ -56,6 +57,17 @@ gh workflow run main-watcher-tests.yml -R main-watcher-sandbox/sample-target -f 
 ```
 
 Set `GATE_REF` when seeding to pin another ref.
+
+## The sandbox trigger worker
+
+The worker runs in the cluster's `main-watcher-sandbox` namespace and watches
+`main-watcher-sandbox/main-watcher`. Build the image, create the key Secret once, and apply
+the overlay as [docs/worker.md](../docs/worker.md) describes. Scale it to zero for the
+scenarios that need the worker down (TS-S7, TS-S11):
+
+```
+kubectl -n main-watcher-sandbox scale deploy/trigger-worker --replicas=0
+```
 
 ## Hand-made locks
 

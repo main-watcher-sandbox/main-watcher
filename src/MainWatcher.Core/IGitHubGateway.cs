@@ -16,7 +16,10 @@ public interface IGitHubGateway
     Task<int?> CommitCount(string repo, string before, string after, CancellationToken ct);
     Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct);
     Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct);
-    Task<IReadOnlyList<WorkflowRun>> Runs(string repo, DateTimeOffset since, CancellationToken ct);
+    /// <summary>Starts <paramref name="workflow"/> on <c>main</c> with <paramref name="inputs"/>. Never retried.</summary>
+    Task DispatchWorkflow(string repo, string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct);
+    /// <summary>Dispatched runs of <paramref name="workflow"/> created at or after <paramref name="since"/>.</summary>
+    Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct);
     Task Link(string repo, long checkId, long runId, CancellationToken ct);
     Task<IReadOnlyList<WorkflowJob>?> Jobs(string repo, long runId, CancellationToken ct);
     Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct);

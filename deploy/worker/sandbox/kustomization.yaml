@@ -1,0 +1,28 @@
+# The scenario-test worker in the sandbox namespace, watching main-watcher-sandbox (TS-001 §3).
+# Apply with: kubectl apply -k deploy/worker/sandbox
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: main-watcher-sandbox
+resources:
+  - ../base
+images:
+  # Built locally: docker build -f src/MainWatcher.Worker/Dockerfile -t main-watcher-worker:dev .
+  - name: main-watcher-worker
+    newName: main-watcher-worker
+    newTag: dev
+patches:
+  - target:
+      kind: Deployment
+      name: trigger-worker
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
+configMapGenerator:
+  - name: trigger-worker
+    literals:
+      - MW_WATCHER_REPO=main-watcher-sandbox/main-watcher
+      - MW_MAIN_WATCHER_APP_ID=4966469
+      - MW_OBSERVER_APP_ID=4966600
+      - MW_DOORBELL_APP_ID=4966655
+      - MW_CHECK_PERIOD_SECONDS=60
