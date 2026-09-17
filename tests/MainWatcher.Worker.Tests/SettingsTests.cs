@@ -48,6 +48,43 @@ public class SettingsTests
             Assert.Contains($"{name} is required.", error.Message);
     }
 
+    // A whitespace-only value is not a setting: without this, MW_MAIN_WATCHER_APP_ID="   " read as App ID 0 and matched no check run.
+    [Theory]
+    [InlineData("MW_WATCHER_REPO")]
+    [InlineData("MW_MAIN_WATCHER_APP_ID")]
+    [InlineData("MW_OBSERVER_APP_ID")]
+    [InlineData("MW_OBSERVER_KEY_FILE")]
+    [InlineData("MW_DOORBELL_APP_ID")]
+    [InlineData("MW_DOORBELL_KEY_FILE")]
+    public void WhitespaceOnlyRequiredSettingsAreMissing(string name)
+    {
+        var key = KeyFile();
+        try
+        {
+            var env = Valid(key);
+            env[name] = "   ";
+            Assert.Contains($"{name} is required.",
+                Assert.Throws<WorkerConfigurationException>(() => WorkerSettings.Load(env.GetValueOrDefault)).Message);
+        }
+        finally { File.Delete(key); }
+    }
+
+    [Fact]
+    public void SurroundingWhitespaceIsTrimmedFromAValidSetting()
+    {
+        var key = KeyFile();
+        try
+        {
+            var env = Valid(key);
+            env["MW_WATCHER_REPO"] = "  owner/watcher  ";
+            env["MW_MAIN_WATCHER_APP_ID"] = " 4966469 ";
+            var settings = WorkerSettings.Load(env.GetValueOrDefault);
+            Assert.Equal("owner/watcher", settings.WatcherRepo);
+            Assert.Equal(4966469, settings.MainWatcherAppId);
+        }
+        finally { File.Delete(key); }
+    }
+
     [Theory]
     [InlineData("MW_WATCHER_REPO", "watcher")]
     [InlineData("MW_MAIN_WATCHER_APP_ID", "-1")]

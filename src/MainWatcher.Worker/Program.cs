@@ -33,17 +33,6 @@ app.MapGet("/healthz", (WorkerHealth health) =>
     var body = new { live = health.IsLive(now), last_cycle = health.LastFinished, last_result = health.LastResult };
     return body.live ? Results.Ok(body) : Results.Json(body, statusCode: StatusCodes.Status503ServiceUnavailable);
 });
-// A rejected App credential is a configuration error: no cycle could ever do anything, so the worker must not look healthy.
-try
-{
-    using var startup = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-    await app.Services.GetRequiredService<GitHubAccess>().Verify(startup.Token);
-}
-catch (WorkerConfigurationException e)
-{
-    Console.Error.WriteLine($"Configuration error: {e.Message}");
-    return 2;
-}
-
+// TriggerService verifies both App credentials before its first cycle and stops the worker with code 2 if GitHub rejects one.
 await app.RunAsync();
 return Environment.ExitCode;

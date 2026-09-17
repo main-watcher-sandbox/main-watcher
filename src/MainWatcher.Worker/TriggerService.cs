@@ -4,11 +4,18 @@ using Microsoft.Extensions.Logging;
 namespace MainWatcher.Worker;
 
 /// <summary>Runs a <see cref="TriggerCycle"/> every <c>check_period</c> (ADR-010).</summary>
-public sealed class TriggerService(TriggerCycle cycle, WorkerHealth health, WorkerSettings settings,
+public sealed class TriggerService(TriggerCycle cycle, GitHubAccess access, WorkerHealth health, WorkerSettings settings,
     IHostApplicationLifetime lifetime, ILogger<TriggerService> log) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stopping)
     {
+        // Here rather than before the host starts, so /healthz is already serving while GitHub is asked about the two Apps.
+        try { await access.Verify(stopping); }
+        catch (WorkerConfigurationException e)
+        {
+            Stop(e);
+            return;
+        }
         using var timer = new PeriodicTimer(settings.CheckPeriod);
         do
         {
@@ -23,9 +30,7 @@ public sealed class TriggerService(TriggerCycle cycle, WorkerHealth health, Work
             }
             catch (WorkerConfigurationException e)
             {
-                log.LogCritical("Configuration error: {Message}", e.Message);
-                Environment.ExitCode = 2;
-                lifetime.StopApplication();
+                Stop(e);
                 return;
             }
             catch (OperationCanceledException) when (stopping.IsCancellationRequested) { return; }
@@ -43,5 +48,12 @@ public sealed class TriggerService(TriggerCycle cycle, WorkerHealth health, Work
             }
             health.Finished(DateTimeOffset.UtcNow, result);
         } while (await timer.WaitForNextTickAsync(stopping));
+    }
+
+    void Stop(WorkerConfigurationException e)
+    {
+        log.LogCritical("Configuration error: {Message}", e.Message);
+        Environment.ExitCode = 2;
+        lifetime.StopApplication();
     }
 }

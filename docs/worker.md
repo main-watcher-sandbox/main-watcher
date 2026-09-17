@@ -77,11 +77,13 @@ the worker exits with code 2 without starting a cycle.
 | `MW_GITHUB_API_URL` | GitHub REST base URL | `https://api.github.com/` |
 | `ASPNETCORE_HTTP_PORTS` | The port `/healthz` listens on | 8080 in the image |
 
-Before the first cycle, the worker mints one installation token per App on the watcher
+Before its first cycle, the worker mints one installation token per App on the watcher
 repo. A rejected credential (HTTP 401, 403 or 404: the wrong key, the wrong App ID, or the
 App not installed there) is a configuration error, so the worker exits with code 2 and the
-pod enters `CrashLoopBackOff` rather than running healthily while doing nothing. A transient
-failure, such as a GitHub outage, is only logged: the cycles try again.
+pod enters `CrashLoopBackOff` rather than running healthily while doing nothing. Each check
+has 30 seconds; a stalled or unreachable GitHub is transient and only logged, since the
+cycles try again. The check runs inside the cycle loop, after `/healthz` is already serving,
+so it cannot itself trip the liveness probe.
 
 A `targets.yml` that cannot be parsed is a configuration error on the first cycle, so the
 worker exits rather than watching nothing. Later, a broken file is logged and the previous
@@ -101,9 +103,9 @@ found, including a cycle that failed on a GitHub error: a restart does not fix G
 it does fix a hung worker. A cycle running longer than `CycleTimeout` is cancelled, so one
 stuck request cannot stop the loop. Its body also carries the last cycle's time and counts.
 
-A cycle that keeps failing on GitHub therefore leaves the pod `Running`: the start-up check
-catches a credential that was wrong from the start, but a key revoked while the worker is
-running only shows in the logs until the worker's own alerts (no `watch.yml` run in 2 h,
+A cycle that keeps failing on GitHub therefore leaves the pod `Running`: the credential
+check catches a credential that was wrong from the start, but a key revoked while the worker
+is running only shows in the logs until the worker's own alerts (no `watch.yml` run in 2 h,
 reporting pending, repeated errors, token failures) arrive with #15.
 
 The endpoint exists for the liveness probe; nothing exposes it outside the cluster.
@@ -115,8 +117,10 @@ docker build --file src/MainWatcher.Worker/Dockerfile --tag main-watcher-worker:
 src/MainWatcher.Worker/smoke-test.sh main-watcher-worker:dev
 ```
 
-The smoke test, which also runs in CI (`worker-image` in `ci.yml`), checks that the image
-fails fast without configuration and that `/healthz` answers with an unreachable API.
+The smoke test, which also runs in CI (`worker-image` in `ci.yml`), checks three things: the
+image fails fast with no configuration; `/healthz` answers 200 against a GitHub that accepts
+connections and never replies, so a stalled API cannot delay the liveness endpoint; and a
+credential GitHub rejects stops the container with code 2 instead of leaving it idle.
 
 `deploy/worker/base` holds plain manifests: one replica, `Recreate` rollouts (more replicas
 would need leader election), the liveness probe, requests of 50m CPU and 128Mi memory

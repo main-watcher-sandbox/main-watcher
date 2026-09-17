@@ -53,16 +53,19 @@ public sealed class GitHubAccess
 
     /// <summary>
     /// Mints one installation token per App before the first cycle. A rejected credential is a configuration error: the key is
-    /// wrong, or the App is not installed on the watcher repo, and no cycle could ever do anything. A transient failure is only
-    /// logged, since the cycles retry.
+    /// wrong, or the App is not installed on the watcher repo, and no cycle could ever do anything. A transient failure, including
+    /// a GitHub that stalls past <see cref="WorkerSettings.VerifyTimeout"/>, is only logged, since the cycles retry.
     /// </summary>
+    /// <param name="ct">The worker's stopping token. Each check gets its own shorter budget, linked to it.</param>
     public async Task Verify(CancellationToken ct)
     {
         foreach (var (name, app) in new[] { ("mw-observer", observerApp), ("mw-doorbell", doorbellApp) })
         {
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(settings.VerifyTimeout);
             try
             {
-                await app.InstallationToken(settings.WatcherRepo, ct);
+                await app.InstallationToken(settings.WatcherRepo, budget.Token);
                 log.LogInformation("{App} authenticated to {Repo}.", name, settings.WatcherRepo);
             }
             catch (HttpRequestException e) when (e.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.NotFound)
@@ -71,9 +74,10 @@ public sealed class GitHubAccess
                     $"{name} could not authenticate to {settings.WatcherRepo} (HTTP {(int)e.StatusCode!}): check its App ID, "
                     + "its private key, and that the App is installed on that repository.");
             }
-            catch (Exception e) when (e is HttpRequestException or IOException || e is TaskCanceledException && !ct.IsCancellationRequested)
+            catch (Exception e) when (e is HttpRequestException or IOException
+                || e is OperationCanceledException && !ct.IsCancellationRequested)
             {
-                log.LogWarning("{App} could not be verified now, so the first cycle will try again: {Message}", name, e.Message);
+                log.LogWarning("{App} could not be verified now, so the cycles will try again: {Message}", name, e.Message);
             }
         }
     }

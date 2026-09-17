@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -62,6 +63,33 @@ public class AccessTests
         await Access(_ => throw new HttpRequestException("no such host")).Verify(TestContext.Current.CancellationToken);
     }
 
+    [Fact]
+    public async Task AStalledGitHubIsTransient()
+    {
+        // The check has its own short budget: a GitHub that never answers must not stop the worker starting, since the cycles retry.
+        var settings = Settings() with { VerifyTimeout = TimeSpan.FromMilliseconds(100) };
+        var stalled = new Handler(async (_, ct) =>
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            throw new UnreachableException();
+        });
+        var access = new GitHubAccess(settings, NullLoggerFactory.Instance, stalled, (_, _) => Task.CompletedTask);
+        await access.Verify(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task StoppingTheWorkerDuringVerificationIsNotSwallowed()
+    {
+        using var stopping = new CancellationTokenSource();
+        var access = new GitHubAccess(Settings(), NullLoggerFactory.Instance, new Handler(async (_, ct) =>
+        {
+            await stopping.CancelAsync();
+            await Task.Delay(Timeout.Infinite, ct);
+            throw new UnreachableException();
+        }), (_, _) => Task.CompletedTask);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => access.Verify(stopping.Token));
+    }
+
     static HttpResponseMessage Token(HttpRequestMessage request) => new(HttpStatusCode.OK)
     {
         Content = new StringContent(request.Method == HttpMethod.Get
@@ -69,9 +97,11 @@ public class AccessTests
             Encoding.UTF8, "application/json")
     };
 
-    sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> send) : HttpMessageHandler
+    sealed class Handler : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
-            Task.FromResult(send(request));
+        readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send;
+        public Handler(Func<HttpRequestMessage, HttpResponseMessage> send) => this.send = (request, _) => Task.FromResult(send(request));
+        public Handler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) => this.send = send;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => send(request, ct);
     }
 }

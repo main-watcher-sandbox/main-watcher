@@ -26,12 +26,19 @@ public sealed record WorkerSettings(
     /// <summary>A cycle that runs longer is cancelled, so one stuck request cannot stop the worker.</summary>
     public static readonly TimeSpan CycleTimeout = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// How long the start-up credential check waits. It is short because a rejected credential answers at once, while a stalled
+    /// GitHub is transient: the cycles retry it.
+    /// </summary>
+    public TimeSpan VerifyTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
     public static WorkerSettings Load(Func<string, string?> env)
     {
         var errors = new List<string>();
         string Required(string name)
         {
-            if (env(name) is { Length: > 0 } value) return value.Trim();
+            // Trimmed first: a whitespace-only value is missing, not a setting that later checks can read.
+            if (env(name)?.Trim() is { Length: > 0 } value) return value;
             errors.Add($"{name} is required.");
             return "";
         }

@@ -26,7 +26,9 @@ was started by the worker.
 Before the keys were installed, the same deployment with a throwaway key crash-looped with
 `Configuration error: mw-observer could not authenticate to main-watcher-sandbox/main-watcher
 (HTTP 401): check its App ID, its private key, and that the App is installed on that
-repository.` — the start-up credential check, `STATUS Error, RESTARTS 3`.
+repository.` — the credential check, `STATUS Error, RESTARTS 3`. The PR #44 review moved that
+check inside the cycle loop, so `/healthz` now serves while it runs; the container smoke test
+covers both halves.
 
 ## TS-S1: an unchanged head causes no `watch.yml` run and no test run
 
@@ -86,8 +88,8 @@ opening a second one.
 | Worker | `started watch.yml because check 105336982058: the main-watcher job of target run 35261177148 has completed` at 18:51:36Z |
 | Reporter | Commented on #26 and closed it at 18:52:28Z; check 105336982058 `success`, "Tests passed" |
 
-The target ends green at `0065d2f` with no open issues, and the worker is left running and
-idle.
+The target ends green at `0065d2f` with no open issues. The worker was scaled back to 0
+replicas after the run; its Deployment, ConfigMap and key Secret stay in the namespace.
 
 ## Not exercised here
 
