@@ -8,6 +8,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-10-validation.md` | A real lock opened and closed, TS-S4 with that lock, and restoration evidence for #10 |
 | `issue-11-validation.md` | TS-S2: three quick pushes during a slow run, the lock's push list and the later-failure comment, for #11 |
 | `issue-12-validation.md` | TS-S14 (a), (b) and (d) with the Reporter fault switch, and the override part of TS-S3, for #12 |
+| `issue-13-validation.md` | TS-S16 (a) to (f): neutral results, their alerts, and red results that survive upload failures and late cancels, for #13 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
@@ -68,6 +69,21 @@ gh workflow run sandbox-lock.yml -R main-watcher-sandbox/main-watcher -f target=
 ```
 
 A negative `lease_hours` makes an expired lease, for the "LOCK LEASE EXPIRED" path.
+
+## Workflow variants
+
+TS-S16 needs test workflows that differ from the published one. Each is a branch of
+`main-watcher-sandbox/gate`, made from its `main` with one change, and a target uses one by
+pointing its caller's `uses:` at that branch (and back to `@main` afterwards):
+
+| Branch | Change | Scenario |
+|---|---|---|
+| `ts-s16-renamed-step` | The test step is named `main-watcher-tests-renamed` | TS-S16 (c) |
+| `ts-s16-step-timeout` | The test step has `timeout-minutes: 1` | TS-S16 (e) |
+| `ts-s16-report-stuck` | The `report` job runs on `sandbox-no-such-runner`, which no runner has | TS-S16 (f) |
+
+A run on `ts-s16-report-stuck` stays queued until it is cancelled. `publish-public.sh` does not
+update these branches; re-create them from `main` if the published workflow changes.
 
 ## Reporter fault switch
 

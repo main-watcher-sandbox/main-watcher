@@ -109,8 +109,8 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     }
 
     /// <summary>
-    /// Raises the <c>watcher-infra</c> alert for a neutral outcome (ADR-013), and "twice in a row" when the target's previous
-    /// completed check run was also neutral after an infrastructure error. Each alert names the check in a hidden marker,
+    /// Raises the <c>watcher-infra</c> alert for a neutral outcome (ADR-013) and, for an infrastructure error, "twice in a row"
+    /// when the target's previous completed check run was also neutral. Each alert names the check in a hidden marker,
     /// so a replay of this report does not repeat it.
     /// </summary>
     async Task ReportNeutral(Target target, CheckRun check, TestOutcome outcome, string runUrl, CancellationToken ct)
