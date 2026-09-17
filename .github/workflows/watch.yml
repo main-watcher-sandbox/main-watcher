@@ -1,13 +1,19 @@
-# One Planner/Reporter cycle. The trigger worker dispatches it when a target has work (ADR-010).
+# One Planner/Reporter cycle per target. The trigger worker dispatches it when a target has work (ADR-010).
+# GitHub's schedule is only a backup (C-7): the hourly sweep at minute 17 gives every enabled target a cycle
+# and reports what only it looks for — work the worker left waiting, and gates that failed open (ADR-008).
 name: watch
 # The trigger worker reads the target from the run name, to skip a target whose cycle is already queued or running.
-run-name: watch ${{ inputs.target }}
+# A sweep, which has no single target, is named so that it is never mistaken for one.
+run-name: ${{ inputs.target && format('watch {0}', inputs.target) || 'sweep' }}
 on:
+  schedule:
+    # Minute 17, away from the start of the hour where GitHub's scheduler is most congested and most likely to drop (ADR-010).
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       target:
-        description: Configured owner/repo in targets.yml
-        required: true
+        description: Configured owner/repo in targets.yml; empty sweeps every enabled target
+        required: false
         type: string
       force:
         description: Ignore only the neutral retry cap
@@ -17,16 +23,59 @@ permissions:
   contents: read
   # watcher-infra alerts are issues in this repo (ADR-012).
   issues: write
-concurrency:
-  # GitHub group names are case-insensitive, matching target lookup in the CLI.
-  # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
-  group: main-watcher-${{ inputs.target }}
-  cancel-in-progress: false
+  # A sweep reads this repo's own watch.yml runs, to tell a worker that is down from one whose cycles cannot finish.
+  actions: read
 jobs:
+  # Which targets this run acts on: the dispatched one, or every enabled target on a sweep.
+  targets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      targets: ${{ steps.one.outputs.targets || steps.all.outputs.targets }}
+    steps:
+      # A dispatched target is checked against targets.yml by --validate-target in its own cycle, before any App
+      # token is requested, so this needs neither a checkout nor a build.
+      - id: one
+        if: inputs.target != ''
+        env:
+          MW_TARGET: ${{ inputs.target }}
+        run: printf 'targets=%s\n' "$(jq -cn --arg target "$MW_TARGET" '[$target]')" >> "$GITHUB_OUTPUT"
+
+      # Only watcher code is checked out. Target commands run in the target workflow.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.target == ''
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        if: inputs.target == ''
+        with:
+          global-json-file: global.json
+      - if: inputs.target == ''
+        run: dotnet build src/MainWatcher.Watcher --configuration Release
+      - id: all
+        if: inputs.target == ''
+        name: List the enabled targets
+        run: dotnet src/MainWatcher.Watcher/bin/Release/net10.0/MainWatcher.Watcher.dll --list-targets
+
   watch:
+    needs: targets
+    if: needs.targets.outputs.targets != '[]'
+    strategy:
+      # One target's cycle failing must not cancel the rest of a sweep.
+      fail-fast: false
+      # The sweep is a backup and never urgent; a low cap keeps its GitHub API use flat (R-13).
+      max-parallel: 5
+      matrix:
+        target: ${{ fromJson(needs.targets.outputs.targets) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: reporter
+    concurrency:
+      # Per target, so a sweep's cycle for one target never runs beside a dispatched cycle for it.
+      # GitHub group names are case-insensitive, matching target lookup in the CLI.
+      # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
+      group: main-watcher-${{ matrix.target }}
+      cancel-in-progress: false
     steps:
       # Only watcher code is checked out. Target commands run in the target workflow.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,7 +88,7 @@ jobs:
       - id: target
         name: Validate token scope
         env:
-          MW_TARGET: ${{ inputs.target }}
+          MW_TARGET: ${{ matrix.target }}
         run: dotnet src/MainWatcher.Watcher/bin/Release/net10.0/MainWatcher.Watcher.dll --validate-target
       - id: token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -60,8 +109,10 @@ jobs:
           MW_BOT_LOGIN: ${{ steps.token.outputs.app-slug }}[bot]
           MW_ALERT_TOKEN: ${{ github.token }}
           MW_ALERT_REPO: ${{ github.repository }}
-          MW_TARGET: ${{ inputs.target }}
+          MW_TARGET: ${{ matrix.target }}
           MW_FORCE: ${{ inputs.force }}
+          # A run with no target is the backup sweep: it also judges waiting work and gate fail-opens.
+          MW_SWEEP: ${{ inputs.target == '' }}
           # Sandbox only (TS-S14): a comma-separated list of Reporter writes to exit after. Unset in production.
           MW_SANDBOX_EXIT_AFTER: ${{ vars.MW_SANDBOX_EXIT_AFTER }}
         run: dotnet src/MainWatcher.Watcher/bin/Release/net10.0/MainWatcher.Watcher.dll

@@ -15,6 +15,12 @@ sealed class FakeGitHub : IGitHubGateway
     public Dictionary<string, string> Files { get; } = [];
     public List<(string Repo, string Workflow, IReadOnlyDictionary<string, string> Inputs)> Dispatches { get; } = [];
     public List<string> Reads { get; } = [];
+    /// <summary>Repository activity on main, newest first: how an eligible head's work is dated for the hourly sweep.</summary>
+    public List<Push> Activity { get; } = [];
+    /// <summary>The watcher repo's <c>watcher-infra</c> issues, for the worker's alerts.</summary>
+    public List<Issue> IssueList { get; } = [];
+    public Dictionary<int, List<string>> CommentsByIssue { get; } = [];
+    public bool IssueWritesFail { get; set; }
 
     public Task<string> MainHead(string repo, CancellationToken ct) => Task.FromResult(Head);
     public Task<IReadOnlyList<CheckRun>> Checks(string repo, CancellationToken ct) =>
@@ -34,23 +40,40 @@ sealed class FakeGitHub : IGitHubGateway
         return Task.CompletedTask;
     }
 
-    // The worker only reads, and dispatches watch.yml.
+    public Task<IReadOnlyList<Issue>> OpenIssues(string repo, string label, CancellationToken ct) =>
+        IssueWritesFail ? throw new HttpRequestException("issues unavailable")
+            : Task.FromResult<IReadOnlyList<Issue>>(IssueList.Where(i => i.State == "open").ToArray());
+    public Task<Issue> CreateIssue(string repo, string title, string body, string label, CancellationToken ct)
+    {
+        if (IssueWritesFail) throw new HttpRequestException("issues unavailable");
+        var issue = new Issue(IssueList.Count + 1, title, body, "mw-doorbell[bot]", "Bot", $"https://github.com/{repo}/issues/{IssueList.Count + 1}");
+        IssueList.Add(issue);
+        return Task.FromResult(issue);
+    }
+    public Task Comment(string repo, int number, string body, CancellationToken ct)
+    {
+        if (IssueWritesFail) throw new HttpRequestException("issues unavailable");
+        CommentsByIssue.TryAdd(number, []);
+        CommentsByIssue[number].Add(body);
+        return Task.CompletedTask;
+    }
+
+    // The worker only reads, and dispatches watch.yml and its own alerts.
     public Task ValidateTarget(Target target, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<string>> History(string repo, string sha, int limit, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<CheckRun>> CommitChecks(string repo, string sha, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IReadOnlyList<Push>> Pushes(string repo, int limit, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<Push>> Pushes(string repo, int limit, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<Push>>(Activity.Take(limit).ToArray());
     public Task<int?> CommitCount(string repo, string before, string after, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<FailOpen>> FailOpens(string repo, DateTimeOffset since, CancellationToken ct) => throw new NotSupportedException();
     public Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct) => throw new NotSupportedException();
     public Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct) => throw new NotSupportedException();
     public Task Link(string repo, long checkId, long runId, CancellationToken ct) => throw new NotSupportedException();
     public Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct) => throw new NotSupportedException();
     public Task Complete(string repo, long checkId, string conclusion, string title, string summary, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IReadOnlyList<Issue>> OpenIssues(string repo, string label, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<Issue>> Issues(string repo, string label, DateTimeOffset since, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<IssueComment>> Comments(string repo, int number, DateTimeOffset? since, CancellationToken ct) => throw new NotSupportedException();
     public Task<Account?> ClosedBy(string repo, int number, CancellationToken ct) => throw new NotSupportedException();
     public Task EditBody(string repo, int number, string body, CancellationToken ct) => throw new NotSupportedException();
-    public Task<Issue> CreateIssue(string repo, string title, string body, string label, CancellationToken ct) => throw new NotSupportedException();
-    public Task Comment(string repo, int number, string body, CancellationToken ct) => throw new NotSupportedException();
     public Task Close(string repo, int number, string reason, long? duplicateOf, CancellationToken ct) => throw new NotSupportedException();
 }

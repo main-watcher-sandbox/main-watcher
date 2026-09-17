@@ -24,6 +24,13 @@ builder.Services.AddSingleton(services =>
     return new TriggerCycle(access.Watcher, access.Doorbell, access.Target, settings.WatcherRepo, settings.TargetsPath,
         new WorkFinder(), services.GetRequiredService<ILogger<TriggerCycle>>());
 });
+// mw-doorbell holds Issues: write on the watcher repo, where the watcher-infra alerts live (ADR-012).
+builder.Services.AddSingleton(services =>
+{
+    var access = services.GetRequiredService<GitHubAccess>();
+    return new WorkerAlerts(new Alerts(access.Doorbell, settings.WatcherRepo), access,
+        services.GetRequiredService<ILogger<WorkerAlerts>>(), DateTimeOffset.UtcNow);
+});
 builder.Services.AddHostedService<TriggerService>();
 
 var app = builder.Build();

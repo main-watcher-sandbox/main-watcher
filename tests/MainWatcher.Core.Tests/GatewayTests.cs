@@ -358,6 +358,49 @@ public class GatewayTests
         Assert.Equal(4, requests.Count);
     }
 
+    // ADR-008: the sweep reads the target's merge-group gate runs and keeps the ones whose fail-open job actually ran.
+    [Fact]
+    public async Task FailOpensKeepsOnlyGateRunsWhoseFailOpenJobRan()
+    {
+        var paths = new List<string>();
+        var handler = new Handler(request =>
+        {
+            paths.Add(request.RequestUri!.PathAndQuery);
+            if (request.RequestUri.AbsolutePath.EndsWith("/jobs"))
+                return Task.FromResult(Response(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    jobs = new[]
+                    {
+                        new { name = "main-watcher-gate", conclusion = "success" },
+                        new { name = "main-watcher/gate-fail-open", conclusion = request.RequestUri.AbsolutePath.Contains("/9/") ? "skipped" : "success" }
+                    }
+                })));
+            return Task.FromResult(Response(System.Text.Json.JsonSerializer.Serialize(new
+            {
+                workflow_runs = new[]
+                {
+                    new { id = 9L, head_sha = "aaa", head_branch = "gh-readonly-queue/main/pr-1", created_at = "2026-09-17T10:00:00Z" },
+                    new { id = 8L, head_sha = "bbb", head_branch = "gh-readonly-queue/main/pr-2", created_at = "2026-09-17T10:30:00Z" }
+                }
+            })));
+        });
+        using var http = Client(handler);
+        var since = DateTimeOffset.Parse("2026-09-17T10:00:00Z");
+        var found = await new GitHubGateway(http, 1).FailOpens("owner/repo", since, TestContext.Current.CancellationToken);
+        var open = Assert.Single(found);
+        Assert.Equal(8, open.RunId);
+        Assert.Equal("gh-readonly-queue/main/pr-2", open.Branch);
+        Assert.Contains("workflows/main-watcher-gate.yml/runs?event=merge_group", paths[0]);
+        Assert.Contains("created=%3E%3D2026-09-17T10", paths[0]);
+    }
+
+    [Fact]
+    public async Task ATargetWithoutTheGateWorkflowHasNoFailOpens()
+    {
+        using var http = Client(new Handler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound))));
+        Assert.Empty(await new GitHubGateway(http, 1).FailOpens("owner/repo", DateTimeOffset.UtcNow, TestContext.Current.CancellationToken));
+    }
+
     static HttpClient Client(HttpMessageHandler handler) => new(handler) { BaseAddress = new Uri("https://api.github.com/") };
     static HttpResponseMessage Response(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
     sealed class Handler(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) : HttpMessageHandler

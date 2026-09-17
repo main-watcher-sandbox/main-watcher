@@ -981,6 +981,109 @@ public class WatcherTests
         Assert.Equal(0, await reporter.NoteOverrides(Watched, ct));
     }
 
+    // TS-S11, ADR-010 and C-7: the hourly sweep is what notices a trigger worker that has stopped starting cycles.
+    const string AlertRepo = "watcher/repo";
+    static Sweep Sweeping(FakeGitHub target, FakeGitHub watcher) =>
+        new(target, watcher, AlertRepo, new Alerts(watcher, AlertRepo), new WorkFinder(() => Now), () => Now);
+    static Issue? Alert(FakeGitHub watcher, string title) =>
+        watcher.Issues.GetValueOrDefault(AlertRepo, []).Select(i => i.Issue).SingleOrDefault(i => i.Title == title);
+    const string WorkerDownTitle = "Trigger worker appears down (work waiting on owner/repo)";
+
+    [Theory]
+    // An eligible head whose push is older than the threshold: the worker had a minute to start a cycle and did not.
+    [InlineData(40, true)]
+    [InlineData(5, false)]
+    public async Task SweepReportsWorkThatWaitedLongerThanTheWorkerShouldTake(int minutes, bool reported)
+    {
+        var target = new FakeGitHub { Activity = { new("before", "head", Now.AddMinutes(-minutes), "push", "alice") } };
+        var watcher = new FakeGitHub();
+        var work = await Sweeping(target, watcher).WorkerDown(Watched, TestContext.Current.CancellationToken);
+        Assert.Equal(reported, work is not null);
+        if (!reported) { Assert.Null(Alert(watcher, WorkerDownTitle)); return; }
+        var alert = Alert(watcher, WorkerDownTitle);
+        Assert.NotNull(alert);
+        Assert.Contains("waited 40 minutes", alert.Body);
+        Assert.Contains("No `watch.yml` cycle has been dispatched", alert.Body);
+    }
+
+    [Fact]
+    public async Task WorkWaitingWhileCyclesAreDispatchedIsTheReportersProblemNotTheWorkers()
+    {
+        var target = new FakeGitHub { Activity = { new("before", "head", Now.AddHours(-3), "push", "alice") } };
+        var other = new FakeGitHub { RunList = [new(9, "watch other/repo", Now.AddMinutes(-3), "completed")] };
+        Assert.NotNull(await Sweeping(target, other).WorkerDown(Watched, TestContext.Current.CancellationToken));
+        var watcher = new FakeGitHub { RunList = [new(9, "watch owner/repo", Now.AddMinutes(-3), "completed")] };
+        Assert.Null(await Sweeping(target, watcher).WorkerDown(Watched, TestContext.Current.CancellationToken));
+        Assert.Null(Alert(watcher, WorkerDownTitle));
+    }
+
+    [Fact]
+    public async Task UndatedWorkIsNeverReportedAsOldButAnUnreadableRunListStillAlerts()
+    {
+        // A deleted target run: the report is owed, but nothing says since when.
+        var deleted = new FakeGitHub { RunDeleted = true, CheckList = { new(7, "head", "in_progress", null, Now.AddHours(-2), null, "42") } };
+        Assert.Null(await Sweeping(deleted, new()).WorkerDown(Watched, TestContext.Current.CancellationToken));
+        var target = new FakeGitHub { Activity = { new("before", "head", Now.AddHours(-3), "push", "alice") } };
+        var watcher = new FakeGitHub { RunsError = true };
+        Assert.NotNull(await Sweeping(target, watcher).WorkerDown(Watched, TestContext.Current.CancellationToken));
+        Assert.Contains("could not be read", Alert(watcher, WorkerDownTitle)!.Body);
+    }
+
+    // The head's own wait for poll_interval is the rule working, not the worker failing (ADR-017).
+    [Fact]
+    public async Task AnEligibleHeadIsDatedByItsPushOrTheIntervalItStillHadToWait()
+    {
+        var target = new FakeGitHub
+        {
+            CheckList = { Result(1, 'a', "success", 30) },
+            Activity = { new("before", "head", Now.AddMinutes(-90), "push", "alice") }
+        };
+        var watched = new Target { Repo = "owner/repo", PollInterval = 30 };
+        var work = await new WorkFinder(() => Now).Find(watched, target, TestContext.Current.CancellationToken);
+        Assert.Equal(Now, work!.Since);
+        // Without the push in the activity read, the work is not dated at all.
+        target.Activity.Clear();
+        Assert.Null((await new WorkFinder(() => Now).Find(watched, target, TestContext.Current.CancellationToken))!.Since);
+    }
+
+    // ADR-008 point 3: a secondary signal, since a gate that cannot reach the API usually cannot report through it either.
+    [Fact]
+    public async Task SweepReportsEachSetOfGateFailOpensOnce()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var target = new FakeGitHub
+        {
+            Activity = { new("before", "head", Now.AddMinutes(-1), "push", "alice") },
+            FailOpenRuns =
+            {
+                new(5, Sha('a'), "gh-readonly-queue/main/pr-1", Now.AddMinutes(-20)),
+                // Older than the window the sweep covers.
+                new(4, Sha('b'), "gh-readonly-queue/main/pr-0", Now.AddHours(-3))
+            }
+        };
+        var watcher = new FakeGitHub();
+        var sweep = Sweeping(target, watcher);
+        Assert.Equal(1, await sweep.GateFailedOpen(Watched, ct));
+        var alert = Alert(watcher, "Gate failed open on owner/repo");
+        Assert.NotNull(alert);
+        Assert.Contains("run 5", alert.Body);
+        Assert.DoesNotContain("run 4", alert.Body);
+        // The same set again says nothing new; a further fail-open is a comment on the same thread.
+        Assert.Equal(1, await sweep.GateFailedOpen(Watched, ct));
+        Assert.Empty(watcher.Find(AlertRepo, alert.Number).Comments);
+        target.FailOpenRuns.Add(new(6, Sha('c'), "gh-readonly-queue/main/pr-2", Now.AddMinutes(-5)));
+        Assert.Equal(2, await sweep.GateFailedOpen(Watched, ct));
+        Assert.Contains("run 6", Assert.Single(watcher.Find(AlertRepo, alert.Number).Comments).Body);
+    }
+
+    [Fact]
+    public async Task NoGateFailOpenRaisesNothing()
+    {
+        var watcher = new FakeGitHub();
+        Assert.Equal(0, await Sweeping(new(), watcher).GateFailedOpen(Watched, TestContext.Current.CancellationToken));
+        Assert.Empty(watcher.Issues);
+    }
+
     sealed class FakeIssue(Issue issue, string label)
     {
         public Issue Issue { get; set; } = issue;
@@ -1105,10 +1208,16 @@ public class WatcherTests
             ActivityError ? throw new HttpRequestException("activity unavailable") : Task.FromResult<IReadOnlyList<Push>>(Activity.Take(limit).ToArray());
         public Task<int?> CommitCount(string repo, string before, string after, CancellationToken ct) =>
             Task.FromResult<int?>(Counts.TryGetValue(after, out var count) ? count : null);
+        public List<FailOpen> FailOpenRuns { get; init; } = [];
+        public bool FailOpenError { get; init; }
+        public Task<IReadOnlyList<FailOpen>> FailOpens(string repo, DateTimeOffset since, CancellationToken ct) =>
+            FailOpenError ? throw new HttpRequestException("gate runs unavailable")
+                : Task.FromResult<IReadOnlyList<FailOpen>>(FailOpenRuns.Where(f => f.At >= since).ToArray());
         public Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct) { Writes.Add("create"); return Task.FromResult(new CheckRun(1, sha, "in_progress", null, now, null, null)); }
         public Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct) { Writes.Add("dispatch"); if (DispatchError is not null) throw DispatchError; return Task.FromResult(DispatchId); }
         public Task DispatchWorkflow(string repo, string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct) => throw new NotSupportedException();
-        public Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct) => RunsError ? throw new HttpRequestException("unavailable") : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList);
+        public Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct) => RunsError ? throw new HttpRequestException("unavailable")
+            : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList.Where(r => r.CreatedAt >= since).ToArray());
         public Task Link(string repo, long checkId, long runId, CancellationToken ct) { Writes.Add($"link:{runId}"); return Task.CompletedTask; }
         /// <summary>The run's jobs; null when the run was deleted. By default, a completed job with <see cref="JobConclusion"/> and a successful marker.</summary>
         public IReadOnlyList<WorkflowJob>? JobList { get; init; }
