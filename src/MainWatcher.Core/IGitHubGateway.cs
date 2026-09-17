@@ -24,8 +24,19 @@ public interface IGitHubGateway
     /// <summary>A file on <c>main</c>: null when it does not exist, "" when it is empty or too large to read inline.</summary>
     Task<string?> File(string repo, string path, CancellationToken ct);
     Task<IReadOnlyList<Issue>> OpenIssues(string repo, string label, CancellationToken ct);
+    /// <summary>Issues with <paramref name="label"/> in any state, updated at or after <paramref name="since"/>.</summary>
+    Task<IReadOnlyList<Issue>> Issues(string repo, string label, DateTimeOffset since, CancellationToken ct);
+    /// <summary>An issue's comments, oldest first; only those updated at or after <paramref name="since"/> when it is given.</summary>
+    Task<IReadOnlyList<IssueComment>> Comments(string repo, int number, DateTimeOffset? since, CancellationToken ct);
+    /// <summary>Who closed an issue; null when it is open or GitHub does not say.</summary>
+    Task<Account?> ClosedBy(string repo, int number, CancellationToken ct);
+    Task EditBody(string repo, int number, string body, CancellationToken ct);
     /// <summary>Creates the label if it is missing, then an issue carrying it.</summary>
     Task<Issue> CreateIssue(string repo, string title, string body, string label, CancellationToken ct);
     Task Comment(string repo, int number, string body, CancellationToken ct);
-    Task Close(string repo, int number, CancellationToken ct);
+    /// <summary>
+    /// Closes an issue with a <c>state_reason</c> such as <c>completed</c> or <c>duplicate</c>. For <c>duplicate</c>,
+    /// <paramref name="duplicateOf"/> is the canonical issue's database ID (<see cref="Issue.Id"/>).
+    /// </summary>
+    Task Close(string repo, int number, string reason, long? duplicateOf, CancellationToken ct);
 }

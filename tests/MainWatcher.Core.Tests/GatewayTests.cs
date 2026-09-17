@@ -204,10 +204,40 @@ public class GatewayTests
         var open = Assert.Single(await gateway.OpenIssues("owner/repo", "main-broken", ct));
         Assert.Equal(new Issue(5, "main is broken", "b", "main-watcher[bot]", "Bot", "https://github.com/owner/repo/issues/5"), open);
         Assert.Equal(5, (await gateway.CreateIssue("owner/repo", "t", "body", "main-broken", ct)).Number);
-        await gateway.Close("owner/repo", 5, ct);
+        await gateway.Close("owner/repo", 5, "completed", null, ct);
         Assert.Contains(requests, r => r.StartsWith("GET /repos/owner/repo/issues?state=open&labels=main-broken"));
         Assert.Contains(requests, r => r.StartsWith("POST /repos/owner/repo/issues ") && r.Contains("\"labels\":[\"main-broken\"]"));
         Assert.Contains(requests, r => r.StartsWith("PATCH /repos/owner/repo/issues/5 ") && r.Contains("\"state\":\"closed\""));
+    }
+
+    [Fact]
+    public async Task LockReadsListEveryStateSinceTheLookbackAndReadWhoClosedFromTheSingleIssue()
+    {
+        var requests = new List<string>();
+        using var http = Client(new Handler(async request =>
+        {
+            var path = request.RequestUri!.PathAndQuery;
+            requests.Add($"{request.Method} {path} {(request.Content is null ? "" : await request.Content.ReadAsStringAsync())}");
+            if (request.Method == HttpMethod.Patch) return Response("{}");
+            if (path.Contains("/comments")) return Response("""[{"body":"x","user":{"login":"main-watcher[bot]","type":"Bot"}},{"body":"y","user":null}]""");
+            if (path.Contains("/issues?")) return Response("""[{"number":5,"title":"t","body":"b","html_url":"u","state":"closed","state_reason":"duplicate","updated_at":"2026-09-16T18:00:00Z","id":5488651743,"user":{"login":"main-watcher[bot]","type":"Bot"}}]""");
+            return Response(path.EndsWith("/5")
+                ? """{"number":5,"closed_by":{"login":"alice","type":"User"},"user":{"login":"main-watcher[bot]","type":"Bot"}}"""
+                : """{"number":6,"closed_by":null,"user":{"login":"main-watcher[bot]","type":"Bot"}}""");
+        }));
+        var gateway = new GitHubGateway(http, 1);
+        var ct = TestContext.Current.CancellationToken;
+        var issue = Assert.Single(await gateway.Issues("owner/repo", "main-broken", DateTimeOffset.Parse("2026-08-17T19:00:00Z"), ct));
+        Assert.Equal(new Issue(5, "t", "b", "main-watcher[bot]", "Bot", "u", "closed", "duplicate", DateTimeOffset.Parse("2026-09-16T18:00:00Z"), 5488651743), issue);
+        Assert.Equal(new IssueComment[] { new("x", "main-watcher[bot]", "Bot"), new("y", "", "") }, await gateway.Comments("owner/repo", 5, null, ct));
+        Assert.Equal(new Account("alice", "User"), await gateway.ClosedBy("owner/repo", 5, ct));
+        Assert.Null(await gateway.ClosedBy("owner/repo", 6, ct));
+        await gateway.EditBody("owner/repo", 5, "new", ct);
+        await gateway.Close("owner/repo", 5, "duplicate", 5488651743, ct);
+        Assert.StartsWith("GET /repos/owner/repo/issues?state=all&labels=main-broken&since=2026-08-17T19%3A00%3A00Z&per_page=100", requests[0]);
+        Assert.StartsWith("GET /repos/owner/repo/issues/5/comments?per_page=100", requests[1]);
+        Assert.Equal("PATCH /repos/owner/repo/issues/5 {\"body\":\"new\"}", requests[4]);
+        Assert.Equal("PATCH /repos/owner/repo/issues/5 {\"state\":\"closed\",\"state_reason\":\"duplicate\",\"duplicate_issue_id\":5488651743}", requests[5]);
     }
 
     [Fact]

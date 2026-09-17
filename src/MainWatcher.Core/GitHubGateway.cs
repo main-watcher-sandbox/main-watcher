@@ -262,11 +262,36 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     }
 
     static Issue ToIssue(JsonElement json) => new(json.GetProperty("number").GetInt32(), Text(json, "title") ?? "", Text(json, "body"),
-        Text(json.GetProperty("user"), "login") ?? "", Text(json.GetProperty("user"), "type") ?? "", Text(json, "html_url") ?? "");
+        Text(json.GetProperty("user"), "login") ?? "", Text(json.GetProperty("user"), "type") ?? "", Text(json, "html_url") ?? "",
+        Text(json, "state") ?? "open", Text(json, "state_reason"), Date(json, "updated_at"),
+        json.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number ? id.GetInt64() : 0);
+
+    static string Since(DateTimeOffset since) => Uri.EscapeDataString(since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture));
 
     public async Task<IReadOnlyList<Issue>> OpenIssues(string repo, string label, CancellationToken ct) =>
         (await Pages($"repos/{repo}/issues?state=open&labels={Uri.EscapeDataString(label)}", null, ct))
         .Where(i => !i.TryGetProperty("pull_request", out _)).Select(ToIssue).ToArray();
+
+    public async Task<IReadOnlyList<Issue>> Issues(string repo, string label, DateTimeOffset since, CancellationToken ct) =>
+        (await Pages($"repos/{repo}/issues?state=all&labels={Uri.EscapeDataString(label)}&since={Since(since)}", null, ct))
+        .Where(i => !i.TryGetProperty("pull_request", out _)).Select(ToIssue).ToArray();
+
+    public async Task<IReadOnlyList<IssueComment>> Comments(string repo, int number, DateTimeOffset? since, CancellationToken ct) =>
+        (await Pages($"repos/{repo}/issues/{number}/comments" + (since is { } time ? $"?since={Since(time)}" : ""), null, ct))
+        .Select(c => c.TryGetProperty("user", out var user) && user.ValueKind == JsonValueKind.Object
+            ? new IssueComment(Text(c, "body") ?? "", Text(user, "login") ?? "", Text(user, "type") ?? "")
+            : new IssueComment(Text(c, "body") ?? "", "", "")).ToArray();
+
+    public async Task<Account?> ClosedBy(string repo, int number, CancellationToken ct)
+    {
+        // The issue list omits closed_by; only a single issue carries it.
+        var issue = await Send(HttpMethod.Get, $"repos/{repo}/issues/{number}", null, ct);
+        return issue.TryGetProperty("closed_by", out var user) && user.ValueKind == JsonValueKind.Object && Text(user, "login") is { } login
+            ? new(login, Text(user, "type") ?? "") : null;
+    }
+
+    public async Task EditBody(string repo, int number, string body, CancellationToken ct) =>
+        await Send(HttpMethod.Patch, $"repos/{repo}/issues/{number}", new { body }, ct);
 
     public async Task<Issue> CreateIssue(string repo, string title, string body, string label, CancellationToken ct)
     {
@@ -278,6 +303,9 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     public async Task Comment(string repo, int number, string body, CancellationToken ct) =>
         await Send(HttpMethod.Post, $"repos/{repo}/issues/{number}/comments", new { body }, ct);
 
-    public async Task Close(string repo, int number, CancellationToken ct) =>
-        await Send(HttpMethod.Patch, $"repos/{repo}/issues/{number}", new { state = "closed", state_reason = "completed" }, ct);
+    public async Task Close(string repo, int number, string reason, long? duplicateOf, CancellationToken ct) =>
+        // duplicate_issue_id takes the database ID: in the sandbox, an issue number linked an unrelated issue.
+        await Send(HttpMethod.Patch, $"repos/{repo}/issues/{number}", duplicateOf is { } canonical
+            ? new { state = "closed", state_reason = reason, duplicate_issue_id = canonical }
+            : new { state = "closed", state_reason = reason }, ct);
 }

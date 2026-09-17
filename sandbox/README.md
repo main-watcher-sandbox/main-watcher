@@ -7,6 +7,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-9-validation.md` | Passing/failing watcher checks and target restoration evidence for #9 |
 | `issue-10-validation.md` | A real lock opened and closed, TS-S4 with that lock, and restoration evidence for #10 |
 | `issue-11-validation.md` | TS-S2: three quick pushes during a slow run, the lock's push list and the later-failure comment, for #11 |
+| `issue-12-validation.md` | TS-S14 (a), (b) and (d) with the Reporter fault switch, and the override part of TS-S3, for #12 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
@@ -67,3 +68,15 @@ gh workflow run sandbox-lock.yml -R main-watcher-sandbox/main-watcher -f target=
 ```
 
 A negative `lease_hours` makes an expired lease, for the "LOCK LEASE EXPIRED" path.
+
+## Reporter fault switch
+
+For TS-S14, set the replica's `MW_SANDBOX_EXIT_AFTER` variable to the Reporter writes to
+stop after (`create`, `comment`, `update`, `close`, `override`, comma-separated). The cycle
+exits right after that write, leaving the check run `in_progress`; the next cycle replays
+the report. Delete the variable afterwards:
+
+```
+gh variable set MW_SANDBOX_EXIT_AFTER -R main-watcher-sandbox/main-watcher --body create
+gh variable delete MW_SANDBOX_EXIT_AFTER -R main-watcher-sandbox/main-watcher
+```

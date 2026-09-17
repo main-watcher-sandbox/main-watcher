@@ -361,7 +361,7 @@ public class WatcherTests
         await new Reporter(fake).Report(new() { Repo = "owner/repo" }, Pending(), TestContext.Current.CancellationToken);
         Assert.Equal(new[] { "comment:1", "close:1", "complete:success" }, fake.Order);
         Assert.Contains("abcdef1", fake.Comments.Single());
-        Assert.Equal("hand-made", fake.Issues["owner/repo"].Single().Issue.Title);
+        Assert.Equal("hand-made", Assert.Single(fake.Issues["owner/repo"], i => i.Open).Issue.Title);
     }
 
     [Fact]
@@ -540,14 +540,15 @@ public class WatcherTests
         var fake = new FakeGitHub { ReportResult = new(true, [new("Beta", "suite", "@owner broke it")]) };
         fake.Seed("owner/repo", "main-broken", "main is broken", "main-watcher[bot]", "Bot", "@team\n\nfirst failure");
         await new Reporter(fake).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('e')) with { Id = 77 }, TestContext.Current.CancellationToken);
-        Assert.Equal(new[] { "comment:1", "complete:failure" }, fake.Order);
+        Assert.Equal(new[] { "comment:1", "update:1", "complete:failure" }, fake.Order);
         var comment = Assert.Single(fake.Comments);
         Assert.DoesNotContain("@", comment);
         Assert.Contains("Tests failed again on `main` at [`eeeeeee`]", comment);
         Assert.Contains("- Beta (suite):", comment);
         Assert.Contains("https://github.com/owner/repo/actions/runs/42", comment);
-        Assert.EndsWith("<!-- main-watcher check=77 -->", comment);
+        Assert.EndsWith($"<!-- main-watcher check=77 sha={Sha('e')} -->", comment);
         Assert.Equal("first failure", fake.Issues["owner/repo"].Single().Body.Split("\n\n")[1]);
+        Assert.EndsWith($"<!-- main-watcher reported_check=77 reported_sha={Sha('e')} -->", fake.Issues["owner/repo"].Single().Body);
     }
 
     [Fact]
@@ -580,10 +581,227 @@ public class WatcherTests
     public void StarRuleWithoutOwnersClearsEarlierOwners() =>
         Assert.Empty(Mentions.StarOwners("* @first\n*\n"));
 
-    sealed record FakeIssue(Issue Issue, string Label)
+    static readonly Target Watched = new() { Repo = "owner/repo", Notify = ["team"] };
+    static string LockBody(long check, char sha) =>
+        $"@team\n\nfirst failure\n\n<!-- main-watcher first_red={Sha(sha)} lease_until=2026-09-16T23:00:00Z reported_check={check} reported_sha={Sha(sha)} -->";
+    static FakeIssue SeedLock(FakeGitHub fake, long check, char sha) => fake.Seed("owner/repo", "main-broken", "main is broken", "main-watcher[bot]", "Bot", LockBody(check, sha));
+
+    // TS-U8 (ADR-013): create, update and close sequences, each stopped after every issue write.
+    [Theory]
+    [InlineData("create", 1)]
+    [InlineData("update", 1)]
+    [InlineData("update", 2)]
+    [InlineData("close", 1)]
+    [InlineData("close", 2)]
+    public async Task AReportStoppedAfterAnyIssueWriteIsReplayedWithoutRepeatingAWrite(string sequence, int stopAfter)
     {
+        var ct = TestContext.Current.CancellationToken;
+        var green = sequence == "close";
+        var fake = new FakeGitHub { JobConclusion = green ? "success" : "failure", ReportResult = new(true, green ? [] : [new("Alpha", "suite", "failed")]) };
+        if (sequence != "create") SeedLock(fake, 1, 'a');
+        var check = Pending(Sha('b')) with { Id = 2 };
+        fake.StopAfterWrites = stopAfter;
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake, clock: () => Now).Report(Watched, check, ct));
+        Assert.Null(fake.Conclusion);
+
+        fake.StopAfterWrites = null;
+        Assert.True(await new Reporter(fake, clock: () => Now).Report(Watched, check, ct));
+        var issue = Assert.Single(fake.Issues["owner/repo"]);
+        Assert.Equal(sequence == "create" ? 0 : 1, fake.Comments.Count);
+        Assert.Equal(green ? "success" : "failure", fake.Conclusion);
+        Assert.Equal(green, !issue.Open);
+        if (!green) Assert.Contains($"reported_check=2 reported_sha={Sha('b')} -->", issue.Body);
+        Assert.Equal(fake.Order.Distinct(), fake.Order);
+        Assert.Equal(1, fake.Order.Count(o => o.StartsWith("complete:")));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task OfTwoOpenLocksTheNewerIsClosedAsADuplicateAndCarriesNoResult(int? stopAfter)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        SeedLock(fake, 1, 'a');
+        // A replay whose issue list lagged opened a second lock for check 2.
+        SeedLock(fake, 2, 'b');
+        var check = Pending(Sha('b')) with { Id = 2 };
+        var writes = new List<string>();
+        fake.StopAfterWrites = stopAfter;
+        if (stopAfter is not null)
+        {
+            await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake, afterWrite: writes.Add).Report(Watched, check, ct));
+            fake.StopAfterWrites = null;
+        }
+        await new Reporter(fake, afterWrite: writes.Add).Report(Watched, check, ct);
+
+        // The canonical lock is named by its database ID.
+        Assert.Equal(new[] { "comment:2", "close:2:duplicate:1001", "comment:1", "update:1", "complete:failure" }, fake.Order);
+        // The hook the sandbox fault switch uses names each write.
+        if (stopAfter is null) Assert.Equal(new[] { "comment", "close", "comment", "update" }, writes);
+        Assert.Contains("Closing as a duplicate of #1", Assert.Single(fake.Find("owner/repo", 2).Comments).Body);
+        Assert.Equal("duplicate", fake.Find("owner/repo", 2).Issue.StateReason);
+        var kept = fake.Find("owner/repo", 1);
+        Assert.True(kept.Open);
+        Assert.Contains("Tests failed again", Assert.Single(kept.Comments).Body);
+        Assert.Contains("reported_check=2", kept.Body);
+        Assert.Contains("issues/1", fake.Summary);
+    }
+
+    [Fact]
+    public async Task AReplayAfterAHumanClosedTheNewLockCreatesNothingAndTheOverrideIsNoted()
+    {
+        // TS-S14 (d): stopped after creating the lock, which a human closes before the replay.
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { StopAfterWrites = 1 };
+        var check = Pending(Sha('b')) with { Id = 2 };
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake, clock: () => Now).Report(Watched, check, ct));
+        fake.StopAfterWrites = null;
+        fake.CloseByHand("owner/repo", 1, "alice");
+
+        var reporter = new Reporter(fake, clock: () => Now);
+        await reporter.Report(Watched, check, ct);
+        Assert.Equal(new[] { "create:owner/repo", "complete:failure" }, fake.Order);
+        Assert.Contains("already written to lock issue https://github.com/owner/repo/issues/1, which has been closed since", fake.Summary);
+
+        Assert.Equal(1, await reporter.NoteOverrides(Watched, ct));
+        Assert.StartsWith("`alice` closed this lock by hand. That is an override", Assert.Single(fake.Comments));
+        Assert.Equal(0, await reporter.NoteOverrides(Watched, ct));
+    }
+
+    [Fact]
+    public async Task AReplayOfAnInterruptedCreateStillRaisesTheNobodyMentionedAlert()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { StopAfterWrites = 1 };
+        var alerts = new FakeGitHub();
+        var target = new Target { Repo = "owner/repo" };
+        var check = Pending(Sha('b')) with { Id = 2 };
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake, new Alerts(alerts, "owner/watcher")).Report(target, check, ct));
+        Assert.Empty(alerts.Issues);
+        fake.StopAfterWrites = null;
+        await new Reporter(fake, new Alerts(alerts, "owner/watcher")).Report(target, check, ct);
+        Assert.Contains("issues/1 mentions nobody", Assert.Single(alerts.Issues["owner/watcher"]).Body);
+        Assert.Equal(new[] { "create:owner/repo", "complete:failure" }, fake.Order);
+    }
+
+    [Fact]
+    public async Task AReplayFindsItsCommentOnALockClosedSinceAndCreatesNothing()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        SeedLock(fake, 1, 'a');
+        var check = Pending(Sha('b')) with { Id = 2 };
+        fake.StopAfterWrites = 1;
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake).Report(Watched, check, ct));
+        fake.StopAfterWrites = null;
+        fake.CloseByHand("owner/repo", 1);
+        await new Reporter(fake).Report(Watched, check, ct);
+        Assert.Equal(new[] { "comment:1", "complete:failure" }, fake.Order);
+    }
+
+    [Theory]
+    // A red result for the commit of a lock closed by hand is covered by the override.
+    [InlineData('a', "User", false)]
+    // A different commit locks again, and the new lock links to the overridden one.
+    [InlineData('b', "User", true)]
+    // A lock the App closed is no override.
+    [InlineData('a', "Bot", true)]
+    public async Task AnOverrideCoversOnlyItsOwnCommit(char sha, string closerType, bool locks)
+    {
+        var fake = new FakeGitHub();
+        var closed = SeedLock(fake, 1, 'a');
+        closed.Issue = closed.Issue with { State = "closed", StateReason = "completed" };
+        closed.ClosedBy = closerType == "Bot" ? new("main-watcher[bot]", "Bot") : new("alice", "User");
+        await new Reporter(fake).Report(Watched, Pending(Sha(sha)) with { Id = 5 }, TestContext.Current.CancellationToken);
+        Assert.Equal("failure", fake.Conclusion);
+        Assert.Equal(locks ? new[] { "create:owner/repo", "complete:failure" } : ["complete:failure"], fake.Order);
+        if (!locks) Assert.Contains("was closed by hand (an override), so no lock was opened", fake.Summary);
+        else Assert.Equal(closerType == "User", fake.Find("owner/repo", 2).Body.Contains("The previous lock, https://github.com/owner/repo/issues/1, was closed by hand."));
+    }
+
+    [Fact]
+    public async Task AnOverrideCoversACommitThatOnlyAnInterruptedCommentReported()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        SeedLock(fake, 1, 'a');
+        // Check 2 on b commented, then stopped before the body marker; a human closed the lock.
+        fake.StopAfterWrites = 1;
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake).Report(Watched, Pending(Sha('b')) with { Id = 2 }, ct));
+        fake.StopAfterWrites = null;
+        fake.CloseByHand("owner/repo", 1);
+        Assert.Contains($"reported_sha={Sha('a')}", fake.Find("owner/repo", 1).Body);
+        // Check 2's run was deleted, so it ended neutral without a replay; a retest of b fails.
+        await new Reporter(fake).Report(Watched, Pending(Sha('b')) with { Id = 3 }, ct);
+        Assert.Equal(new[] { "comment:1", "complete:failure" }, fake.Order);
+        Assert.Contains("was closed by hand (an override), so no lock was opened", fake.Summary);
+    }
+
+    [Theory]
+    [InlineData("green", "`alice` closed this lock by hand after tests had passed on `main` at [`ccccccc`]")]
+    [InlineData("duplicate", "`alice` closed this lock by hand. It had already been marked a duplicate of #1, which decides whether `main` stays locked.")]
+    public async Task AHumanCloseAfterTheAppStartedClosingStillGetsACommentNamingWhoClosedIt(string started, string expected)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { JobConclusion = started == "green" ? "success" : "failure", ReportResult = new(true, []), StopAfterWrites = 1 };
+        if (started == "duplicate") SeedLock(fake, 1, 'a');
+        var stopped = SeedLock(fake, 2, 'b');
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake).Report(Watched, Pending(Sha('c')) with { Id = 3 }, ct));
+        fake.StopAfterWrites = null;
+        fake.CloseByHand("owner/repo", stopped.Issue.Number, "alice");
+        var reporter = new Reporter(fake, clock: () => Now);
+        Assert.Equal(1, await reporter.NoteOverrides(Watched, ct));
+        Assert.StartsWith(expected, stopped.Comments[^1].Body);
+        Assert.EndsWith("<!-- main-watcher closed=override -->", stopped.Comments[^1].Body);
+        Assert.Equal(0, await reporter.NoteOverrides(Watched, ct));
+    }
+
+    [Fact]
+    public async Task OnlyLocksClosedByHandGetAnOverrideCommentNamingWhoClosedThem()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        SeedLock(fake, 1, 'a');
+        fake.CloseByHand("owner/repo", 1, "alice");
+        // Closed by a green run.
+        SeedLock(fake, 2, 'b');
+        await new Reporter(fake).Report(Watched, Pending(Sha('c')) with { Id = 3 }, ct);
+        fake.Order.Clear();
+        // Closed by the App before closing comments carried a marker.
+        var legacy = SeedLock(fake, 4, 'd');
+        legacy.Issue = legacy.Issue with { State = "closed" };
+        legacy.ClosedBy = new("main-watcher[bot]", "Bot");
+        fake.Seed("owner/repo", "main-broken", "hand-made", "someone", "User");
+        fake.CloseByHand("owner/repo", 4, "bob");
+        SeedLock(fake, 6, 'e');
+        fake.CloseByHand("owner/repo", 5, null);
+        // Outside reconcile_lookback.
+        var old = SeedLock(fake, 7, 'f');
+        fake.CloseByHand("owner/repo", 6, "carol");
+        old.Issue = old.Issue with { UpdatedAt = Now - Reporter.ReconcileLookback - TimeSpan.FromMinutes(1) };
+
+        var reporter = new Reporter(fake, clock: () => Now);
+        Assert.Equal(2, await reporter.NoteOverrides(Watched, ct));
+        Assert.Equal(new[] { "comment:1", "comment:5" }, fake.Order);
+        var comment = Assert.Single(fake.Find("owner/repo", 1).Comments).Body;
+        Assert.Equal($"`alice` closed this lock by hand. That is an override: the merge queue accepts every pull request again, but `main` is still red at [`aaaaaaa`](https://github.com/owner/repo/commit/{Sha('a')}). "
+            + "Main Watcher never reopens this issue; it opens a new lock when tests fail on a different commit.\n\n<!-- main-watcher closed=override -->", comment);
+        Assert.StartsWith("Someone closed this lock by hand.", Assert.Single(fake.Find("owner/repo", 5).Comments).Body);
+        Assert.Equal(0, await reporter.NoteOverrides(Watched, ct));
+    }
+
+    sealed class FakeIssue(Issue issue, string label)
+    {
+        public Issue Issue { get; set; } = issue;
+        public string Label => label;
+        public Account? ClosedBy { get; set; }
+        public List<IssueComment> Comments { get; } = [];
         public string Body => Issue.Body!;
         public string Url => Issue.Url;
+        public bool Open => Issue.State == "open";
     }
 
     sealed class FakeGitHub : IGitHubGateway
@@ -594,36 +812,79 @@ public class WatcherTests
         public List<string> Comments { get; } = [];
         public bool IssueError { get; init; }
         public string JobConclusion { get; init; } = "failure";
+        /// <summary>Stops the report, as a crash would, right after this many issue writes succeed.</summary>
+        public int? StopAfterWrites { get; set; }
+        public int ClosedByReads { get; private set; }
         int next;
+        int writes;
 
-        public void Seed(string repo, string label, string title, string author, string type, string body = "")
+        void Wrote(string entry)
+        {
+            Order.Add(entry);
+            if (++writes == StopAfterWrites) throw new HttpRequestException("stopped after a write");
+        }
+
+        public FakeIssue Seed(string repo, string label, string title, string author, string type, string body = "")
         {
             if (!Issues.TryGetValue(repo, out var list)) Issues[repo] = list = [];
             next++;
-            list.Add(new(new(next, title, body, author, type, $"https://github.com/{repo}/issues/{next}"), label));
+            list.Add(new(new(next, title, body, author, type, $"https://github.com/{repo}/issues/{next}", Id: 1000 + next), label));
+            return list[^1];
+        }
+
+        public FakeIssue Find(string repo, int number) => Issues[repo].Single(i => i.Issue.Number == number);
+
+        public void CloseByHand(string repo, int number, string? login = "alice")
+        {
+            var issue = Find(repo, number);
+            issue.Issue = issue.Issue with { State = "closed", StateReason = "completed" };
+            issue.ClosedBy = login is null ? null : new(login, "User");
         }
 
         public Task<string?> File(string repo, string path, CancellationToken ct) => Task.FromResult(Files.GetValueOrDefault($"{repo}:{path}"));
         public Task<IReadOnlyList<Issue>> OpenIssues(string repo, string label, CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<Issue>>(Issues.GetValueOrDefault(repo, []).Where(i => i.Label == label).Select(i => i.Issue).ToArray());
+            Task.FromResult<IReadOnlyList<Issue>>(Issues.GetValueOrDefault(repo, []).Where(i => i.Label == label && i.Open).Select(i => i.Issue).ToArray());
+        Task<IReadOnlyList<Issue>> IGitHubGateway.Issues(string repo, string label, DateTimeOffset since, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<Issue>>(Issues.GetValueOrDefault(repo, [])
+                .Where(i => i.Label == label && (i.Issue.UpdatedAt is null || i.Issue.UpdatedAt >= since)).Select(i => i.Issue).ToArray());
+        Task<IReadOnlyList<IssueComment>> IGitHubGateway.Comments(string repo, int number, DateTimeOffset? since, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<IssueComment>>(Find(repo, number).Comments.ToArray());
+        public Task<Account?> ClosedBy(string repo, int number, CancellationToken ct)
+        {
+            ClosedByReads++;
+            return Task.FromResult(Find(repo, number).ClosedBy);
+        }
         public Task<Issue> CreateIssue(string repo, string title, string body, string label, CancellationToken ct)
         {
             if (IssueError) throw new HttpRequestException("issues unavailable");
-            Seed(repo, label, title, "main-watcher[bot]", "Bot", body);
-            Order.Add($"create:{repo}");
-            return Task.FromResult(Issues[repo][^1].Issue);
+            var issue = Seed(repo, label, title, "main-watcher[bot]", "Bot", body);
+            Wrote($"create:{repo}");
+            return Task.FromResult(issue.Issue);
         }
         public Task Comment(string repo, int number, string body, CancellationToken ct)
         {
             if (IssueError) throw new HttpRequestException("issues unavailable");
-            Order.Add($"comment:{number}");
+            if (Issues.TryGetValue(repo, out var list) && list.FirstOrDefault(i => i.Issue.Number == number) is { } issue)
+                issue.Comments.Add(new(body, "main-watcher[bot]", "Bot"));
             Comments.Add(body);
+            Wrote($"comment:{number}");
             return Task.CompletedTask;
         }
-        public Task Close(string repo, int number, CancellationToken ct)
+        public Task EditBody(string repo, int number, string body, CancellationToken ct)
         {
-            Issues[repo].RemoveAll(i => i.Issue.Number == number);
-            Order.Add($"close:{number}");
+            if (IssueError) throw new HttpRequestException("issues unavailable");
+            var issue = Find(repo, number);
+            issue.Issue = issue.Issue with { Body = body };
+            Wrote($"update:{number}");
+            return Task.CompletedTask;
+        }
+        public Task Close(string repo, int number, string reason, long? duplicateOf, CancellationToken ct)
+        {
+            if (IssueError) throw new HttpRequestException("issues unavailable");
+            var issue = Find(repo, number);
+            issue.Issue = issue.Issue with { State = "closed", StateReason = reason };
+            issue.ClosedBy = new("main-watcher[bot]", "Bot");
+            Wrote($"close:{number}" + (reason == "completed" ? "" : $":{reason}") + (duplicateOf is null ? "" : $":{duplicateOf}"));
             return Task.CompletedTask;
         }
 
