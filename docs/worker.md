@@ -77,6 +77,12 @@ the worker exits with code 2 without starting a cycle.
 | `MW_GITHUB_API_URL` | GitHub REST base URL | `https://api.github.com/` |
 | `ASPNETCORE_HTTP_PORTS` | The port `/healthz` listens on | 8080 in the image |
 
+Before the first cycle, the worker mints one installation token per App on the watcher
+repo. A rejected credential (HTTP 401, 403 or 404: the wrong key, the wrong App ID, or the
+App not installed there) is a configuration error, so the worker exits with code 2 and the
+pod enters `CrashLoopBackOff` rather than running healthily while doing nothing. A transient
+failure, such as a GitHub outage, is only logged: the cycles try again.
+
 A `targets.yml` that cannot be parsed is a configuration error on the first cycle, so the
 worker exits rather than watching nothing. Later, a broken file is logged and the previous
 target list is kept, because `watch.yml` would reject it too. A read that fails is only
@@ -95,9 +101,12 @@ found, including a cycle that failed on a GitHub error: a restart does not fix G
 it does fix a hung worker. A cycle running longer than `CycleTimeout` is cancelled, so one
 stuck request cannot stop the loop. Its body also carries the last cycle's time and counts.
 
-The endpoint exists for the liveness probe; nothing exposes it outside the cluster. The
-worker's own alerts (no `watch.yml` run in 2 h, reporting pending, repeated errors) come
-with #15.
+A cycle that keeps failing on GitHub therefore leaves the pod `Running`: the start-up check
+catches a credential that was wrong from the start, but a key revoked while the worker is
+running only shows in the logs until the worker's own alerts (no `watch.yml` run in 2 h,
+reporting pending, repeated errors, token failures) arrive with #15.
+
+The endpoint exists for the liveness probe; nothing exposes it outside the cluster.
 
 ## Container and deployment
 
@@ -127,6 +136,13 @@ kubectl -n main-watcher-sandbox create secret generic trigger-worker-keys \
 kubectl apply -k deploy/worker/sandbox
 kubectl -n main-watcher-sandbox rollout status deploy/trigger-worker
 kubectl -n main-watcher-sandbox logs -f deploy/trigger-worker
+```
+
+Both keys are read once, at start-up, so a replaced or rotated key takes effect only on the
+next restart:
+
+```sh
+kubectl -n main-watcher-sandbox rollout restart deploy/trigger-worker
 ```
 
 To stop the worker for a scenario test that needs it down (TS-S7, TS-S11):

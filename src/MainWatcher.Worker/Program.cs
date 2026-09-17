@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using MainWatcher.Core;
 using MainWatcher.Worker;
 
@@ -18,23 +17,12 @@ builder.Logging.ClearProviders().AddSimpleConsole(o => { o.SingleLine = true; o.
 
 builder.Services.AddSingleton(settings);
 builder.Services.AddSingleton(new WorkerHealth(settings.CheckPeriod, DateTimeOffset.UtcNow));
+builder.Services.AddSingleton(services => new GitHubAccess(settings, services.GetRequiredService<ILoggerFactory>()));
 builder.Services.AddSingleton(services =>
 {
-    // One connection pool; each client authenticates through its own handler, and every GitHub call goes through GitHubGateway.
-    var sockets = new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(10) };
-    var github = services.GetRequiredService<ILoggerFactory>().CreateLogger<GitHubGateway>();
-    GitHubGateway AppGateway(AppCredentials app) =>
-        new(GitHubApp.Client(settings.Api, new GitHubAppJwtHandler(app.AppId, app.Key) { InnerHandler = sockets }, disposeHandler: false),
-            settings.MainWatcherAppId);
-    GitHubGateway Installation(GitHubGateway app, string repo) =>
-        new(GitHubApp.Client(settings.Api, new InstallationTokenHandler(ct => app.InstallationToken(repo, ct)) { InnerHandler = sockets },
-            disposeHandler: false), settings.MainWatcherAppId, log: message => github.LogWarning("{Message}", message));
-
-    var observer = AppGateway(settings.Observer);
-    var targets = new ConcurrentDictionary<string, IGitHubGateway>(StringComparer.OrdinalIgnoreCase);
-    return new TriggerCycle(Installation(observer, settings.WatcherRepo), Installation(AppGateway(settings.Doorbell), settings.WatcherRepo),
-        repo => targets.GetOrAdd(repo, r => Installation(observer, r)), settings.WatcherRepo, settings.TargetsPath, new WorkFinder(),
-        services.GetRequiredService<ILogger<TriggerCycle>>());
+    var access = services.GetRequiredService<GitHubAccess>();
+    return new TriggerCycle(access.Watcher, access.Doorbell, access.Target, settings.WatcherRepo, settings.TargetsPath,
+        new WorkFinder(), services.GetRequiredService<ILogger<TriggerCycle>>());
 });
 builder.Services.AddHostedService<TriggerService>();
 
@@ -45,5 +33,17 @@ app.MapGet("/healthz", (WorkerHealth health) =>
     var body = new { live = health.IsLive(now), last_cycle = health.LastFinished, last_result = health.LastResult };
     return body.live ? Results.Ok(body) : Results.Json(body, statusCode: StatusCodes.Status503ServiceUnavailable);
 });
+// A rejected App credential is a configuration error: no cycle could ever do anything, so the worker must not look healthy.
+try
+{
+    using var startup = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+    await app.Services.GetRequiredService<GitHubAccess>().Verify(startup.Token);
+}
+catch (WorkerConfigurationException e)
+{
+    Console.Error.WriteLine($"Configuration error: {e.Message}");
+    return 2;
+}
+
 await app.RunAsync();
 return Environment.ExitCode;
