@@ -10,7 +10,7 @@ Issue #9 supplies one Planner/Reporter cycle in `.github/workflows/watch.yml`.
 It creates and completes `main-watcher` check runs. Issue #10 adds the lock issue:
 a red result opens it and a green result closes it. Issue #11 adds the push list and
 a comment for each later failure. Issue #12 replays interrupted reports and records human
-overrides. Lease renewal, stale-run cancellation and the automatic trigger are separate
+overrides. Issue #13 gives infrastructure errors a neutral result with an alert. Lease renewal, stale-run cancellation and the automatic trigger are separate
 backlog items.
 
 Configure the `reporter` environment with `MAIN_WATCHER_APP_ID` (variable) and
@@ -79,7 +79,7 @@ The reason is the HTTP status, a network error or timeout message, or a response
 without `workflow_run_id`. After 30 minutes, a successful lookup finding no matching run completes the check as
 neutral. Ambiguous matches and failed API reads remain pending. A recovery error on
 one check does not prevent reporting other pending checks, but blocks new planning
-for that cycle. Automated cancellation and infrastructure alerts remain in #13 and #18.
+for that cycle. Automated cancellation of stale target runs remains in #18.
 
 Check discovery bootstraps from main's history once per `GitHubGateway` instance.
 Reuse one instance per target in the worker: subsequent polls refresh the current
@@ -194,13 +194,54 @@ or `override`, or a comma-separated list. A replay skips the write that was made
 does not stop at the same point again. Set it only in the sandbox replica, and delete it
 after the scenario.
 
+## Neutral results
+
+The Reporter reads the latest attempt's `main-watcher` job and applies ADR-013's outcome table,
+top row first:
+
+| The job shows | Result | Alert |
+| --- | --- | --- |
+| The run was deleted (404) | `neutral` | "Outcome unknown on `owner/repo`" |
+| More than one `main-watcher` job, none in a completed run, or `main-watcher-test` or `main-watcher-tests-finished` more than once | `neutral` | "Outcome contract broken on `owner/repo`" |
+| `main-watcher-tests-finished` missing or not `success` | `neutral` | "Infrastructure error on `owner/repo`" |
+| Marker `success`, test step `failure` | Red, with "failing tests unknown" when CTRF is missing or invalid | None |
+| Marker `success`, test step `success` | Green | None |
+| Marker `success`, test step missing or in any other state | `neutral` | "Outcome contract broken on `owner/repo`" |
+
+A restore failure, the wrapper's deadline, a step or job timeout, a cancellation during the
+tests and a lost runner all leave the marker skipped or missing, so they are infrastructure
+errors. A test step renamed in the workflow leaves the marker without a test result, a
+contract error; a renamed marker step reads as tests that did not finish. Anything after a
+successful marker, such as a hung upload or a cancellation, does not change a red or green
+result. A job still running leaves the report pending, and any other jobs API error fails the
+cycle with the check still `in_progress`.
+
+A neutral result never creates, comments on or closes a lock. The alert comes first, then the
+check run completes as `neutral` with the same explanation. Its output title records the kind:
+"Outcome unknown", "Outcome contract broken" or "Infrastructure error". The Planner's own neutral
+results, a rejected dispatch or no run found, are titled "Outcome unknown". Alerts for contract
+errors and infrastructure errors list the job's steps and their conclusions. When an
+infrastructure error follows a target's previous completed check run titled "Infrastructure
+error", a second alert, "Infrastructure errors twice in a row on `owner/repo`", says so: a
+restore failure caused by the code keeps `main` untested without ever locking it. A contract
+error or deleted run in between ends the streak.
+
+These alerts are the report of a neutral result, so, like a lock write, they must succeed
+before the check run completes (ADR-013). If an alert or the check-run read for the streak
+fails, the check run stays `in_progress`, the cycle fails, and the next cycle replays the
+report. Each alert carries the check's hidden `<!-- main-watcher check=<id> -->` marker, and an
+open alert with the same title that already holds it is not repeated, so the replay raises only
+what is missing. A neutral head is tested again after `poll_interval`.
+
 ## Alerts
 
 `watch.yml` raises `watcher-infra` issues in its own repository with the workflow's
 `GITHUB_TOKEN` (`issues: write`), since the App token is scoped to the target. An open
 alert with the same title gets a comment instead of a new issue (ADR-012). A lock that
-mentions nobody raises "Lock issues on `owner/repo` mention nobody". A failed alert
-never blocks the lock or the check run; the cycle logs it and exits non-zero.
+mentions nobody raises "Lock issues on `owner/repo` mention nobody". Neutral results raise the
+alerts [above](#neutral-results). A failed "mention nobody" alert never blocks the lock or the
+check run; the cycle logs it and exits non-zero. A failed neutral-result alert leaves the check
+run `in_progress` for a replay.
 
 ## Validation
 
@@ -213,4 +254,5 @@ the target restoration evidence. The [issue #10 validation record](../sandbox/is
 covers a real lock opening and closing, and TS-S4 with that lock. The
 [issue #11 validation record](../sandbox/issue-11-validation.md) covers TS-S2: the push list
 and the later-failure comment. The [issue #12 validation record](../sandbox/issue-12-validation.md)
-covers TS-S14 (a), (b) and (d) and the override part of TS-S3.
+covers TS-S14 (a), (b) and (d) and the override part of TS-S3. The
+[issue #13 validation record](../sandbox/issue-13-validation.md) covers TS-S16 (a) to (f).

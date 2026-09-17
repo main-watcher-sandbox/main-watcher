@@ -18,7 +18,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         try { runId = await github.Dispatch(target.Repo, sha, check.Id, ct); }
         catch (HttpRequestException e) when (e.StatusCode is { } status && (int)status is >= 400 and < 500)
         {
-            await github.Complete(target.Repo, check.Id, "neutral", $"Dispatch rejected (HTTP {(int)status}); no target run started. Retry after poll_interval.", ct);
+            await github.Complete(target.Repo, check.Id, "neutral", Outcomes.Title(OutcomeKind.Unknown), $"Dispatch rejected (HTTP {(int)status}); no target run started. Retry after poll_interval.", ct);
             throw;
         }
         for (var attempt = 0; runId is null && attempt < 6; attempt++)
@@ -39,7 +39,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         // release the check, since there may still be an active target run.
         if (matches.Length == 0 && (clock ?? (() => DateTimeOffset.UtcNow))() - check.StartedAt >= TimeSpan.FromMinutes(30))
         {
-            await github.Complete(repo, check.Id, "neutral", "Dispatch produced no discoverable target run within 30 minutes; retry after poll_interval.", ct);
+            await github.Complete(repo, check.Id, "neutral", Outcomes.Title(OutcomeKind.Unknown), "Dispatch produced no discoverable target run within 30 minutes; retry after poll_interval.", ct);
             return check with { Status = "completed", Conclusion = "neutral" };
         }
         return check;

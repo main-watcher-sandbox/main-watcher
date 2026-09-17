@@ -169,12 +169,12 @@ public class GatewayTests
                 return Task.FromResult(response);
             }
             if (path.Contains("/old/check-runs")) return Task.FromResult(Response("""
-                {"check_runs":[{"id":1,"head_sha":"old","status":"in_progress","conclusion":null,"started_at":"2026-09-16T18:00:00Z","app":{"id":7}}]}
+                {"check_runs":[{"id":1,"head_sha":"old","status":"completed","conclusion":"neutral","started_at":"2026-09-16T18:00:00Z","app":{"id":7},"output":{"title":"Infrastructure error"}}]}
                 """));
             return Task.FromResult(Response("{\"check_runs\":[]}"));
         }));
         var checks = await new GitHubGateway(http, 7).Checks("owner/repo", TestContext.Current.CancellationToken);
-        Assert.Equal("old", Assert.Single(checks).Sha);
+        Assert.Equal(("old", "Infrastructure error"), (Assert.Single(checks).Sha, checks[0].Title));
         Assert.Contains(requests, path => path.Contains("cursor=older"));
     }
 
