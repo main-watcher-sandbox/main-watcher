@@ -95,6 +95,9 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
                     + $"[Target run]({runUrl})\n\n<!-- main-watcher check={check.Id} -->", ct));
             await Write("update", github.EditBody(repo, open.Number, WithReported(open.Body ?? "", check), ct));
         }
+        // This check opened the lock, and the report may have stopped before the alert that follows it.
+        else if (Field(open.Body, "first_red") == check.Sha && (await MentionList(target, ct)).Count == 0)
+            await NobodyMentioned(target, open, ct);
         return $"\n\nLock issue: {open.Url}\n\n" + failures;
     }
 
@@ -218,9 +221,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
 
     async Task<Issue> OpenLock(Target target, CheckRun check, CtrfResult reports, string runUrl, Issue? overridden, CancellationToken ct)
     {
-        IReadOnlyList<string> mentions = target.Notify.Length > 0 ? target.Notify.Select(Mentions.Normalize).ToArray() : await CodeOwners(target.Repo, ct);
-        // GitHub notifies at most 50 mentions per issue; the cap also bounds the body.
-        mentions = mentions.Take(MaxMentions).ToArray();
+        var mentions = await MentionList(target, ct);
         var pushes = await PushList.Collect(github, target.Repo, check.Sha, ct);
         WalkBacks.Add(new(check.Id, pushes.CommitsChecked, pushes.Source));
         var leaseUntil = Now.Add(LockLease).UtcDateTime;
@@ -237,12 +238,17 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
             + $"reported_check={check.Id} reported_sha={check.Sha} -->";
         var issue = await github.CreateIssue(target.Repo, $"main is broken: tests failed on {Short(check.Sha)}", body, LockLabel, ct);
         afterWrite?.Invoke("create");
-        if (mentions.Count == 0)
-            await Alert($"Lock issues on {target.Repo} mention nobody",
-                $"Lock {issue.Url} mentions nobody: `{target.Repo}` has no `notify` list in targets.yml and no `*` rule with owners in CODEOWNERS. "
-                + "Configure `notify` for this target.", ct);
+        if (mentions.Count == 0) await NobodyMentioned(target, issue, ct);
         return issue;
     }
+
+    async Task<IReadOnlyList<string>> MentionList(Target target, CancellationToken ct) =>
+        // GitHub notifies at most 50 mentions per issue; the cap also bounds the body.
+        (target.Notify.Length > 0 ? target.Notify.Select(Mentions.Normalize).ToArray() : await CodeOwners(target.Repo, ct)).Take(MaxMentions).ToArray();
+
+    Task NobodyMentioned(Target target, Issue issue, CancellationToken ct) => Alert($"Lock issues on {target.Repo} mention nobody",
+        $"Lock {issue.Url} mentions nobody: `{target.Repo}` has no `notify` list in targets.yml and no `*` rule with owners in CODEOWNERS. "
+        + "Configure `notify` for this target.", ct);
 
     /// <summary>Says how the list was bounded, then lists pushes newest first within <paramref name="budget"/> characters.</summary>
     static string PushTable(string repo, string failingSha, PushListResult result, int budget)

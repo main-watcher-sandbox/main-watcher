@@ -671,6 +671,22 @@ public class WatcherTests
     }
 
     [Fact]
+    public async Task AReplayOfAnInterruptedCreateStillRaisesTheNobodyMentionedAlert()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { StopAfterWrites = 1 };
+        var alerts = new FakeGitHub();
+        var target = new Target { Repo = "owner/repo" };
+        var check = Pending(Sha('b')) with { Id = 2 };
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake, new Alerts(alerts, "owner/watcher")).Report(target, check, ct));
+        Assert.Empty(alerts.Issues);
+        fake.StopAfterWrites = null;
+        await new Reporter(fake, new Alerts(alerts, "owner/watcher")).Report(target, check, ct);
+        Assert.Contains("issues/1 mentions nobody", Assert.Single(alerts.Issues["owner/watcher"]).Body);
+        Assert.Equal(new[] { "create:owner/repo", "complete:failure" }, fake.Order);
+    }
+
+    [Fact]
     public async Task AReplayFindsItsCommentOnALockClosedSinceAndCreatesNothing()
     {
         var ct = TestContext.Current.CancellationToken;
