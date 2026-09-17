@@ -152,7 +152,7 @@ write is skipped when its marker shows it was already made:
 
 | Write | Skipped when |
 | --- | --- |
-| Open a lock | The check's ID is `reported_check` on a lock, or in a `check=` comment marker on it |
+| Open a lock | The check's ID is `reported_check` on a lock, or in a `check=` comment marker on it. If this check opened the open lock and it mentions nobody, the replay still raises that alert |
 | Later-red comment | The open lock has an App comment with `check=<id>` |
 | Body marker update | The open lock's `reported_check` is already this check |
 | Green comment, close | The lock has an App comment with `check=<id>`; a closed lock is not in the open list |

@@ -13,7 +13,9 @@ built (MainWatcher#8). The manual Planner and Reporter are built (MainWatcher#9)
 with passing and failing sandbox checks verified. A red result opens the lock issue and a
 green one closes it (MainWatcher#10); TS-S4 passed again with a real lock. The lock lists
 every push since the last green run and each later failure adds a comment
-(MainWatcher#11); TS-S2 passed.
+(MainWatcher#11); TS-S2 passed. Interrupted reports are replayed from their markers and a
+human close gets an override comment (MainWatcher#12); TS-S14 (a), (b), (d) and TS-S3's
+override part passed.
 
 ## Where things are
 
@@ -44,7 +46,8 @@ every push since the last green run and each later failure adds a comment
   and Reporter logic. `src/MainWatcher.Watcher` runs a manual cycle through `watch.yml`.
 - `targets.yml` configures targets. For dispatch, recovery and caller validation, read
   `docs/watcher.md`. Sandbox evidence is in `sandbox/issue-9-validation.md`,
-  `sandbox/issue-10-validation.md` and `sandbox/issue-11-validation.md`.
+  `sandbox/issue-10-validation.md`, `sandbox/issue-11-validation.md` and
+  `sandbox/issue-12-validation.md`.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
@@ -108,8 +111,9 @@ metrics store (PostgreSQL + Grafana) is deferred.
 1. Run sandbox tests early:
    - TS-S17: the watcher's queue sweep end to end (A-7 itself was confirmed by a spike,
      MainWatcher#6);
-   - TS-S14, TS-S16 and TS-S18: the reporting, cancel and retry lifecycle (ADR-013,
-     ADR-017), which relies on GitHub's job, step and timeout behaviour.
+   - TS-S14 (c), TS-S16 and TS-S18: the reporting, cancel and retry lifecycle (ADR-013,
+     ADR-017), which relies on GitHub's job, step and timeout behaviour. TS-S14 (a), (b)
+     and (d) passed on 2026-09-17 (MainWatcher#12).
 2. Verify team @-mentions from an App notify the team (TS-S10, R-10).
 3. TS-S13, check-run half: suite time, 5 slowest tests and retry flag, once the Reporter
    exists. The job-summary half passed on 2026-09-16 (MainWatcher#8): reporter v1.3.0 shows
@@ -125,7 +129,9 @@ metrics store (PostgreSQL + Grafana) is deferred.
    2. Reusable test workflow + caller template. Built (MainWatcher#7); timings and the
       `report` job built (MainWatcher#8).
    3. `watch.yml` (Planner and Reporter). Built (MainWatcher#9); the lock opens and closes
-      (MainWatcher#10) and lists pushes since the last green run (MainWatcher#11). Automated triggers, replay and lease renewal remain in later tickets.
+      (MainWatcher#10), lists pushes since the last green run (MainWatcher#11), and replays
+      interrupted reports without undoing overrides (MainWatcher#12). Automated triggers and
+      lease renewal remain in later tickets.
    4. Trigger worker.
    5. Onboarding docs.
 
