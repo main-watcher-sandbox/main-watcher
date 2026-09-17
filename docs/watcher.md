@@ -1,6 +1,6 @@
 ---
 owner: platform-team
-reviewed: 2026-09-16
+reviewed: 2026-09-17
 review_by: 2027-03-15
 ---
 
@@ -9,8 +9,9 @@ review_by: 2027-03-15
 Issue #9 supplies one Planner/Reporter cycle in `.github/workflows/watch.yml`.
 It creates and completes `main-watcher` check runs. Issue #10 adds the lock issue:
 a red result opens it and a green result closes it. Issue #11 adds the push list and
-a comment for each later failure. Replay, lease renewal, stale-run cancellation and the
-automatic trigger are separate backlog items.
+a comment for each later failure. Issue #12 replays interrupted reports and records human
+overrides. Lease renewal, stale-run cancellation and the automatic trigger are separate
+backlog items.
 
 Configure the `reporter` environment with `MAIN_WATCHER_APP_ID` (variable) and
 `MAIN_WATCHER_PRIVATE_KEY` (secret). Install that App on each target with
@@ -101,7 +102,7 @@ so a failed issue write leaves the check `in_progress` for the next cycle.
   shows the failing commit, the failing tests (or "failing tests unknown") and the target
   run. The hidden marker holds `first_red`, `lease_until` (now + 4 h, read by the gate),
   `reported_check` and `reported_sha`, plus `last_green` when a green run was found.
-  Lease renewal comes with #19 and replay against closed locks with #12.
+  Lease renewal comes with #19.
   Test output is HTML-encoded, so it cannot mention anyone or add a second marker.
   The body stays well under GitHub's 65,536-character limit whatever the CTRF report holds:
   names, suites and messages are clipped to 200 characters, the failure list stops at
@@ -134,12 +135,57 @@ so a failed issue write leaves the check `in_progress` for the next cycle.
   the job summary, as ADR-003 requires.
 - **Later red.** While an App lock is open, each further failing run adds one comment: the
   failing commit, the failing tests, the target run and a hidden `check=` marker. Comments
-  mention nobody. The body, including its push list, keeps the state from when the lock
-  opened; updating it comes with replay (#12).
-- **Green.** Every open App-authored lock gets a comment naming the green commit and is
-  closed.
+  mention nobody. Then the body's `reported_check` and `reported_sha` are pointed at that
+  run. The rest of the body, including its push list, keeps the state from when the lock
+  opened.
+- **Green.** Every open App-authored lock gets a comment naming the green commit, marked
+  `check=<id> closed=green`, and is closed.
 - **Author.** Only issues by the token's App (`MW_BOT_LOGIN`, `<app-slug>[bot]`) count;
   a hand-made `main-broken` issue is neither reused nor closed, matching the gate.
+
+## Replay and overrides
+
+A Reporter that stops part-way leaves the check run `in_progress`, so the next cycle reports
+it again (ADR-013). Before any write, the Reporter lists App-authored `main-broken` issues:
+every open one, and those in any state updated within `reconcile_lookback` (30 days). Each
+write is skipped when its marker shows it was already made:
+
+| Write | Skipped when |
+| --- | --- |
+| Open a lock | The check's ID is `reported_check` on a lock, or in a `check=` comment marker on it |
+| Later-red comment | The open lock has an App comment with `check=<id>` |
+| Body marker update | The open lock's `reported_check` is already this check |
+| Green comment, close | The lock has an App comment with `check=<id>`; a closed lock is not in the open list |
+
+The check run is completed last, so a replay always ends with it completed.
+
+- **Found on a closed lock.** If this check is already on a lock that has been closed since,
+  by a human or a green run, nothing is created or reopened, and the check run completes as
+  `failure`.
+- **An override covers its commit.** A red result creates no lock when the newest App lock
+  was closed by someone other than the App and its `reported_sha` is the commit under test.
+  A failure on a different commit opens a new lock, which says the previous lock was closed
+  by hand and links to it (ADR-004).
+- **Duplicates.** If two App locks are open, the older is kept. Each newer one gets a comment
+  marked `closed=duplicate duplicate_of=<n>` and is closed with the reason `duplicate`. A
+  lock closed that way never counts as carrying a result, so a lock opened twice by a replay
+  whose issue list lagged still leaves one comment on the kept lock.
+- **Override comment.** After planning, each cycle looks at closed App locks updated within
+  `reconcile_lookback`. A lock with no App comment carrying `closed=` that was not closed by
+  the App (GitHub's `closed_by`) gets one comment: who closed it, in plain text, that the
+  merge queue is open again while `main` is still red at `reported_sha`, and that the watcher
+  opens a new lock only for a failure on a different commit. It is marked `closed=override`,
+  so it is posted once. It runs after planning, so a lock whose comments cannot be written
+  (for example, a locked conversation) never stops testing; the failure still fails the
+  cycle. Merge reconciliation of closed locks (ADR-015) remains #20.
+
+### Sandbox fault injection
+
+`MW_SANDBOX_EXIT_AFTER`, from the watcher repo's variable of that name, makes the cycle exit
+with code 3 straight after the named Reporter write: `create`, `comment`, `update`, `close`
+or `override`, or a comma-separated list. A replay skips the write that was made, so it
+does not stop at the same point again. Set it only in the sandbox replica, and delete it
+after the scenario.
 
 ## Alerts
 
@@ -159,4 +205,5 @@ links the passing and failing checks, their Planner and Reporter cycles, and
 the target restoration evidence. The [issue #10 validation record](../sandbox/issue-10-validation.md)
 covers a real lock opening and closing, and TS-S4 with that lock. The
 [issue #11 validation record](../sandbox/issue-11-validation.md) covers TS-S2: the push list
-and the later-failure comment.
+and the later-failure comment. The [issue #12 validation record](../sandbox/issue-12-validation.md)
+covers TS-S14 (a), (b) and (d) and the override part of TS-S3.

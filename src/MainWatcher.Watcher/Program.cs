@@ -26,8 +26,16 @@ try
     var appId = long.Parse(Required("MW_APP_ID"));
     var github = new GitHubGateway(http, appId, log: Console.WriteLine);
     var planner = new Planner(github);
+    // Sandbox fault injection (TS-S14): exit right after the named Reporter write, so the next cycle replays the report.
+    var exitAfter = Environment.GetEnvironmentVariable("MW_SANDBOX_EXIT_AFTER") ?? "";
     var reporter = new Reporter(github, new Alerts(new GitHubGateway(alertHttp, appId), Required("MW_ALERT_REPO")),
-        Environment.GetEnvironmentVariable("MW_BOT_LOGIN") is { Length: > 0 } bot ? bot : Reporter.DefaultBotLogin);
+        Environment.GetEnvironmentVariable("MW_BOT_LOGIN") is { Length: > 0 } bot ? bot : Reporter.DefaultBotLogin,
+        afterWrite: write =>
+        {
+            if (!exitAfter.Split(',', StringSplitOptions.TrimEntries).Contains(write)) return;
+            Console.WriteLine($"MW_SANDBOX_EXIT_AFTER: exiting after the Reporter's {write} write.");
+            Environment.Exit(3);
+        });
     using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
     var recoveryFailed = false;
     foreach (var pending in (await github.Checks(repo, timeout.Token)).Where(c => c.Status != "completed"))
@@ -56,6 +64,9 @@ try
     var planned = await planner.Plan(target, Environment.GetEnvironmentVariable("MW_FORCE") == "true", timeout.Token);
     Console.WriteLine(planned is null ? "No eligible head." : string.IsNullOrEmpty(planned.ExternalId)
         ? $"Check {planned.Id} awaits dispatch recovery." : $"Started check {planned.Id}, target run {planned.ExternalId}.");
+    // After planning, so a lock whose comments cannot be written (for example, a locked conversation) never stops testing.
+    var overrides = await reporter.NoteOverrides(target, timeout.Token);
+    if (overrides > 0) Console.WriteLine($"Posted {overrides} override comment(s) on locks closed by hand.");
     return 0;
 }
 catch (Exception e)
