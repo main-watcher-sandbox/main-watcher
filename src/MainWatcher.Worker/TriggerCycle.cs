@@ -6,6 +6,9 @@ namespace MainWatcher.Worker;
 /// <summary>What one cycle did.</summary>
 public sealed record CycleResult(int Targets, int Dispatched, int Errors);
 
+/// <summary>One cycle's counts, for <c>/healthz</c> and the log, and what it saw, for the health alerts.</summary>
+public sealed record CycleReport(CycleResult Result, CycleObservations Observations);
+
 /// <summary>
 /// One trigger-worker cycle (ADR-010): read <c>targets.yml</c>, find each enabled target's work, and start <c>watch.yml</c> for it
 /// through <c>mw-doorbell</c>, at most once per target.
@@ -21,36 +24,51 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
 
     TargetConfiguration? config;
 
-    public async Task<CycleResult> Run(CancellationToken ct)
+    public async Task<CycleReport> Run(CancellationToken ct)
     {
         var targets = (await Targets(ct)).Targets.Where(t => t.Enabled).ToArray();
-        var active = await ActiveCycles(ct);
+        var cycles = await ActiveCycles(ct);
+        var problems = new List<string>();
+        var pending = new List<PendingReport>();
+        var examined = new List<string>();
         int dispatched = 0, errors = 0;
         foreach (var target in targets)
         {
             try
             {
-                if (active.Contains(target.Repo))
+                if (cycles.Active.Contains(target.Repo))
                 {
                     log.LogDebug("{Target}: a watch.yml run is already queued or running.", target.Repo);
                     continue;
                 }
-                if (await finder.Find(target, observerFor(target.Repo), ct) is not { } reason) continue;
+                var found = await finder.Find(target, observerFor(target.Repo), ct);
+                examined.Add(target.Repo);
+                if (found is not { } work) continue;
+                // A report the Reporter owes is timed from the test job, so a Reporter that keeps failing becomes visible (ADR-013).
+                if (work.Check is { } check) pending.Add(new(target.Repo, check, work.Reason, work.ReportableSince));
                 // Never retried: a lost response may still have started the run, and the next cycle looks again.
                 await doorbell.DispatchWorkflow(watcherRepo, WorkerSettings.WatchWorkflow,
                     new Dictionary<string, string> { ["target"] = target.Repo }, ct);
                 dispatched++;
-                log.LogInformation("{Target}: started {Workflow} because {Reason}.", target.Repo, WorkerSettings.WatchWorkflow, reason);
+                log.LogInformation("{Target}: started {Workflow} because {Reason}.", target.Repo, WorkerSettings.WatchWorkflow, work.Reason);
             }
             catch (Exception e) when (!ct.IsCancellationRequested)
             {
                 errors++;
+                problems.Add($"{target.Repo}: {e.Message}");
                 // A GitHub error needs no stack trace; anything else does.
                 if (e is HttpRequestException) log.LogError("{Target}: cycle failed: {Message}", target.Repo, e.Message);
                 else log.LogError(e, "{Target}: cycle failed: {Message}", target.Repo, e.Message);
             }
         }
-        return new(targets.Length, dispatched, errors);
+        return new(new(targets.Length, dispatched, errors), new()
+        {
+            Problems = problems,
+            Pending = pending,
+            Examined = examined,
+            WatchRunStarted = dispatched > 0 || cycles.Active.Count > 0,
+            WatchRunCompleted = cycles.Completed
+        });
     }
 
     async Task<TargetConfiguration> Targets(CancellationToken ct)
@@ -70,24 +88,27 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
     }
 
     /// <summary>
-    /// Targets with a <c>watch.yml</c> run still queued or running, from its <c>run-name</c>. Such a run acts on the current
-    /// state, so another dispatch would only queue a cycle with nothing left to do. A failed read skips nothing: duplicates are harmless.
+    /// Targets with a <c>watch.yml</c> run still queued or running, from its <c>run-name</c>, and whether any run in the window
+    /// has completed. Such a run acts on the current state, so another dispatch would only queue a cycle with nothing left to do.
+    /// A failed read skips nothing, and says nothing about completions: duplicates are harmless, and a silent alert is not.
     /// </summary>
-    async Task<HashSet<string>> ActiveCycles(CancellationToken ct)
+    async Task<(HashSet<string> Active, bool Completed)> ActiveCycles(CancellationToken ct)
     {
         var active = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
             var since = (clock ?? (() => DateTimeOffset.UtcNow))() - ActiveRunWindow;
-            foreach (var run in await watcher.Runs(watcherRepo, WorkerSettings.WatchWorkflow, since, ct))
+            var runs = await watcher.Runs(watcherRepo, WorkerSettings.WatchWorkflow, since, ct);
+            foreach (var run in runs)
                 if (run.Status != "completed" && run.Title.StartsWith(RunNamePrefix, StringComparison.Ordinal))
                     active.Add(run.Title[RunNamePrefix.Length..]);
+            return (active, runs.Any(r => r.Status == "completed"));
         }
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
             log.LogWarning("Could not read {Workflow} runs, so no target is skipped: {Message}", WorkerSettings.WatchWorkflow, e.Message);
+            return (active, false);
         }
-        return active;
     }
 
     /// <summary><c>watch.yml</c>'s <c>run-name</c> is this prefix followed by the target.</summary>

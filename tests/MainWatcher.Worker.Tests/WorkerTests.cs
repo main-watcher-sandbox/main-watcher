@@ -15,8 +15,8 @@ public class WorkerTests
     static CheckRun Done(string conclusion = "success", string sha = "head") =>
         new(1, sha, "completed", conclusion, Now.AddHours(-2), Now.AddHours(-1), "40");
     static WorkflowJob Job(string name, string status) => new(name, status, []);
-    static WorkflowJob Finished(string conclusion = "failure") => new("tests / main-watcher", "completed",
-        [new("main-watcher-test", conclusion), new("main-watcher-tests-finished", "success")]);
+    static WorkflowJob Finished(string conclusion = "failure", DateTimeOffset? completedAt = null) => new("tests / main-watcher", "completed",
+        [new("main-watcher-test", conclusion), new("main-watcher-tests-finished", "success")], completedAt);
 
     // TS-U13 and TS-U3, TS-U5 (a): the worker flags a head exactly when the shared rule says it is eligible. It never forces.
     [Theory]
@@ -38,7 +38,8 @@ public class WorkerTests
     {
         var target = new FakeGitHub { CheckList = [Done(), Pending()] };
         target.JobsByRun[41] = [Job("tests / report", otherJob), Finished(), Job("tests / lint", otherJob)];
-        Assert.Contains("main-watcher job of target run 41 has completed", await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        Assert.Contains("main-watcher job of target run 41 has completed", work!.Reason);
     }
 
     [Theory]
@@ -56,7 +57,7 @@ public class WorkerTests
     {
         var target = new FakeGitHub { CheckList = [Pending()] };
         target.JobsByRun[41] = null;
-        Assert.Contains("was deleted", await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+        Assert.Contains("was deleted", (await new WorkFinder(() => Now).Find(Watched(), target, Ct))!.Reason);
         // A completed run with no main-watcher job: the Reporter records the broken contract.
         target.JobsByRun[41] = [];
         Assert.NotNull(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
@@ -134,7 +135,45 @@ public class WorkerTests
         var result = await setup.Cycle.Run(Ct);
 
         Assert.Equal(["owner/new-head", "owner/two-reports"], setup.Dispatched);
-        Assert.Equal(new CycleResult(4, 2, 1), result);
+        Assert.Equal(new CycleResult(4, 2, 1), result.Result);
+    }
+
+    // ADR-013 point 6: a report the Reporter owes is timed from its test job, and the check run is pending, never stale.
+    [Fact]
+    public async Task ACycleReportsWhatEachOwedReportHasBeenWaitingFor()
+    {
+        var setup = new Setup("targets:\n  - repo: owner/owed\n  - repo: owner/deleted\n  - repo: owner/idle");
+        var owed = new FakeGitHub { CheckList = [Pending(runId: "41", id: 7)] };
+        owed.JobsByRun[41] = [Finished(completedAt: Now.AddMinutes(-20))];
+        setup.Targets["owner/owed"] = owed;
+        var deleted = new FakeGitHub { CheckList = [Pending(runId: "42", id: 8)] };
+        deleted.JobsByRun[42] = null;
+        setup.Targets["owner/deleted"] = deleted;
+        setup.Targets["owner/idle"] = new() { CheckList = [Done()] };
+
+        var seen = (await setup.Cycle.Run(Ct)).Observations;
+
+        Assert.Equal(["owner/owed", "owner/deleted", "owner/idle"], seen.Examined);
+        Assert.Equal([new("owner/owed", 7, "check 7: the main-watcher job of target run 41 has completed", Now.AddMinutes(-20)),
+            new PendingReport("owner/deleted", 8, "check 8: target run 42 was deleted", default)], seen.Pending);
+        Assert.True(seen.WatchRunStarted);
+        Assert.False(seen.WatchRunCompleted);
+    }
+
+    [Fact]
+    public async Task ACycleSaysWhetherAWatchRunHasCompleted()
+    {
+        var setup = new Setup("targets:\n  - repo: owner/repo");
+        setup.Targets["owner/repo"] = new() { CheckList = [Done()] };
+        setup.Watcher.RunList = [new(1, "watch owner/other", Now, "completed")];
+        var seen = (await setup.Cycle.Run(Ct)).Observations;
+        Assert.True(seen.WatchRunCompleted);
+        Assert.False(seen.WatchRunStarted);
+
+        // An unreadable run list says nothing either way, so the "no run completed" clock does not move.
+        setup.Watcher.RunsError = true;
+        seen = (await setup.Cycle.Run(Ct)).Observations;
+        Assert.False(seen.WatchRunCompleted);
     }
 
     [Fact]

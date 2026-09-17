@@ -5,7 +5,11 @@ public sealed record CheckRun(long Id, string Sha, string Status, string? Conclu
     DateTimeOffset StartedAt, DateTimeOffset? CompletedAt, string? ExternalId, string? Title = null);
 public sealed record WorkflowRun(long Id, string Title, DateTimeOffset CreatedAt, string Status);
 public sealed record JobStep(string Name, string? Conclusion);
-public sealed record WorkflowJob(string Name, string Status, IReadOnlyList<JobStep> Steps);
+/// <summary>
+/// A job of a workflow run. <see cref="CompletedAt"/> is null while it is queued or running, and is how long a report has been
+/// pending once the check run's own <c>main-watcher</c> job has finished (ADR-013).
+/// </summary>
+public sealed record WorkflowJob(string Name, string Status, IReadOnlyList<JobStep> Steps, DateTimeOffset? CompletedAt = null);
 /// <summary>
 /// An issue. <see cref="StateReason"/> is GitHub's <c>state_reason</c>, such as <c>duplicate</c>; <see cref="UpdatedAt"/> is null
 /// when unknown. <see cref="Id"/> is the database ID, which <c>duplicate_issue_id</c> takes, not the number.

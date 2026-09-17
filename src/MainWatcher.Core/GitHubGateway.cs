@@ -216,7 +216,8 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         {
             var jobs = await Pages($"repos/{repo}/actions/runs/{runId}/jobs?filter=latest", "jobs", ct);
             var parsed = jobs.Select(j => new WorkflowJob(Text(j, "name")!, Text(j, "status")!,
-                j.TryGetProperty("steps", out var steps) ? steps.EnumerateArray().Select(s => new JobStep(Text(s, "name")!, Text(s, "conclusion"))).ToArray() : [])).ToArray();
+                j.TryGetProperty("steps", out var steps) ? steps.EnumerateArray().Select(s => new JobStep(Text(s, "name")!, Text(s, "conclusion"))).ToArray() : [],
+                Date(j, "completed_at"))).ToArray();
             if (!parsed.Any(j => Outcomes.IsTestJob(j.Name)))
             {
                 var run = await Send(HttpMethod.Get, $"repos/{repo}/actions/runs/{runId}", null, ct);
