@@ -62,6 +62,12 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
                 if (reports.Failures.Count > 0) summary += "\n\nWarning: CTRF reports failures despite a successful test step.";
             }
         }
+        else
+        {
+            // Infrastructure and contract errors never lock the queue (CQ-5): alert, then complete as neutral.
+            await ReportNeutral(target, check, outcome, runUrl, ct);
+            summary += "\n\nNo lock was opened. The head is tested again after `poll_interval`.";
+        }
         // GitHub caps check output at 65535 bytes. Conservatively bound UTF-16 length.
         if (summary.Length > 15000) summary = summary[..15000] + "\n\nOutput truncated; see target run.";
         await github.Complete(repo, check.Id, outcome.Conclusion, summary, ct);
@@ -100,6 +106,37 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         else if (Field(open.Body, "first_red") == check.Sha && (await MentionList(target, ct)).Count == 0)
             await NobodyMentioned(target, open, ct);
         return $"\n\nLock issue: {open.Url}\n\n" + failures;
+    }
+
+    /// <summary>
+    /// Raises the <c>watcher-infra</c> alert for a neutral outcome (ADR-013), and "twice in a row" when the target's previous
+    /// completed check run was also neutral after an infrastructure error. Each alert names the check in a hidden marker,
+    /// so a replay of this report does not repeat it.
+    /// </summary>
+    async Task ReportNeutral(Target target, CheckRun check, TestOutcome outcome, string runUrl, CancellationToken ct)
+    {
+        var repo = target.Repo;
+        var key = $"<!-- main-watcher check={check.Id} -->";
+        var what = $"Check run {check.Id} on {Commit(repo, check.Sha)} in `{repo}` completed as `neutral` and opened no lock "
+            + $"([target run]({runUrl})).\n\n{outcome.Description}\n\n";
+        await Alert(Outcomes.AlertTitle(outcome.Kind, repo)!, what + outcome.Kind switch
+        {
+            OutcomeKind.Unknown => "The target run no longer exists, so its steps cannot be read.",
+            OutcomeKind.ContractBroken => $"The Reporter looks for the job `main-watcher` and the steps `{Outcomes.TestStep}` and `{Outcomes.MarkerStep}`, "
+                + "each exactly once. Check the reusable workflow tag this target's `main-watcher-tests.yml` uses.",
+            _ => "Setup failed or the tests did not finish: for example a restore failure, the test deadline, a timeout, a cancellation or a lost runner."
+        } + " The head is tested again after `poll_interval`.", ct, key);
+        if (outcome.Kind != OutcomeKind.InfrastructureError) return;
+        const string streak = "Infrastructure errors twice in a row";
+        try
+        {
+            var previous = (await github.Checks(repo, ct))
+                .Where(c => c.Id != check.Id && c.Status == "completed" && c.StartedAt <= check.StartedAt).MaxBy(c => c.StartedAt);
+            if (previous?.Conclusion != "neutral") return;
+            await Alert($"{streak} on {repo}", what + $"The previous check run, {previous.Id} on {Commit(repo, previous.Sha)}, was also neutral. "
+                + "A lasting infrastructure problem, or a restore failure caused by the code, is keeping `main` untested.", ct, key);
+        }
+        catch (Exception e) when (!ct.IsCancellationRequested) { AlertFailures.Add($"{streak} on {repo}: {e.Message}"); }
     }
 
     /// <summary>
@@ -323,10 +360,10 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         return [];
     }
 
-    async Task Alert(string title, string body, CancellationToken ct)
+    async Task Alert(string title, string body, CancellationToken ct, string? key = null)
     {
         if (alerts is null) { AlertFailures.Add($"{title}: no alert sink configured"); return; }
-        try { await alerts.Raise(title, body, ct); }
+        try { await alerts.Raise(title, body, ct, key); }
         catch (Exception e) when (!ct.IsCancellationRequested) { AlertFailures.Add($"{title}: {e.Message}"); }
     }
 
