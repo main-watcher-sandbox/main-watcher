@@ -18,9 +18,8 @@ human close gets an override comment (MainWatcher#12); TS-S14 (a), (b), (d) and 
 override part passed. Infrastructure and contract errors give a neutral result with a
 `watcher-infra` alert and never lock, with a further alert after two in a row
 (MainWatcher#13); TS-S16 (a) to (f) passed. The trigger worker starts `watch.yml` when a
-target has work (MainWatcher#14): its unit tests and container smoke test pass, and it runs
-in the local `main-watcher-sandbox` namespace; TS-S1 and TS-S2 end to end still need the
-real App keys in the cluster Secret.
+target has work (MainWatcher#14); deployed to the sandbox namespace, it drove TS-S1 and
+TS-S2 end to end with no hand-run cycle.
 
 ## Where things are
 
@@ -117,8 +116,6 @@ metrics store (PostgreSQL + Grafana) is deferred.
 ## Open items before building
 
 1. Run sandbox tests early:
-   - TS-S1 and TS-S2 with the deployed worker, once the sandbox Secret holds the real
-     `mw-observer` and `mw-doorbell` keys;
    - TS-S17: the watcher's queue sweep end to end (A-7 itself was confirmed by a spike,
      MainWatcher#6);
    - TS-S14 (c), TS-S16 (g) and (h), and TS-S18: the reporting, cancel and retry lifecycle

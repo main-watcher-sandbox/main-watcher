@@ -159,5 +159,6 @@ previous image tag.
 
 `dotnet test` covers the worker: `tests/MainWatcher.Worker.Tests` holds the work rules
 (TS-U5 (a) and (b), TS-U3), the shared eligibility fixtures (TS-U13), the cycle's
-dispatching, configuration validation and the health rule. The sandbox record for the
-end-to-end scenarios is [issue-14-validation.md](../sandbox/issue-14-validation.md).
+dispatching, configuration validation and the health rule. TS-S1 and TS-S2 were driven by
+the deployed worker in the sandbox; the record is
+[issue-14-validation.md](../sandbox/issue-14-validation.md).
