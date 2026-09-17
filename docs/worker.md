@@ -11,10 +11,10 @@ target has work (ADR-010). It is a `BackgroundService` beside a single HTTP endp
 `/healthz`, for the Kubernetes liveness probe. It makes outbound HTTPS calls only, and
 needs no inbound Service or Ingress.
 
-Issue #14 covers the cycle described here. The health alerts (#15), the hourly backup
-sweep with "worker appears down" (#16), stale-run cancellation (#18), lease renewal (#19),
-merge reconciliation (#20) and the queue sweep (#21) are separate backlog items; a target
-whose only work is one of those is not flagged yet.
+Issues #14 and #15 cover the cycle and the alerts described here. The hourly backup sweep
+with "worker appears down" (#16), stale-run cancellation (#18), lease renewal (#19), merge
+reconciliation (#20) and the queue sweep (#21) are separate backlog items; a target whose
+only work is one of those is not flagged yet.
 
 ## A cycle
 
@@ -104,11 +104,55 @@ it does fix a hung worker. A cycle running longer than `CycleTimeout` is cancell
 stuck request cannot stop the loop. Its body also carries the last cycle's time and counts.
 
 A cycle that keeps failing on GitHub therefore leaves the pod `Running`: the credential
-check catches a credential that was wrong from the start, but a key revoked while the worker
-is running only shows in the logs until the worker's own alerts (no `watch.yml` run in 2 h,
-reporting pending, repeated errors, token failures) arrive with #15.
+check catches a credential that was wrong from the start, and a key revoked while the worker
+is running is caught by the alerts below, not by the probe.
 
 The endpoint exists for the liveness probe; nothing exposes it outside the cluster.
+
+## Alerts
+
+After each cycle the worker judges its own health and raises `watcher-infra` issues in the
+watcher repo through `mw-doorbell`, which holds Issues: write there (ADR-012). The
+conditions are:
+
+| Condition | Alert title |
+| --- | --- |
+| Three cycles in a row failed: the cycle itself threw, or any target errored | The trigger worker's cycles keep failing |
+| `watch.yml` runs are being started, and none has completed for 2 h | No `watch.yml` run has completed in 2 hours |
+| GitHub answered 401, 403 or 404 to an installation-token request | A GitHub App credential is being refused |
+| A response left less than 20% of a rate-limit budget (R-13) | GitHub rate limit below 20% |
+| A report has been owed for more than 15 min (ADR-013 point 6) | Reporting pending on `owner/repo` |
+
+**De-duplication (TS-U7).** Each condition is raised once when it starts to hold, and at
+most once an hour while it goes on holding. An open `watcher-infra` issue with the same
+title gets a comment rather than a second issue, so a lasting fault is one thread. A
+condition that clears is forgotten, so its next occurrence alerts at once; the issue stays
+open for someone to read and close.
+
+No alert is a required write. One that fails is logged, and the condition, which still
+holds, is judged again on the next cycle: the alert channel is GitHub, which is often what
+is failing. The whole review has its own 2-minute budget, so it cannot delay a cycle.
+
+An idle watcher raises nothing: with no `watch.yml` run started, completing none is exactly
+right, however long it lasts. The "no run completed" clock starts at start-up, so a restart
+gives the watcher 2 h before the alert can fire.
+
+**Reporting pending.** A check run that is still `in_progress` while its target run's
+`main-watcher` job has completed is a report the Reporter owes (ADR-013 point 3). The
+worker already flags that as work; it now also times it, from the job's own `completed_at`,
+so the clock survives a worker restart. A run that no longer exists has no job to date it,
+so the first cycle that saw the report owed starts the clock instead. Such a check run is
+pending, never stale: the deadlines of ADR-013 point 5 apply to a job that has **not**
+completed, and come with #18.
+
+A target skipped because its own `watch.yml` run is queued or running keeps whatever the
+last cycle found: only a cycle that looked at a target can conclude that it owes nothing.
+That matters while a Reporter keeps failing, because each cycle starts a new run for it.
+
+**Rate limit.** Every GitHub response the worker receives is read for
+`x-ratelimit-remaining` and `x-ratelimit-limit`, across both Apps and every installation,
+and the lowest budget of the cycle is the one judged. A response without those headers says
+nothing, so it neither raises nor clears the condition.
 
 ## Container and deployment
 
@@ -163,6 +207,8 @@ previous image tag.
 
 `dotnet test` covers the worker: `tests/MainWatcher.Worker.Tests` holds the work rules
 (TS-U5 (a) and (b), TS-U3), the shared eligibility fixtures (TS-U13), the cycle's
-dispatching, configuration validation and the health rule. TS-S1 and TS-S2 were driven by
-the deployed worker in the sandbox; the record is
-[issue-14-validation.md](../sandbox/issue-14-validation.md).
+dispatching, configuration validation, the liveness rule, and each alert condition with its
+de-duplication (TS-U7). TS-S1 and TS-S2 were driven by the deployed worker in the sandbox
+([issue-14-validation.md](../sandbox/issue-14-validation.md)), and TS-S14 (c) — the
+"reporting pending" alert with the Reporter's issue writes failing for 20 minutes — in
+[issue-15-validation.md](../sandbox/issue-15-validation.md).
