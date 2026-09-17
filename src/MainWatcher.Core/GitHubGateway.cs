@@ -12,6 +12,18 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     public const string Workflow = "main-watcher-tests.yml";
     readonly Dictionary<string, (string Head, List<CheckRun> Checks)> snapshots = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// An installation token for the App this gateway authenticates as (a JWT client), limited to <paramref name="repo"/>.
+    /// </summary>
+    public async Task<InstallationToken> InstallationToken(string repo, CancellationToken ct)
+    {
+        var installation = (await Send(HttpMethod.Get, $"repos/{repo}/installation", null, ct)).GetProperty("id").GetInt64();
+        var json = await Send(HttpMethod.Post, $"app/installations/{installation}/access_tokens",
+            new { repositories = new[] { repo.Split('/')[1] } }, ct);
+        return new(json.GetProperty("token").GetString()!, Date(json, "expires_at")
+            ?? throw new InvalidDataException("GitHub returned an installation token without expires_at."));
+    }
+
     public async Task ValidateTarget(Target target, CancellationToken ct)
     {
         var file = await Send(HttpMethod.Get, $"repos/{target.Repo}/contents/.github/workflows/{Workflow}?ref=main", null, ct);
@@ -181,14 +193,18 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         catch (TaskCanceledException e) when (!ct.IsCancellationRequested) { return NoRun(repo, checkId, $"timed out ({e.Message})"); }
     }
 
+    public async Task DispatchWorkflow(string repo, string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct) =>
+        // Never retried: a lost response may still have started the workflow.
+        await Send(HttpMethod.Post, $"repos/{repo}/actions/workflows/{workflow}/dispatches", new { @ref = "main", inputs }, ct);
+
     long? NoRun(string repo, long checkId, string reason)
     {
         log?.Invoke($"Check {checkId}: dispatch of {Workflow} in {repo} returned no run: {reason}.");
         return null;
     }
 
-    public async Task<IReadOnlyList<WorkflowRun>> Runs(string repo, DateTimeOffset since, CancellationToken ct) =>
-        (await Pages($"repos/{repo}/actions/workflows/{Workflow}/runs?event=workflow_dispatch&created={Uri.EscapeDataString(">=" + since.ToString("O"))}", "workflow_runs", ct))
+    public async Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct) =>
+        (await Pages($"repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&created={Uri.EscapeDataString(">=" + since.ToString("O"))}", "workflow_runs", ct))
         .Select(r => new WorkflowRun(r.GetProperty("id").GetInt64(), Text(r, "display_title")!, Date(r, "created_at")!.Value, Text(r, "status")!)).ToArray();
 
     public async Task Link(string repo, long checkId, long runId, CancellationToken ct) =>

@@ -1,5 +1,7 @@
-# One Planner/Reporter cycle. Dispatch again after the target job finishes to report it.
+# One Planner/Reporter cycle. The trigger worker dispatches it when a target has work (ADR-010).
 name: watch
+# The trigger worker reads the target from the run name, to skip a target whose cycle is already queued or running.
+run-name: watch ${{ inputs.target }}
 on:
   workflow_dispatch:
     inputs:

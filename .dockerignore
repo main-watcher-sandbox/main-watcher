@@ -1,0 +1,9 @@
+# Only the worker image is built from this context; its Dockerfile copies what it needs.
+**/bin/
+**/obj/
+**/TestResults/
+.git/
+.claude/
+docs/
+sandbox/
+tests/

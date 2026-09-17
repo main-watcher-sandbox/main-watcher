@@ -1,0 +1,123 @@
+{
+  "now": "2026-09-16T19:00:00Z",
+  "head": "head",
+  "poll_interval_minutes": 15,
+  "cases": [
+    { "name": "no check run anywhere", "checks": [], "eligible": true },
+    {
+      "name": "no check run on the head, last start longer ago than poll_interval",
+      "checks": [{ "sha": "old", "status": "completed", "conclusion": "success", "started_at": "2026-09-16T18:44:00Z", "completed_at": "2026-09-16T18:50:00Z" }],
+      "eligible": true
+    },
+    {
+      "name": "no check run on the head, last start exactly poll_interval ago",
+      "checks": [{ "sha": "old", "status": "completed", "conclusion": "failure", "started_at": "2026-09-16T18:45:00Z", "completed_at": "2026-09-16T18:50:00Z" }],
+      "eligible": true
+    },
+    {
+      "name": "no check run on the head, last start within poll_interval",
+      "checks": [{ "sha": "old", "status": "completed", "conclusion": "success", "started_at": "2026-09-16T18:46:00Z", "completed_at": "2026-09-16T18:50:00Z" }],
+      "eligible": false
+    },
+    {
+      "name": "no check run on the head while an older commit's check run is in progress",
+      "checks": [{ "sha": "old", "status": "in_progress", "started_at": "2026-09-16T18:00:00Z", "external_id": "41" }],
+      "eligible": false
+    },
+    {
+      "name": "head in progress",
+      "checks": [{ "sha": "head", "status": "in_progress", "started_at": "2026-09-16T18:00:00Z", "external_id": "41" }],
+      "eligible": false
+    },
+    {
+      "name": "head succeeded",
+      "checks": [{ "sha": "head", "status": "completed", "conclusion": "success", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" }],
+      "eligible": false
+    },
+    {
+      "name": "head failed",
+      "checks": [{ "sha": "head", "status": "completed", "conclusion": "failure", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" }],
+      "eligible": false
+    },
+    {
+      "name": "head neutral once, completed longer ago than poll_interval",
+      "checks": [{ "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:40:00Z" }],
+      "eligible": true
+    },
+    {
+      "name": "head neutral, started long ago but completed within poll_interval",
+      "checks": [{ "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:50:00Z" }],
+      "eligible": false
+    },
+    {
+      "name": "head neutral twice",
+      "checks": [
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T17:00:00Z", "completed_at": "2026-09-16T17:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" }
+      ],
+      "eligible": true
+    },
+    {
+      "name": "head neutral three times reaches the cap",
+      "checks": [
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T16:00:00Z", "completed_at": "2026-09-16T16:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T17:00:00Z", "completed_at": "2026-09-16T17:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" }
+      ],
+      "eligible": false
+    },
+    {
+      "name": "force ignores the cap",
+      "force": true,
+      "checks": [
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T16:00:00Z", "completed_at": "2026-09-16T16:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T17:00:00Z", "completed_at": "2026-09-16T17:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" }
+      ],
+      "eligible": true
+    },
+    {
+      "name": "force does not ignore a check run in progress",
+      "force": true,
+      "checks": [{ "sha": "head", "status": "in_progress", "started_at": "2026-09-16T18:00:00Z", "external_id": "41" }],
+      "eligible": false
+    },
+    {
+      "name": "force does not ignore poll_interval",
+      "force": true,
+      "checks": [{ "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:55:00Z" }],
+      "eligible": false
+    },
+    {
+      "name": "force does not retest a success",
+      "force": true,
+      "checks": [{ "sha": "head", "status": "completed", "conclusion": "success", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" }],
+      "eligible": false
+    },
+    {
+      "name": "the newest check run decides: neutral after an older failure",
+      "checks": [
+        { "sha": "head", "status": "completed", "conclusion": "failure", "started_at": "2026-09-16T17:00:00Z", "completed_at": "2026-09-16T17:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" }
+      ],
+      "eligible": true
+    },
+    {
+      "name": "the newest check run decides: success after an older neutral",
+      "checks": [
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T17:00:00Z", "completed_at": "2026-09-16T17:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "success", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" }
+      ],
+      "eligible": false
+    },
+    {
+      "name": "neutral results on other commits do not count towards the cap",
+      "checks": [
+        { "sha": "old", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T16:00:00Z", "completed_at": "2026-09-16T16:10:00Z" },
+        { "sha": "old", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T17:00:00Z", "completed_at": "2026-09-16T17:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" }
+      ],
+      "eligible": true
+    }
+  ]
+}

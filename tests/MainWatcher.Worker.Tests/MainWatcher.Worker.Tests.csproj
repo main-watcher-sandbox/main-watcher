@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <Using Include="Xunit" />
+    <ProjectReference Include="../../src/MainWatcher.Worker/MainWatcher.Worker.csproj" />
+    <!-- TS-U13: the eligibility fixtures and their loader are shared with the Planner's tests, not copied. -->
+    <Compile Include="../MainWatcher.Core.Tests/EligibilityFixtures.cs" Link="EligibilityFixtures.cs" />
+    <None Include="../MainWatcher.Core.Tests/Fixtures/eligibility.json" Link="Fixtures/eligibility.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

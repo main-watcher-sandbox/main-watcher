@@ -1,0 +1,81 @@
+# The trigger worker (ADR-010): one replica, outbound HTTPS only, no Service or Ingress.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trigger-worker
+  labels:
+    app.kubernetes.io/name: trigger-worker
+    app.kubernetes.io/part-of: main-watcher
+spec:
+  # More replicas would need leader election (ADR-010). Recreate never runs two during a rollout.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trigger-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: trigger-worker
+        app.kubernetes.io/part-of: main-watcher
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # The aspnet image's app user. fsGroup lets it read the keys without making them world-readable.
+        runAsUser: 1654
+        runAsGroup: 1654
+        fsGroup: 1654
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: trigger-worker
+          image: main-watcher-worker
+          envFrom:
+            - configMapRef:
+                name: trigger-worker
+          env:
+            - name: MW_OBSERVER_KEY_FILE
+              value: /keys/observer.pem
+            - name: MW_DOORBELL_KEY_FILE
+              value: /keys/doorbell.pem
+          ports:
+            - name: health
+              containerPort: 8080
+          # A hung worker is restarted. /healthz fails once no cycle has finished for 5 min + 2 check periods.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            # [assumption] ARCH-001 §10: about 50m CPU and 128Mi memory.
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: keys
+              mountPath: /keys
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # The mw-observer and mw-doorbell private keys, created outside these manifests (docs/worker.md).
+        - name: keys
+          secret:
+            secretName: trigger-worker-keys
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}

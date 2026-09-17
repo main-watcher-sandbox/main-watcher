@@ -37,7 +37,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         if (matches.Length == 1) return await Link(repo, check, matches[0].Id, ct);
         // A successful empty lookup is required: API errors and ambiguous matches never
         // release the check, since there may still be an active target run.
-        if (matches.Length == 0 && (clock ?? (() => DateTimeOffset.UtcNow))() - check.StartedAt >= TimeSpan.FromMinutes(30))
+        if (matches.Length == 0 && (clock ?? (() => DateTimeOffset.UtcNow))() - check.StartedAt >= DispatchWindow)
         {
             await github.Complete(repo, check.Id, "neutral", Outcomes.Title(OutcomeKind.Unknown), "Dispatch produced no discoverable target run within 30 minutes; retry after poll_interval.", ct);
             return check with { Status = "completed", Conclusion = "neutral" };
@@ -60,7 +60,12 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
     }
 
     async Task<WorkflowRun[]> MatchingRuns(string repo, CheckRun check, CancellationToken ct) =>
-        (await github.Runs(repo, check.StartedAt.AddSeconds(-2), ct))
-            .Where(r => r.Title == $"main-watcher-tests {check.Sha}"
-                && r.CreatedAt >= check.StartedAt.AddSeconds(-2)).ToArray();
+        RunsFor(check, await github.Runs(repo, GitHubGateway.Workflow, check.StartedAt.AddSeconds(-2), ct));
+
+    /// <summary>Target runs that could belong to an unlinked check; the trigger worker reads them the same way.</summary>
+    public static WorkflowRun[] RunsFor(CheckRun check, IEnumerable<WorkflowRun> runs) =>
+        runs.Where(r => r.Title == $"main-watcher-tests {check.Sha}" && r.CreatedAt >= check.StartedAt.AddSeconds(-2)).ToArray();
+
+    /// <summary>How long an unlinked check waits for its target run before <see cref="Recover"/> completes it as neutral.</summary>
+    public static readonly TimeSpan DispatchWindow = TimeSpan.FromMinutes(30);
 }

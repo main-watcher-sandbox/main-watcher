@@ -288,6 +288,76 @@ public class GatewayTests
         Assert.Equal(new[] { $"/repos/owner/repo/compare/{a}...{b}?per_page=1", $"/repos/owner/repo/compare/{gone}...{b}?per_page=1" }, requests);
     }
 
+    [Fact]
+    public async Task DispatchWorkflowPostsInputsOnMainOnce()
+    {
+        var requests = new List<string>();
+        using var http = Client(new Handler(async request =>
+        {
+            requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath} {await request.Content!.ReadAsStringAsync(TestContext.Current.CancellationToken)}");
+            return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+        }));
+        await Assert.ThrowsAsync<HttpRequestException>(() => new GitHubGateway(http, 1, (_, _) => Task.CompletedTask)
+            .DispatchWorkflow("owner/watcher", "watch.yml", new Dictionary<string, string> { ["target"] = "owner/repo" }, TestContext.Current.CancellationToken));
+        // A POST is never retried: a lost response may still have started the run.
+        Assert.Equal(["POST /repos/owner/watcher/actions/workflows/watch.yml/dispatches {\"ref\":\"main\",\"inputs\":{\"target\":\"owner/repo\"}}"], requests);
+    }
+
+    [Fact]
+    public void AppJwtIsSignedByTheAppKeyAndExpiresWithinTenMinutes()
+    {
+        using var key = System.Security.Cryptography.RSA.Create(2048);
+        var now = DateTimeOffset.Parse("2026-09-16T19:00:00Z");
+        var parts = GitHubApp.Jwt("4966600", key, now).Split('.');
+        static byte[] Decode(string part) => Convert.FromBase64String(part.Replace('-', '+').Replace('_', '/').PadRight((part.Length + 3) / 4 * 4, '='));
+        Assert.True(key.VerifyData(Encoding.ASCII.GetBytes($"{parts[0]}.{parts[1]}"), Decode(parts[2]),
+            System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.RSASignaturePadding.Pkcs1));
+        Assert.Equal("RS256", JsonNode.Parse(Decode(parts[0]))!["alg"]!.GetValue<string>());
+        var payload = JsonNode.Parse(Decode(parts[1]))!;
+        Assert.Equal("4966600", payload["iss"]!.GetValue<string>());
+        Assert.Equal(now.AddSeconds(-60).ToUnixTimeSeconds(), payload["iat"]!.GetValue<long>());
+        Assert.Equal(now.AddMinutes(9).ToUnixTimeSeconds(), payload["exp"]!.GetValue<long>());
+    }
+
+    [Fact]
+    public async Task InstallationTokensAreScopedToOneRepositoryAndReusedUntilNearExpiry()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var now = DateTimeOffset.Parse("2026-09-16T19:00:00Z");
+        var requests = new List<string>();
+        var minted = 0;
+        using var key = System.Security.Cryptography.RSA.Create(2048);
+        using var app = new HttpClient(new GitHubAppJwtHandler("2", key, () => now) { InnerHandler = new Handler(async request =>
+        {
+            Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
+            Assert.Equal(3, request.Headers.Authorization.Parameter!.Split('.').Length);
+            requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath} {(request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct))}".TrimEnd());
+            return Response(request.Method == HttpMethod.Get ? "{\"id\":77}"
+                : $"{{\"token\":\"ghs_{++minted}\",\"expires_at\":\"{now.AddHours(1):O}\"}}");
+        }) }) { BaseAddress = new Uri("https://api.github.com/") };
+        var appGateway = new GitHubGateway(app, 1);
+        var used = new List<string>();
+        using var http = new HttpClient(new InstallationTokenHandler(t => appGateway.InstallationToken("owner/repo", t), () => now)
+        {
+            InnerHandler = new Handler(request =>
+            {
+                used.Add(request.Headers.Authorization!.ToString());
+                return Task.FromResult(Response("{\"sha\":\"head\"}"));
+            })
+        }) { BaseAddress = new Uri("https://api.github.com/") };
+        var gateway = new GitHubGateway(http, 1);
+
+        await gateway.MainHead("owner/repo", ct);
+        now = now.AddMinutes(54);
+        await gateway.MainHead("owner/repo", ct);
+        now = now.AddMinutes(2);
+        await gateway.MainHead("owner/repo", ct);
+
+        Assert.Equal(["Bearer ghs_1", "Bearer ghs_1", "Bearer ghs_2"], used);
+        Assert.Equal(["GET /repos/owner/repo/installation", "POST /app/installations/77/access_tokens {\"repositories\":[\"repo\"]}"], requests.Take(2));
+        Assert.Equal(4, requests.Count);
+    }
+
     static HttpClient Client(HttpMessageHandler handler) => new(handler) { BaseAddress = new Uri("https://api.github.com/") };
     static HttpResponseMessage Response(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
     sealed class Handler(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) : HttpMessageHandler
