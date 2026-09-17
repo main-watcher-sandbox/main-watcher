@@ -263,7 +263,8 @@ public sealed class GitHubGateway(HttpClient http, long appId,
 
     static Issue ToIssue(JsonElement json) => new(json.GetProperty("number").GetInt32(), Text(json, "title") ?? "", Text(json, "body"),
         Text(json.GetProperty("user"), "login") ?? "", Text(json.GetProperty("user"), "type") ?? "", Text(json, "html_url") ?? "",
-        Text(json, "state") ?? "open", Text(json, "state_reason"), Date(json, "updated_at"));
+        Text(json, "state") ?? "open", Text(json, "state_reason"), Date(json, "updated_at"),
+        json.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number ? id.GetInt64() : 0);
 
     static string Since(DateTimeOffset since) => Uri.EscapeDataString(since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture));
 
@@ -302,6 +303,9 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     public async Task Comment(string repo, int number, string body, CancellationToken ct) =>
         await Send(HttpMethod.Post, $"repos/{repo}/issues/{number}/comments", new { body }, ct);
 
-    public async Task Close(string repo, int number, string reason, CancellationToken ct) =>
-        await Send(HttpMethod.Patch, $"repos/{repo}/issues/{number}", new { state = "closed", state_reason = reason }, ct);
+    public async Task Close(string repo, int number, string reason, long? duplicateOf, CancellationToken ct) =>
+        // duplicate_issue_id takes the database ID: in the sandbox, an issue number linked an unrelated issue.
+        await Send(HttpMethod.Patch, $"repos/{repo}/issues/{number}", duplicateOf is { } canonical
+            ? new { state = "closed", state_reason = reason, duplicate_issue_id = canonical }
+            : new { state = "closed", state_reason = reason }, ct);
 }

@@ -56,8 +56,8 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
                     if (!await locks.Names(open, check, ct))
                         await Write("comment", github.Comment(repo, open.Number,
                             $"Tests passed on {Commit(repo, check.Sha)} ([target run]({runUrl})), so `main` is green again. Closing the lock." +
-                            $"\n\n<!-- main-watcher check={check.Id} closed=green -->", ct));
-                    await Write("close", github.Close(repo, open.Number, "completed", ct));
+                            $"\n\n<!-- main-watcher check={check.Id} sha={check.Sha} closed=green -->", ct));
+                    await Write("close", github.Close(repo, open.Number, "completed", null, ct));
                 }
                 if (reports.Failures.Count > 0) summary += "\n\nWarning: CTRF reports failures despite a successful test step.";
             }
@@ -80,8 +80,9 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         {
             var latest = locks.Latest;
             var overridden = latest is { State: "closed" } && !IsApp(await github.ClosedBy(repo, latest.Number, ct));
-            // An override covers its commit: only a failure on a different commit locks again (ADR-004).
-            if (overridden && Field(latest!.Body, "reported_sha") == check.Sha)
+            // An override covers its commit: only a failure on a different commit locks again (ADR-004). The commit may be in
+            // a comment only, when the report that wrote it stopped before updating the body's marker.
+            if (overridden && latest is not null && (await locks.ReportedShas(latest, ct)).Contains(check.Sha))
                 return $"\n\nThe lock for this commit, {latest.Url}, was closed by hand (an override), so no lock was opened. "
                     + "A failure on a different commit locks again.\n\n" + failures;
             open = await OpenLock(target, check, reports, runUrl, overridden ? latest : null, ct);
@@ -92,7 +93,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
             if (!await locks.Names(open, check, ct))
                 await Write("comment", github.Comment(repo, open.Number,
                     $"Tests failed again on `main` at {Commit(repo, check.Sha)}.\n\n**Failing tests**\n\n{failures}\n\n"
-                    + $"[Target run]({runUrl})\n\n<!-- main-watcher check={check.Id} -->", ct));
+                    + $"[Target run]({runUrl})\n\n<!-- main-watcher check={check.Id} sha={check.Sha} -->", ct));
             await Write("update", github.EditBody(repo, open.Number, WithReported(open.Body ?? "", check), ct));
         }
         // This check opened the lock, and the report may have stopped before the alert that follows it.
@@ -102,9 +103,9 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     }
 
     /// <summary>
-    /// Posts the ADR-004 override comment, naming who closed it, on each App lock closed by hand and updated within
-    /// <see cref="ReconcileLookback"/>. A lock the App closed, or one with a closing comment from the App, is skipped.
-    /// Returns the number of comments posted.
+    /// Posts the ADR-004 comment, naming who closed it, on each App lock closed by someone other than the App and updated
+    /// within <see cref="ReconcileLookback"/>, unless it already has one. A lock the App had started to close, after a green run
+    /// or as a duplicate, still gets it, worded for that case. Returns the number of comments posted.
     /// </summary>
     public async Task<int> NoteOverrides(Target target, CancellationToken ct)
     {
@@ -113,15 +114,22 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         foreach (var issue in (await github.Issues(repo, LockLabel, Now - ReconcileLookback, ct))
             .Where(i => IsApp(i) && i.State == "closed").OrderBy(i => i.Number))
         {
-            if ((await github.Comments(repo, issue.Number, null, ct)).Any(c => IsApp(c) && Field(c.Body, "closed") is not null)) continue;
+            var closing = (await github.Comments(repo, issue.Number, null, ct)).Where(IsApp).Select(c => c.Body).ToArray();
+            if (closing.Any(c => Field(c, "closed") == "override")) continue;
             var closer = await github.ClosedBy(repo, issue.Number, ct);
             if (IsApp(closer)) continue;
-            var sha = Field(issue.Body, "reported_sha");
-            await Write("override", github.Comment(repo, issue.Number,
-                $"{(closer is null ? "Someone" : $"`{closer.Login}`")} closed this lock by hand. That is an override: the merge queue "
-                + $"accepts every pull request again, but `main` is still red{(sha is not null && IsSha(sha) ? $" at {Commit(repo, sha)}" : "")}. "
-                + "Main Watcher never reopens this issue; it opens a new lock when tests fail on a different commit."
-                + "\n\n<!-- main-watcher closed=override -->", ct));
+            var who = closer is null ? "Someone" : $"`{closer.Login}`";
+            var green = closing.LastOrDefault(c => Field(c, "closed") == "green");
+            var duplicate = closing.LastOrDefault(c => Field(c, "closed") == "duplicate");
+            var sha = green is not null ? Field(green, "sha") : Field(issue.Body, "reported_sha");
+            var at = sha is not null && IsSha(sha) ? $" at {Commit(repo, sha)}" : "";
+            var text = green is not null
+                ? $"{who} closed this lock by hand after tests had passed on `main`{at}, so it ends as a green run would have closed it."
+                : duplicate is not null
+                    ? $"{who} closed this lock by hand. It had already been marked a duplicate of #{Field(duplicate, "duplicate_of")}, which decides whether `main` stays locked."
+                    : $"{who} closed this lock by hand. That is an override: the merge queue accepts every pull request again, but `main` is still red{at}. "
+                        + "Main Watcher never reopens this issue; it opens a new lock when tests fail on a different commit.";
+            await Write("override", github.Comment(repo, issue.Number, text + "\n\n<!-- main-watcher closed=override -->", ct));
             posted++;
         }
         return posted;
@@ -155,7 +163,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
             if (!await locks.MarkedDuplicate(duplicate, ct))
                 await Write("comment", github.Comment(repo, duplicate.Number,
                     $"Closing as a duplicate of #{open[0].Number}, the older lock.\n\n<!-- main-watcher closed=duplicate duplicate_of={open[0].Number} -->", ct));
-            await Write("close", github.Close(repo, duplicate.Number, "duplicate", ct));
+            await Write("close", github.Close(repo, duplicate.Number, "duplicate", open[0].Id, ct));
             issues[issues.IndexOf(duplicate)] = duplicate with { State = "closed", StateReason = "duplicate" };
             locks.Duplicates.Add(duplicate.Number);
         }
@@ -182,6 +190,11 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
 
         public async Task<bool> MarkedDuplicate(Issue issue, CancellationToken ct) =>
             (await AppComments(issue, ct)).Any(c => Field(c.Body, "closed") == "duplicate");
+
+        /// <summary>Commits a lock reported red: its body's <c>reported_sha</c> and the <c>sha</c> of each later-failure comment.</summary>
+        public async Task<HashSet<string>> ReportedShas(Issue issue, CancellationToken ct) =>
+            (await AppComments(issue, ct)).Where(c => Field(c.Body, "check") is not null && Field(c.Body, "closed") is null)
+                .Select(c => Field(c.Body, "sha")).Append(Field(issue.Body, "reported_sha")).OfType<string>().ToHashSet(StringComparer.Ordinal);
 
         /// <summary>Whether one of the App's comments on <paramref name="issue"/> carries this check's marker.</summary>
         public async Task<bool> Names(Issue issue, CheckRun check, CancellationToken ct) =>

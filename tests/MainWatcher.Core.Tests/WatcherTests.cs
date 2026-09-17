@@ -546,7 +546,7 @@ public class WatcherTests
         Assert.Contains("Tests failed again on `main` at [`eeeeeee`]", comment);
         Assert.Contains("- Beta (suite):", comment);
         Assert.Contains("https://github.com/owner/repo/actions/runs/42", comment);
-        Assert.EndsWith("<!-- main-watcher check=77 -->", comment);
+        Assert.EndsWith($"<!-- main-watcher check=77 sha={Sha('e')} -->", comment);
         Assert.Equal("first failure", fake.Issues["owner/repo"].Single().Body.Split("\n\n")[1]);
         Assert.EndsWith($"<!-- main-watcher reported_check=77 reported_sha={Sha('e')} -->", fake.Issues["owner/repo"].Single().Body);
     }
@@ -637,7 +637,8 @@ public class WatcherTests
         }
         await new Reporter(fake, afterWrite: writes.Add).Report(Watched, check, ct);
 
-        Assert.Equal(new[] { "comment:2", "close:2:duplicate", "comment:1", "update:1", "complete:failure" }, fake.Order);
+        // The canonical lock is named by its database ID.
+        Assert.Equal(new[] { "comment:2", "close:2:duplicate:1001", "comment:1", "update:1", "complete:failure" }, fake.Order);
         // The hook the sandbox fault switch uses names each write.
         if (stopAfter is null) Assert.Equal(new[] { "comment", "close", "comment", "update" }, writes);
         Assert.Contains("Closing as a duplicate of #1", Assert.Single(fake.Find("owner/repo", 2).Comments).Body);
@@ -722,6 +723,43 @@ public class WatcherTests
     }
 
     [Fact]
+    public async Task AnOverrideCoversACommitThatOnlyAnInterruptedCommentReported()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        SeedLock(fake, 1, 'a');
+        // Check 2 on b commented, then stopped before the body marker; a human closed the lock.
+        fake.StopAfterWrites = 1;
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake).Report(Watched, Pending(Sha('b')) with { Id = 2 }, ct));
+        fake.StopAfterWrites = null;
+        fake.CloseByHand("owner/repo", 1);
+        Assert.Contains($"reported_sha={Sha('a')}", fake.Find("owner/repo", 1).Body);
+        // Check 2's run was deleted, so it ended neutral without a replay; a retest of b fails.
+        await new Reporter(fake).Report(Watched, Pending(Sha('b')) with { Id = 3 }, ct);
+        Assert.Equal(new[] { "comment:1", "complete:failure" }, fake.Order);
+        Assert.Contains("was closed by hand (an override), so no lock was opened", fake.Summary);
+    }
+
+    [Theory]
+    [InlineData("green", "`alice` closed this lock by hand after tests had passed on `main` at [`ccccccc`]")]
+    [InlineData("duplicate", "`alice` closed this lock by hand. It had already been marked a duplicate of #1, which decides whether `main` stays locked.")]
+    public async Task AHumanCloseAfterTheAppStartedClosingStillGetsACommentNamingWhoClosedIt(string started, string expected)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { JobConclusion = started == "green" ? "success" : "failure", ReportResult = new(true, []), StopAfterWrites = 1 };
+        if (started == "duplicate") SeedLock(fake, 1, 'a');
+        var stopped = SeedLock(fake, 2, 'b');
+        await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake).Report(Watched, Pending(Sha('c')) with { Id = 3 }, ct));
+        fake.StopAfterWrites = null;
+        fake.CloseByHand("owner/repo", stopped.Issue.Number, "alice");
+        var reporter = new Reporter(fake, clock: () => Now);
+        Assert.Equal(1, await reporter.NoteOverrides(Watched, ct));
+        Assert.StartsWith(expected, stopped.Comments[^1].Body);
+        Assert.EndsWith("<!-- main-watcher closed=override -->", stopped.Comments[^1].Body);
+        Assert.Equal(0, await reporter.NoteOverrides(Watched, ct));
+    }
+
+    [Fact]
     public async Task OnlyLocksClosedByHandGetAnOverrideCommentNamingWhoClosedThem()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -790,7 +828,7 @@ public class WatcherTests
         {
             if (!Issues.TryGetValue(repo, out var list)) Issues[repo] = list = [];
             next++;
-            list.Add(new(new(next, title, body, author, type, $"https://github.com/{repo}/issues/{next}"), label));
+            list.Add(new(new(next, title, body, author, type, $"https://github.com/{repo}/issues/{next}", Id: 1000 + next), label));
             return list[^1];
         }
 
@@ -840,13 +878,13 @@ public class WatcherTests
             Wrote($"update:{number}");
             return Task.CompletedTask;
         }
-        public Task Close(string repo, int number, string reason, CancellationToken ct)
+        public Task Close(string repo, int number, string reason, long? duplicateOf, CancellationToken ct)
         {
             if (IssueError) throw new HttpRequestException("issues unavailable");
             var issue = Find(repo, number);
             issue.Issue = issue.Issue with { State = "closed", StateReason = reason };
             issue.ClosedBy = new("main-watcher[bot]", "Bot");
-            Wrote($"close:{number}" + (reason == "completed" ? "" : $":{reason}"));
+            Wrote($"close:{number}" + (reason == "completed" ? "" : $":{reason}") + (duplicateOf is null ? "" : $":{duplicateOf}"));
             return Task.CompletedTask;
         }
 

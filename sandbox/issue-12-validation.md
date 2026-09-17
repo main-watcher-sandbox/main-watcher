@@ -101,6 +101,16 @@ original. The `MW_SANDBOX_EXIT_AFTER` variable and the PR #16 branch were delete
 `main-broken` issue or PR is open on the target. Alert main-watcher#2 was already open
 from #11 and stays open until `notify` is configured.
 
+## PR #42 review: closing as a duplicate
+
+A review asked whether `state_reason: duplicate` needs `duplicate_issue_id`. Probe issues
+sample-target#19–#23, all closed since, showed that it does not: a close without it returned
+`state_reason: duplicate`. Passing the canonical issue's database ID linked #22 to #19,
+whereas passing the number 19 linked #23 to an unrelated issue #2. The Reporter now sends the
+kept lock's database ID. The review's other two findings, an override commit known only from
+an interrupted comment and a human close after the App's closing comment, are covered by
+unit tests.
+
 ## Not exercised in the sandbox
 
 Closing a newer duplicate lock, a replay after a comment on a lock closed since, and the
