@@ -3,9 +3,17 @@ namespace MainWatcher.Core;
 /// <summary>A check run. <see cref="Title"/> is its output title, such as "Infrastructure error"; null when it has none.</summary>
 public sealed record CheckRun(long Id, string Sha, string Status, string? Conclusion,
     DateTimeOffset StartedAt, DateTimeOffset? CompletedAt, string? ExternalId, string? Title = null);
-public sealed record WorkflowRun(long Id, string Title, DateTimeOffset CreatedAt, string Status);
+/// <summary>
+/// A workflow run. <see cref="UpdatedAt"/> is when GitHub last changed it, which for a completed run is when it finished;
+/// null when GitHub did not say.
+/// </summary>
+public sealed record WorkflowRun(long Id, string Title, DateTimeOffset CreatedAt, string Status, DateTimeOffset? UpdatedAt = null);
 public sealed record JobStep(string Name, string? Conclusion);
-public sealed record WorkflowJob(string Name, string Status, IReadOnlyList<JobStep> Steps);
+/// <summary>
+/// A job of a workflow run. <see cref="CompletedAt"/> is null while it is queued or running, and is how long a report has been
+/// pending once the check run's own <c>main-watcher</c> job has finished (ADR-013).
+/// </summary>
+public sealed record WorkflowJob(string Name, string Status, IReadOnlyList<JobStep> Steps, DateTimeOffset? CompletedAt = null);
 /// <summary>
 /// An issue. <see cref="StateReason"/> is GitHub's <c>state_reason</c>, such as <c>duplicate</c>; <see cref="UpdatedAt"/> is null
 /// when unknown. <see cref="Id"/> is the database ID, which <c>duplicate_issue_id</c> takes, not the number.
