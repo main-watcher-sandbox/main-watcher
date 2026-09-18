@@ -13,9 +13,9 @@ needs no inbound Service or Ingress.
 
 Issues #14 and #15 cover the cycle and the alerts described here, and #16 the hourly backup
 sweep, which does this work when the worker is not and says so; see
-[watcher.md](watcher.md#backup-sweep). #18 adds the stale-run deadlines below and #19 the lock
-lease. Merge reconciliation (#20) and the queue sweep (#21) are separate backlog items; a target
-whose only work is one of those is not flagged yet.
+[watcher.md](watcher.md#backup-sweep). #18 adds the stale-run deadlines below, #19 the lock
+lease and #20 the closed lock that still owes reconciliation. The queue sweep (#21) is a separate
+backlog item; a target whose only work is that is not flagged yet.
 
 ## A cycle
 
@@ -94,10 +94,20 @@ where it is not `main-watcher[bot]`. The work is dated by the moment renewal bec
 carries no check ID: it is not a report owed. `watch.yml` does the renewing, and
 [watcher.md](watcher.md#lock-lease) describes the lease and what a lapse records.
 
-The worker therefore makes about four read calls per target per cycle while a target is
-idle, plus one for the watcher repo's `watch.yml` runs (R-13). This is the Issues: read
-permission ADR-014 gave `mw-observer`. A cycle that finds an eligible head reads that target's
-repository activity as well, to date the head's push, and stops before the lock read; an idle
+Last of all, a lock that has **closed without being reconciled** is work (ADR-015 point 6). Its
+window still owes a report for every pull request that merged during it without `fixes-main`, and
+once the issue is closed nothing else would ask for a cycle: no push tests it, no lease renews it.
+So the worker reads the App's `main-broken` issues in any state, updated within
+`reconcile_lookback` (30 days), and flags the first whose marker does not say
+`reconciled=complete`. A closure older than that window is not revisited, which is R-21 accepted.
+The work is dated by the closure, so the hourly sweep can say how long the reports have been owed,
+and it carries no check ID. `watch.yml` does the reconciling, and
+[watcher.md](watcher.md#reconciliation) describes it.
+
+The worker therefore makes about five read calls per target per cycle while a target is
+idle, plus one for the watcher repo's `watch.yml` runs (R-13). Both issue reads use the Issues:
+read permission ADR-014 gave `mw-observer`. A cycle that finds an eligible head reads that target's
+repository activity as well, to date the head's push, and stops before the issue reads; an idle
 target never pays for the activity read.
 
 ## Configuration

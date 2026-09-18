@@ -119,6 +119,15 @@ try
     // After planning, so a lock whose comments cannot be written (for example, a locked conversation) never stops testing.
     var overrides = await reporter.NoteOverrides(target, timeout.Token);
     if (overrides > 0) Console.WriteLine($"Posted {overrides} override comment(s) on locks closed by hand.");
+    // Reconciliation (ADR-008, ADR-015) runs after planning for the same reason: it is a reporting obligation, not a testing
+    // one, and it makes the most API calls of anything in a cycle. A failure fails the run, so the worker asks again.
+    var reconcileFailed = false;
+    try { foreach (var line in await planner.Reconcile(target, timeout.Token)) Console.WriteLine(line); }
+    catch (Exception e) when (!timeout.IsCancellationRequested)
+    {
+        reconcileFailed = true;
+        Console.Error.WriteLine($"Reconciliation failed: {e.Message}");
+    }
     if (sweep is not null)
     {
         // Last: a gate that failed open is a secondary signal (ADR-008), and never delays testing or reporting.
@@ -133,7 +142,7 @@ try
             Console.Error.WriteLine($"Sweep: the gate fail-open check failed: {e.Message}");
         }
     }
-    return sweepFailed || planner.AlertFailures.Count > 0 ? 1 : 0;
+    return sweepFailed || reconcileFailed || planner.AlertFailures.Count > 0 ? 1 : 0;
 }
 catch (Exception e)
 {
