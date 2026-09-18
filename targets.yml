@@ -1,4 +1,3 @@
-# A 10-minute lock_lease, so a lapse takes minutes rather than four hours (TS-S7).
 lock_lease: 10
 targets:
   - repo: main-watcher-sandbox/sample-target
@@ -6,5 +5,5 @@ targets:
     results_glob: '**/TestResults/*.ctrf.json'
     timeout: 30
     poll_interval: 1
-    notify: [pat-actium]
+    notify: [main-watcher-sandbox/sandbox-owners]
     enabled: true
