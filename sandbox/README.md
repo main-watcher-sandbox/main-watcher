@@ -38,14 +38,25 @@ gh workflow run sandbox-selftest.yml -R main-watcher-sandbox/sample-target
 ## The sandbox watcher and gate repos
 
 `main-watcher-sandbox/main-watcher` is private and stands in for this repo. Its `reporter`
-environment holds the `main-watcher` App key. Before a scenario test, push the MainWatcher
-commit under test to its `main`:
+environment holds the `main-watcher` App key. Before a scenario test, put the MainWatcher tree
+under test on its `main`.
+
+The replica's `main` is never an ancestor of that commit: it ends in the `targets.yml` commit
+below, which exists only there. So a plain `git push HEAD:main` is rejected as a non-fast-forward.
+Take the tree across with a merge commit instead, which is what the replica's history is made of
+— `Sandbox: take MainWatcher at <sha>`, one per scenario. Run this from the commit under test:
 
 ```
-git push https://github.com/main-watcher-sandbox/main-watcher.git HEAD:main
+replica=https://github.com/main-watcher-sandbox/main-watcher.git
+git fetch "$replica" main
+message="Sandbox: take MainWatcher at $(git rev-parse --short HEAD)"
+take="$(git commit-tree "HEAD^{tree}" -p FETCH_HEAD -p HEAD -m "$message")"
+git push "$replica" "$take:main"
 ```
 
-That push overwrites the replica's `targets.yml` with this repo's, which lists **no** targets:
+The merge keeps the replica's own history, and its tree is the tree under test exactly: the
+`targets.yml` commits it carried are its ancestors, not its content. So the push overwrites the
+replica's `targets.yml` with this repo's, which lists **no** targets:
 the watcher repo watches nothing of its own, and two watchers on one target would race for its
 check runs. So after every such push, set the replica's list back to the sandbox target. Its
 `poll_interval` of 1 minute is what makes a scenario take minutes rather than a quarter of an
