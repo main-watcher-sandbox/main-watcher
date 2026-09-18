@@ -252,15 +252,19 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
                 reached = merge.Timestamp;
                 continue;
             }
-            foreach (var (pull, mergedAt) in pulls)
+            foreach (var (pull, committed) in pulls)
             {
-                IReadOnlyList<LabelEvent> events;
-                try { events = await github.LabelEvents(repo, pull, ct); }
+                IReadOnlyList<PullEvent> events;
+                try { events = await github.PullEvents(repo, pull, ct); }
                 catch (Exception e) when (Unreadable(e, ct))
                 {
                     (stopped, blocked) = ($"the label history of #{pull} could not be read ({e.Message})", merge.Timestamp);
                     break;
                 }
+                // The timeline's own merge is the moment ADR-015 judges the labels at. The commit's date only stands in when
+                // the timeline holds no merge: a merge-queue commit is built before its group merges, so the two differ by
+                // however long the queue took, and judging at the earlier one would report a label added while it waited.
+                var mergedAt = Reconciliation.MergedAt(events) ?? committed;
                 if (Reconciliation.WasFix(events, mergedAt)) continue;
                 comments = await ReportMerge(target, issue, Reconciliation.Key(pull),
                     $"[#{pull}](https://github.com/{repo}/pull/{pull}) merged into `main` at {Markers.Stamp(mergedAt)} "

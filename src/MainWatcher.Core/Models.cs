@@ -44,10 +44,10 @@ public sealed record FailOpen(long RunId, string Sha, string Branch, DateTimeOff
 /// </summary>
 public sealed record MergedCommit(string Sha, string Subject, DateTimeOffset At, int? Pull);
 /// <summary>
-/// One <c>labeled</c> or <c>unlabeled</c> event on a pull request, from the Issues events API.
-/// <see cref="Added"/> is true for <c>labeled</c>.
+/// One entry of a pull request's timeline, from the Issues events API: <c>labeled</c> and <c>unlabeled</c> carry a
+/// <see cref="Label"/>, and <c>merged</c> dates the merge itself (ADR-015).
 /// </summary>
-public sealed record LabelEvent(string Label, bool Added, DateTimeOffset At);
+public sealed record PullEvent(string Name, string? Label, DateTimeOffset At);
 /// <summary>
 /// A merge group the gate failed while a lock was open (ADR-002, R-7): the gate run that failed it, and the pull request its
 /// merge-queue branch names, which is the entry the queue removed.

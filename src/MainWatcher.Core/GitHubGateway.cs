@@ -310,13 +310,16 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     /// <summary>How many commits of one activity entry are read. A larger range is a batch nobody put through the queue.</summary>
     public const int MaxMergedCommits = 100;
 
-    public async Task<IReadOnlyList<LabelEvent>> LabelEvents(string repo, int number, CancellationToken ct) =>
+    public async Task<IReadOnlyList<PullEvent>> PullEvents(string repo, int number, CancellationToken ct) =>
         // Oldest first, as GitHub returns them: two events in the same second are told apart by their order, not their times.
+        // A pull request's merge is in this same timeline, so the moment its labels are judged at costs no extra request and
+        // no Pull requests permission.
         (await Pages($"repos/{repo}/issues/{number}/events", null, ct))
-        .Where(e => Text(e, "event") is "labeled" or "unlabeled" && e.TryGetProperty("label", out var label)
-            && label.ValueKind == JsonValueKind.Object && Text(label, "name") is not null)
-        .Select(e => new LabelEvent(Text(e.GetProperty("label"), "name")!, Text(e, "event") == "labeled",
-            Date(e, "created_at") ?? DateTimeOffset.MinValue)).ToArray();
+        .Where(e => Text(e, "event") is "labeled" or "unlabeled" or Reconciliation.Merged)
+        .Select(e => new PullEvent(Text(e, "event")!,
+            e.TryGetProperty("label", out var label) && label.ValueKind == JsonValueKind.Object ? Text(label, "name") : null,
+            Date(e, "created_at") ?? DateTimeOffset.MinValue))
+        .Where(e => e.Name == Reconciliation.Merged || e.Label is not null).ToArray();
 
     public async Task Link(string repo, long checkId, long runId, CancellationToken ct) =>
         await Send(HttpMethod.Patch, $"repos/{repo}/check-runs/{checkId}", new { external_id = runId.ToString(System.Globalization.CultureInfo.InvariantCulture), details_url = $"https://github.com/{repo}/actions/runs/{runId}" }, ct);

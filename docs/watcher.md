@@ -352,8 +352,11 @@ longer compare, is reported as itself — the commit it left on `main` — rathe
 because nothing shows it carried the label.
 
 **Which label.** The one the pull request carried **at the moment it merged**, replayed from its
-`labeled` and `unlabeled` events (Issues: read) up to the merge commit's time; an event in the same
-second counts as before it. The label it carries today is the wrong question in both directions: one
+`labeled` and `unlabeled` events (Issues: read) up to its `merged` event, which is in the same
+timeline and so costs no second read; an event in the same second counts as before it. The merge
+queue builds an entry's commit well before the group merges, so the commit's own date would judge
+too early and report a label added while the entry waited; it stands in only when the timeline
+holds no merge. The label it carries today is the wrong question in both directions: one
 added afterwards would hide a real report, and one removed afterwards would raise a false one.
 
 **What is written**, for each unlabelled merge, keyed by a hidden

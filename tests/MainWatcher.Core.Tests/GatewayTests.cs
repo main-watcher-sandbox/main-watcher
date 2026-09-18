@@ -459,8 +459,9 @@ public class GatewayTests
         Assert.Equal(1, calls);
     }
 
+    // ADR-015 judges the labels at the merge, and the merge is in this same timeline, so one read gives both.
     [Fact]
-    public async Task LabelEventsKeepsOnlyLabelChangesInTheOrderGitHubReturnsThem()
+    public async Task PullEventsKeepsOnlyLabelChangesAndTheMergeInTheOrderGitHubReturnsThem()
     {
         var handler = new Handler(request =>
         {
@@ -469,13 +470,18 @@ public class GatewayTests
                 "[{\"event\":\"labeled\",\"label\":{\"name\":\"fixes-main\"},\"created_at\":\"2026-09-17T10:00:00Z\"},"
                 + "{\"event\":\"closed\",\"created_at\":\"2026-09-17T10:01:00Z\"},"
                 + "{\"event\":\"unlabeled\",\"label\":{\"name\":\"fixes-main\"},\"created_at\":\"2026-09-17T10:02:00Z\"},"
-                + "{\"event\":\"labeled\",\"created_at\":\"2026-09-17T10:03:00Z\"}]"));
+                + "{\"event\":\"labeled\",\"created_at\":\"2026-09-17T10:03:00Z\"},"
+                + "{\"event\":\"merged\",\"commit_id\":\"abc\",\"created_at\":\"2026-09-17T10:04:00Z\"}]"));
         });
         using var http = Client(handler);
-        var events = await new GitHubGateway(http, 1).LabelEvents("owner/repo", 7, TestContext.Current.CancellationToken);
-        Assert.Equal([true, false], events.Select(e => e.Added));
+        var events = await new GitHubGateway(http, 1).PullEvents("owner/repo", 7, TestContext.Current.CancellationToken);
+        // A label event without a label, and every other kind of event, is dropped.
+        Assert.Equal(["labeled", "unlabeled", "merged"], events.Select(e => e.Name));
         Assert.Equal("fixes-main", events[1].Label);
         Assert.Equal(DateTimeOffset.Parse("2026-09-17T10:02:00Z"), events[1].At);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-17T10:04:00Z"), Reconciliation.MergedAt(events));
+        // The label was taken off before the merge, so it was not a fix when it merged.
+        Assert.False(Reconciliation.WasFix(events, Reconciliation.MergedAt(events)!.Value));
     }
 
     // R-7: the queue branch names the entry the queue removed when its gate failed.

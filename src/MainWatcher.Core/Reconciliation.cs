@@ -60,13 +60,25 @@ public static class Reconciliation
             .Select(g => (Pull: g.Key, MergedAt: g.Min(c => c.At)))
             .OrderBy(p => p.MergedAt).ThenBy(p => p.Pull).ToArray();
 
+    /// <summary>The timeline event that dates a pull request's merge.</summary>
+    public const string Merged = "merged";
+
+    /// <summary>
+    /// When the pull request merged, from its own timeline, which is what ADR-015 judges its labels at. Null when the
+    /// timeline holds no merge, and the merge commit's own date is used instead: the merge-queue commit is built before the
+    /// group merges, so the two differ by however long the queue took.
+    /// </summary>
+    public static DateTimeOffset? MergedAt(IEnumerable<PullEvent> events) =>
+        events.Where(e => e.Name == Merged).Select(e => (DateTimeOffset?)e.At).LastOrDefault();
+
     /// <summary>
     /// Whether <paramref name="pull"/> carried <see cref="FixLabel"/> when it merged, from its label events
     /// (ADR-015 point 8). Events are replayed in the order GitHub returns them, oldest first, and one stamped in the same
     /// second as the merge counts as before it, so a label added in that second counts as present.
     /// </summary>
-    public static bool WasFix(IEnumerable<LabelEvent> events, DateTimeOffset mergedAt) =>
-        events.Where(e => e.Label == FixLabel && e.At <= mergedAt).Select(e => (bool?)e.Added).LastOrDefault() == true;
+    public static bool WasFix(IEnumerable<PullEvent> events, DateTimeOffset mergedAt) =>
+        events.Where(e => e.Label == FixLabel && e.At <= mergedAt)
+            .Select(e => (bool?)(e.Name == "labeled")).LastOrDefault() == true;
 
     /// <summary>
     /// The hidden key that marks one merge reported. It names the pull request, not the activity entry, because the same

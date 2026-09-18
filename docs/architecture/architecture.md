@@ -438,7 +438,9 @@ sequenceDiagram
   matches. The commits-to-PRs API would be exact but needs a Pull requests permission the
   `main-watcher` App does not hold (§8), and ADR-008 promised no new permission. A merge whose
   subjects name no PR, or whose range can no longer be compared, is reported as the commit it left
-  on `main`, not passed over: nothing shows it carried the label.
+  on `main`, not passed over: nothing shows it carried the label. The labels are judged at the PR's
+  own `merged` event, which is in the same timeline as the label events, not at the merge commit's
+  date, which the queue writes before the group merges.
 
 ### 5.3 Resolution (ADR-004, ADR-014)
 

@@ -365,6 +365,10 @@ public class WatcherTests
     /// <summary>The merge commit a pull request left on main, named the way GitHub names one.</summary>
     static MergedCommit Pull(int number, int minutesAgo) =>
         new(Sha('m'), $"Merge pull request #{number} from owner/branch", Now.AddMinutes(-minutesAgo), number);
+    static PullEvent Labelled(bool added, int minutesAgo) =>
+        new(added ? "labeled" : "unlabeled", Reconciliation.FixLabel, Now.AddMinutes(-minutesAgo));
+    /// <summary>The merge in a pull request's own timeline, which is when ADR-015 judges its labels.</summary>
+    static PullEvent Merge(int minutesAgo) => new(Reconciliation.Merged, null, Now.AddMinutes(-minutesAgo));
     static Planner Reconciler(FakeGitHub fake, FakeGitHub watcher, Func<DateTimeOffset>? clock = null) =>
         new(fake, clock ?? (() => Now), alerts: new Alerts(watcher, "owner/watcher"));
 
@@ -393,7 +397,8 @@ public class WatcherTests
         fake.Merged[Sha('c')] = [Pull(8, 20)];
         fake.Merged[Sha('a')] = [Pull(6, 90)];
         // #7 carried the label when it merged; #8 never did.
-        fake.Labels[7] = [new(Reconciliation.FixLabel, true, Now.AddMinutes(-40))];
+        fake.Labels[7] = [Labelled(true, 40), Merge(30)];
+        fake.Labels[8] = [Merge(20)];
         SeedWindow(fake, 60);
         var watcher = new FakeGitHub();
 
@@ -433,7 +438,7 @@ public class WatcherTests
         fake.Merged[Sha('b')] = [Pull(7, 30)];
         fake.Merged[Sha('c')] = [Pull(8, 20)];
         // Labelled after it had merged, which must not hide the report (ADR-015 point 8, TS-S15 (b)).
-        fake.Labels[7] = [new(Reconciliation.FixLabel, true, Now.AddMinutes(-5))];
+        fake.Labels[7] = [Merge(30), Labelled(true, 5)];
         SeedWindow(fake, 60);
         fake.CloseByHand("owner/repo", 1, closer, Now.AddMinutes(-25));
         var watcher = new FakeGitHub();
@@ -473,7 +478,7 @@ public class WatcherTests
     public void TheFixLabelIsJudgedFromTheEventsUpToTheMerge(string events, bool fix)
     {
         var history = events.Split(',', StringSplitOptions.RemoveEmptyEntries)
-            .Select(e => new LabelEvent(Reconciliation.FixLabel, e[0] == '+',
+            .Select(e => new PullEvent(e[0] == '+' ? "labeled" : "unlabeled", Reconciliation.FixLabel,
                 Now.AddSeconds(int.Parse(e[2..], System.Globalization.CultureInfo.InvariantCulture)))).ToArray();
         Assert.Equal(fix, Reconciliation.WasFix(history, Now));
         // Another label's history says nothing about this one.
@@ -491,6 +496,28 @@ public class WatcherTests
     [InlineData("#12", null)]
     public void ACommitSubjectNamesItsPullRequestOrNothing(string subject, int? pull) =>
         Assert.Equal(pull, Reconciliation.PullOf(subject));
+
+    // ADR-015 judges the label at `merged_at`, which the merge queue builds a commit well before: a label added while the
+    // entry waited in the queue was on the pull request when it merged.
+    [Theory]
+    // The timeline says the group merged 20 minutes ago, after the label went on: not reported.
+    [InlineData(true, false)]
+    // No merge in the timeline, so the commit's own date stands in, and by then the label was not on yet.
+    [InlineData(false, true)]
+    public async Task TheLabelIsJudgedAtTheTimelinesMergeNotTheCommitDate(bool timelineMerge, bool reported)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { Activity = { PushAt('a', 'b', "merge_queue_merge", "alice", 20) } };
+        // The merge commit was built 30 minutes ago; the group merged 20 minutes ago, and the label went on between.
+        fake.Merged[Sha('b')] = [Pull(7, 30)];
+        fake.Labels[7] = timelineMerge ? [Labelled(true, 25), Merge(20)] : [Labelled(true, 25)];
+        SeedWindow(fake, 60);
+        var watcher = new FakeGitHub();
+
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        Assert.Equal(reported, fake.Find("owner/repo", 1).Body.Contains("#7", StringComparison.Ordinal));
+        Assert.Equal(reported, watcher.Issues.Count == 1);
+    }
 
     // NFR-4 is about what landed, not about what could be named: a merge whose pull request cannot be identified is reported
     // rather than passed over, since nothing shows it carried the label.
@@ -2122,8 +2149,8 @@ public class WatcherTests
         public HashSet<string> MergedError { get; } = [];
         /// <summary><c>after</c> commits GitHub can no longer compare, as a force push leaves behind.</summary>
         public HashSet<string> Uncomparable { get; } = [];
-        /// <summary>Label events by pull request, oldest first, as GitHub returns them.</summary>
-        public Dictionary<int, List<LabelEvent>> Labels { get; } = [];
+        /// <summary>Timeline events by pull request, oldest first, as GitHub returns them.</summary>
+        public Dictionary<int, List<PullEvent>> Labels { get; } = [];
         /// <summary>Pull requests whose label history cannot be read (ADR-015 point 8).</summary>
         public HashSet<int> LabelsError { get; } = [];
         /// <summary>Merge groups the gate failed, for the unlock comment (R-7).</summary>
@@ -2136,11 +2163,11 @@ public class WatcherTests
             return Task.FromResult(Uncomparable.Contains(after) ? null
                 : (IReadOnlyList<MergedCommit>?)Merged.GetValueOrDefault(after, []).ToArray());
         }
-        public Task<IReadOnlyList<LabelEvent>> LabelEvents(string repo, int number, CancellationToken ct)
+        public Task<IReadOnlyList<PullEvent>> PullEvents(string repo, int number, CancellationToken ct)
         {
             Reads.Add($"labels:{number}");
             return LabelsError.Contains(number) ? throw new HttpRequestException("label events unavailable")
-                : Task.FromResult<IReadOnlyList<LabelEvent>>(Labels.GetValueOrDefault(number, []).ToArray());
+                : Task.FromResult<IReadOnlyList<PullEvent>>(Labels.GetValueOrDefault(number, []).ToArray());
         }
         public Task<IReadOnlyList<GateBlock>> GateBlocks(string repo, DateTimeOffset since, CancellationToken ct) =>
             BlockedError ? throw new HttpRequestException("gate runs unavailable")
