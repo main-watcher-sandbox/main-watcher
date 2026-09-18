@@ -387,8 +387,8 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     // Clipped before escaping, so an escaped field is at most a few times this length.
     static string Clip(string text) => text.Length > MaxFieldLength ? text[..MaxFieldLength] + "…" : text;
 
-    static string Short(string sha) => sha.Length > 7 ? sha[..7] : sha;
-    static string Commit(string repo, string sha) => $"[`{Short(sha)}`](https://github.com/{repo}/commit/{sha})";
+    static string Short(string sha) => Markdown.Short(sha);
+    static string Commit(string repo, string sha) => Markdown.Commit(repo, sha);
 
     static string Escape(string text) => Markdown.Escape(text);
 }

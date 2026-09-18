@@ -59,6 +59,7 @@
     },
     {
       "name": "head neutral three times reaches the cap",
+      "capped": true,
       "checks": [
         { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T16:00:00Z", "completed_at": "2026-09-16T16:10:00Z" },
         { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T17:00:00Z", "completed_at": "2026-09-16T17:10:00Z" },
@@ -69,6 +70,7 @@
     {
       "name": "force ignores the cap",
       "force": true,
+      "capped": true,
       "checks": [
         { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T16:00:00Z", "completed_at": "2026-09-16T16:10:00Z" },
         { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T17:00:00Z", "completed_at": "2026-09-16T17:10:00Z" },
@@ -107,6 +109,37 @@
       "checks": [
         { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T17:00:00Z", "completed_at": "2026-09-16T17:10:00Z" },
         { "sha": "head", "status": "completed", "conclusion": "success", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" }
+      ],
+      "eligible": false
+    },
+    {
+      "name": "head neutral three times, the newest completed within poll_interval",
+      "capped": true,
+      "checks": [
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T17:00:00Z", "completed_at": "2026-09-16T17:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T18:40:00Z", "completed_at": "2026-09-16T18:55:00Z" }
+      ],
+      "eligible": false
+    },
+    {
+      "name": "head capped, then a failure between the neutrals leaves a newer neutral",
+      "capped": true,
+      "checks": [
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T15:00:00Z", "completed_at": "2026-09-16T15:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T16:00:00Z", "completed_at": "2026-09-16T16:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "failure", "started_at": "2026-09-16T17:00:00Z", "completed_at": "2026-09-16T17:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" }
+      ],
+      "eligible": false
+    },
+    {
+      "name": "a forced retest of a capped head is in progress",
+      "checks": [
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T16:00:00Z", "completed_at": "2026-09-16T16:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T17:00:00Z", "completed_at": "2026-09-16T17:10:00Z" },
+        { "sha": "head", "status": "completed", "conclusion": "neutral", "started_at": "2026-09-16T18:00:00Z", "completed_at": "2026-09-16T18:10:00Z" },
+        { "sha": "head", "status": "in_progress", "started_at": "2026-09-16T18:30:00Z", "external_id": "41" }
       ],
       "eligible": false
     },

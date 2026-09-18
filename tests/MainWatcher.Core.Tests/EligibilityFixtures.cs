@@ -10,7 +10,7 @@ namespace MainWatcher.Core.Tests;
 public static class EligibilityFixtures
 {
     public sealed record Case(string Name, string Head, DateTimeOffset Now, TimeSpan PollInterval, bool Force,
-        IReadOnlyList<CheckRun> Checks, bool Eligible)
+        IReadOnlyList<CheckRun> Checks, bool Eligible, bool Capped)
     {
         public override string ToString() => Name;
     }
@@ -37,7 +37,7 @@ public static class EligibilityFixtures
             c.GetProperty("checks").EnumerateArray().Select((r, i) => new CheckRun(100 + i, r.GetProperty("sha").GetString()!,
                 r.GetProperty("status").GetString()!, Text(r, "conclusion"), Date(r, "started_at")!.Value, Date(r, "completed_at"),
                 Text(r, "external_id"))).ToArray(),
-            c.GetProperty("eligible").GetBoolean())).ToArray();
+            c.GetProperty("eligible").GetBoolean(), c.TryGetProperty("capped", out var capped) && capped.GetBoolean())).ToArray();
     }
 
     static string? Text(JsonElement json, string key) => json.TryGetProperty(key, out var value) ? value.GetString() : null;
