@@ -34,7 +34,7 @@ public sealed class Sweep(IGitHubGateway github, IGitHubGateway watcher, string 
     public async Task<Work?> WorkerDown(Target target, CancellationToken ct)
     {
         var now = (clock ?? (() => DateTimeOffset.UtcNow))();
-        if (await finder.Find(target, github, ct) is not { Since: { } since } work || now - since < WorkerDownAfter) return null;
+        if (await finder.Find(target, github, ct) is not { Work: { Since: { } since } work } || now - since < WorkerDownAfter) return null;
         var dispatched = await Dispatched(target.Repo, now - WorkerDownAfter, ct);
         if (dispatched == true) return null;
         await alerts.Raise($"Trigger worker appears down (work waiting on {target.Repo})",

@@ -2042,11 +2042,11 @@ public class WatcherTests
             Activity = { new("before", "head", Now.AddMinutes(-90), "push", "alice") }
         };
         var watched = new Target { Repo = "owner/repo", PollInterval = 30 };
-        var work = await new WorkFinder(() => Now).Find(watched, target, TestContext.Current.CancellationToken);
+        var work = (await new WorkFinder(() => Now).Find(watched, target, TestContext.Current.CancellationToken)).Work;
         Assert.Equal(Now, work!.Since);
         // Without the push in the activity read, the work is not dated at all.
         target.Activity.Clear();
-        Assert.Null((await new WorkFinder(() => Now).Find(watched, target, TestContext.Current.CancellationToken))!.Since);
+        Assert.Null((await new WorkFinder(() => Now).Find(watched, target, TestContext.Current.CancellationToken)).Work!.Since);
     }
 
     // ADR-008 point 3: a secondary signal, since a gate that cannot reach the API usually cannot report through it either.
@@ -2154,7 +2154,7 @@ public class WatcherTests
         Assert.Equal(stale ? ["output:7", "cancel:41"] : [], fake.Order);
         // The worker reads the same check run, so it flags exactly what the Planner would cancel (TS-U5 (c)).
         var worker = new FakeGitHub { CheckList = [check], JobList = [Running(ran)] };
-        Assert.Equal(stale, await new WorkFinder(() => Now).Find(target, worker, ct) is not null);
+        Assert.Equal(stale, (await new WorkFinder(() => Now).Find(target, worker, ct)).Work is not null);
     }
 
     [Fact]
