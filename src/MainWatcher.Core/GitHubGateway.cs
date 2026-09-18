@@ -286,7 +286,7 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     /// needs a Pull requests permission the <c>main-watcher</c> App does not hold (§8, ADR-008). The subjects are the ones the
     /// gate already matches, and a merge group's own merge commit always carries one.
     /// </remarks>
-    public async Task<MergedRange?> MergedCommits(string repo, string before, string after, CancellationToken ct)
+    public async Task<MergedRange?> MergedCommits(string repo, string before, string after, int skip, CancellationToken ct)
     {
         if (!IsSha(before) || !IsSha(after) || before.All(c => c == '0') || after.All(c => c == '0')) return null;
         var commits = new List<MergedCommit>();
@@ -296,22 +296,29 @@ public sealed class GitHubGateway(HttpClient http, long appId,
             // A merge group holds one queue entry's own pull request and everything ahead of it, so the whole range is read,
             // not only the head commit. It is read to the end, because a pull request is named by its **last** commit, the
             // merge or squash commit: stopping early would drop exactly the commits that name the later pull requests, and the
-            // earlier ones it did name would hide that anything was missing. `total_commits` counts the whole range however
-            // much of it one response carries, so it is what says whether the read reached the end.
-            for (var page = 1; ; page++)
+            // earlier ones it did name would hide that anything was missing. A range too long for one pass is continued from
+            // where the last one stopped, so the entry is finished across several rather than left part-judged.
+            // `total_commits` counts the whole range however much of it one response carries, so it is what says whether the
+            // read reached the end.
+            var first = true;
+            for (var page = skip / ComparePageSize + 1; ; page++)
             {
                 var comparison = await Send(HttpMethod.Get,
                     $"repos/{repo}/compare/{before}...{after}?per_page={ComparePageSize}&page={page}", null, ct);
                 total = comparison.TryGetProperty("total_commits", out var counted) && counted.ValueKind == JsonValueKind.Number
                     ? counted.GetInt32() : 0;
-                var page1 = comparison.GetProperty("commits").EnumerateArray().Select(Merged).ToArray();
-                commits.AddRange(page1);
-                if (page1.Length < ComparePageSize || commits.Count >= total || commits.Count >= MaxMergedCommits) break;
+                var read = comparison.GetProperty("commits").EnumerateArray().Select(Merged).ToArray();
+                // The first page read may start part-way into itself, where an earlier pass stopped inside it.
+                commits.AddRange(first ? read.Skip(skip % ComparePageSize) : read);
+                first = false;
+                if (read.Length < ComparePageSize || skip + commits.Count >= total || commits.Count >= MaxMergedCommits) break;
             }
         }
         // A force push can leave "before" unreachable, and GitHub cannot compare it any more.
         catch (HttpRequestException e) when (e.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.UnprocessableEntity) { return null; }
-        return new(commits, commits.Count < total);
+        // A page can carry the bound past itself, so the pass keeps exactly what it promised to read.
+        if (commits.Count > MaxMergedCommits) commits.RemoveRange(MaxMergedCommits, commits.Count - MaxMergedCommits);
+        return new(commits, skip + commits.Count < total);
     }
 
     static MergedCommit Merged(JsonElement json)
@@ -326,9 +333,9 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     const int ComparePageSize = 100;
 
     /// <summary>
-    /// How many commits of one activity entry are read before the range is called truncated. Reconciliation then reports the
-    /// merge as one it cannot fully name, rather than claiming the pull requests it happened to see were all of them; the
-    /// bound is what keeps a single enormous merge from costing a hundred requests (R-13).
+    /// How many commits of one activity entry one pass reads. It is a budget, not a limit: a longer range is continued by the
+    /// next pass from where this one stopped, so every pull request it merged is still named and judged, while no single cycle
+    /// spends a hundred requests on one enormous merge (R-13).
     /// </summary>
     public const int MaxMergedCommits = 500;
 

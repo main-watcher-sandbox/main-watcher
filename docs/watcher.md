@@ -348,11 +348,17 @@ the range, and the pull request is taken from each commit subject: `Merge pull r
 or `… (#N)`, the two shapes the gate matches. The commits-to-pull-requests API would be exact, but
 it needs a Pull requests permission the `main-watcher` App does not hold, and ADR-008 promised
 reconciliation would need no new one. A merge is reported **as itself** — the commit it left on
-`main` — rather than passed over, when its subjects name no pull request, when GitHub can no longer
-compare its range, and when the range holds more than the 500 commits reconciliation reads. That
-last case matters because a pull request is named by its **last** commit, so a range read only
-part-way loses exactly the commits that would name the later pull requests, and the ones it did
-name must not be taken for all of them; such a merge is reported beside them, not instead of them.
+`main` — rather than passed over, when its subjects name no pull request and when GitHub can no
+longer compare its range.
+
+A pull request is named by its **last** commit, the merge or squash commit, so a range read only
+part-way loses exactly the commits that would name the later pull requests. One pass therefore reads
+at most 500 commits of one entry and, if any remain, **stops there**: what it read is judged, how far
+it got is recorded as `reconciled_commits=<commit>:<commits read>`, the entry stays in front of the
+cursor and the lock stays incomplete. The next cycle carries on from that commit. What is bounded is
+the work one cycle does, not what is checked, so every pull request the entry merged is still named
+and judged one by one. A marker left behind by a finished range names a commit no later entry
+carries, so it is inert rather than needing to be cleared.
 
 **Which label.** The one the pull request carried **at the moment it merged**, replayed from its
 `labeled` and `unlabeled` events (Issues: read) up to its `merged` event, which is in the same

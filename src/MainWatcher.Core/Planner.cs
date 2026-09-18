@@ -248,35 +248,34 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         string? stopped = null;
         DateTimeOffset? blocked = null;
         var complete = false;
+        string? progress = null;
         Exception? failed = null;
         try
         {
             for (var i = 0; i < merges.Length; i++)
             {
                 var merge = merges[i];
+                // Where an earlier pass stopped inside this entry's range, if it did.
+                var read = Reconciliation.Read(issue.Body, merge.After);
                 MergedRange? range;
-                try { range = await github.MergedCommits(repo, merge.Before, merge.After, ct); }
+                try { range = await github.MergedCommits(repo, merge.Before, merge.After, read, ct); }
                 catch (Exception e) when (Unreadable(e, ct))
                 {
                     (stopped, blocked) = ($"the commits of `{Markdown.Short(merge.After)}` could not be read ({e.Message})", merge.Timestamp);
                     break;
                 }
                 var pulls = range is null ? [] : Reconciliation.Pulls(range.Commits);
-                // A merge whose commits name no pull request, whose range GitHub can no longer compare, or whose range is
-                // longer than was read, is still a merge made while `main` was locked, and what cannot be named cannot be
-                // judged. It is reported as itself, beside any pull request the range did name: a truncated range loses its
-                // **last** commits, which are exactly the ones that name the later pull requests, so the ones it did name
-                // must not be taken for all of them.
-                if (pulls.Count == 0 || range is { Truncated: true })
+                // A merge whose commits name no pull request, or whose range GitHub can no longer compare, is still a merge
+                // made while `main` was locked, and what cannot be named cannot be judged. It is reported as itself. A range
+                // with commits still to read says nothing yet: a pull request is named by its **last** commit, so the ones
+                // not yet read are exactly the ones that would name the rest.
+                if (pulls.Count == 0 && range is not { Truncated: true })
                     comments = await ReportMerge(target, issue, Reconciliation.Key(merge.After),
                         $"A {(merge.Type == "pr_merge" ? "pull request merge" : "merge-queue merge")} left "
                         + $"{Markdown.Commit(repo, merge.After)} on `main` at {Markers.Stamp(merge.Timestamp)}. "
                         + (range is null
                             ? "Its range can no longer be compared, so the pull request it merged cannot be named"
-                            : range.Truncated
-                                ? $"Its range holds more than the {GitHubGateway.MaxMergedCommits} commits reconciliation "
-                                    + "reads, so the pull requests it merged cannot all be named"
-                                : "None of its commit subjects names a pull request, so its `fixes-main` label cannot be judged"),
+                            : "None of its commit subjects names a pull request, so its `fixes-main` label cannot be judged"),
                         rows, comments, ct);
                 foreach (var (pull, committed) in pulls)
                 {
@@ -298,6 +297,17 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
                         + $"without the `{Reconciliation.FixLabel}` label", rows, comments, ct);
                 }
                 if (stopped is not null) break;
+                // A range with commits still unread is finished by the next pass, not waved through by this one: the entry
+                // stays in front of the cursor, the lock stays incomplete, and how far this pass got is recorded so the next
+                // carries on from there. Every pull request it merged is still named and judged one by one (ADR-015 point 1);
+                // what is bounded is the work one cycle does, not what is checked.
+                if (range is { Truncated: true })
+                {
+                    progress = Reconciliation.Progress(merge.After, read + range.Commits.Count);
+                    (stopped, blocked) = ($"the range of `{Markdown.Short(merge.After)}` is longer than one pass reads; "
+                        + $"{read + range.Commits.Count} of its commits have been checked", merge.Timestamp);
+                    break;
+                }
                 // The cursor moves a whole second at a time, because the next run reads strictly after it: advancing between
                 // two entries stamped in the same second would put the one still unjudged behind the cursor for good.
                 if (i + 1 == merges.Length || merges[i + 1].Timestamp != merge.Timestamp) reached = merge.Timestamp;
@@ -312,6 +322,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
             complete = stopped is null && issue.State == "closed";
             (string Name, string Value)[] fields = [
                 .. reached is { } mark && mark != cursor ? new[] { (Reconciliation.Cursor, Markers.Stamp(mark)) } : [],
+                .. progress is not null ? new[] { (Reconciliation.Commits, progress) } : [],
                 .. complete ? new[] { (Reconciliation.Complete, Reconciliation.CompleteValue) } : []];
             if (rows.Count > 0 || fields.Length > 0)
             {

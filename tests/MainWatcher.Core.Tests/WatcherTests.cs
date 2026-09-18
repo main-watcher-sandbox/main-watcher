@@ -643,26 +643,43 @@ public class WatcherTests
         Assert.Single(fake.Find("owner/repo", 1).Comments, c => c.Body.Contains(Reconciliation.Key(7), StringComparison.Ordinal));
     }
 
-    // PR #55 review: a pull request is named by its last commit, so a range read only to its first
-    // GitHubGateway.MaxMergedCommits loses exactly the commits that would name the later ones. The pull requests it did name
-    // must not be taken for all of them.
+    // PR #55 review: a pull request is named by its **last** commit, so a range read only part-way loses exactly the commits
+    // that name the later ones. A lock is never complete while any of its range is unread — the bound is on the work one
+    // cycle does, not on what is checked — and the next pass carries on from where this one stopped.
     [Fact]
-    public async Task ATruncatedRangeIsReportedBesideThePullRequestsItDidName()
+    public async Task ALongRangeIsFinishedAcrossPassesAndTheLockStaysIncompleteMeanwhile()
     {
         var ct = TestContext.Current.CancellationToken;
         var fake = new FakeGitHub { Activity = { PushAt('a', 'b', "merge_queue_merge", "alice", 30) } };
-        fake.Merged[Sha('b')] = [Pull(7, 30)];
+        // Two pull requests in one range; the fake yields one commit a pass while the range is marked longer than a pass.
+        fake.Merged[Sha('b')] = [Pull(7, 30), Pull(8, 30)];
         fake.Truncated.Add(Sha('b'));
         fake.Labels[7] = [Merge(30)];
+        fake.Labels[8] = [Merge(30)];
         SeedWindow(fake, 60);
+        fake.CloseByHand("owner/repo", 1, "alice", Now.AddMinutes(-5));
         var watcher = new FakeGitHub();
 
-        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        var line = Assert.Single(await Reconciler(fake, watcher).Reconcile(Locked, ct));
         var body = fake.Find("owner/repo", 1).Body;
+        // The first pass judged #7 and stopped. #8 is named only by a commit it has not read yet.
         Assert.Contains("[#7](https://github.com/owner/repo/pull/7)", body);
-        Assert.Contains($"more than the {GitHubGateway.MaxMergedCommits} commits", body);
-        Assert.Contains(Reconciliation.Key(Sha('b')), body);
-        // Two reports: the pull request the range named, and the range itself for the ones it could not.
+        Assert.DoesNotContain("#8", body);
+        // Nothing it could not read is reported as unnameable, and nothing claims the window was checked.
+        Assert.DoesNotContain(Reconciliation.Key(Sha('b')), body);
+        Assert.Null(Markers.Field(body, Reconciliation.Cursor));
+        Assert.Null(Markers.Field(body, Reconciliation.Complete));
+        Assert.Equal($"{Sha('b')}:1", Markers.Field(body, Reconciliation.Commits));
+        Assert.Contains("is longer than one pass reads", line);
+
+        // The next pass carries on from the commit the last one stopped at, and finishes the entry.
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        body = fake.Find("owner/repo", 1).Body;
+        Assert.Contains("[#8](https://github.com/owner/repo/pull/8)", body);
+        Assert.Equal(Now.AddMinutes(-30), Markers.Time(body, Reconciliation.Cursor));
+        Assert.Equal(Reconciliation.CompleteValue, Markers.Field(body, Reconciliation.Complete));
+        Assert.Equal(["merged:" + Sha('b') + ":0", "labels:7", "merged:" + Sha('b') + ":1", "labels:8"], fake.Reads);
+        // Each pull request reported once, and each judged on its own rather than lumped into one warning.
         Assert.Equal(2, watcher.Comments.Count + watcher.Issues["owner/watcher"].Count);
     }
 
@@ -2243,12 +2260,15 @@ public class WatcherTests
         /// <summary>Merge groups the gate failed, for the unlock comment (R-7).</summary>
         public List<GateBlock> Blocked { get; } = [];
         public bool BlockedError { get; init; }
-        public Task<MergedRange?> MergedCommits(string repo, string before, string after, CancellationToken ct)
+        public Task<MergedRange?> MergedCommits(string repo, string before, string after, int skip, CancellationToken ct)
         {
-            Reads.Add($"merged:{after}");
+            Reads.Add($"merged:{after}:{skip}");
             if (MergedError.Contains(after)) throw new HttpRequestException("comparison unavailable");
-            return Task.FromResult(Uncomparable.Contains(after) ? null
-                : new MergedRange(Merged.GetValueOrDefault(after, []).ToArray(), Truncated.Contains(after)));
+            if (Uncomparable.Contains(after)) return Task.FromResult<MergedRange?>(null);
+            // One commit a pass, when the range is marked truncated, so a test can watch it being finished across several.
+            var all = Merged.GetValueOrDefault(after, []);
+            var read = Truncated.Contains(after) ? all.Skip(skip).Take(1).ToArray() : [.. all.Skip(skip)];
+            return Task.FromResult<MergedRange?>(new(read, skip + read.Length < all.Count));
         }
         public Task<IReadOnlyList<PullEvent>> PullEvents(string repo, int number, CancellationToken ct)
         {

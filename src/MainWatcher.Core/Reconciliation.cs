@@ -18,6 +18,13 @@ public static class Reconciliation
     /// <summary>The marker field saying the whole window has been checked and every report made.</summary>
     public const string Complete = "reconciled";
 
+    /// <summary>
+    /// The marker field recording how far into one activity entry's range the commits have been read, as
+    /// <c>&lt;after sha&gt;:&lt;commits&gt;</c>. A range longer than one pass reads is finished across several, so the entry
+    /// stays in front of the cursor until every pull request it merged has been named and judged (ADR-015 point 1).
+    /// </summary>
+    public const string Commits = "reconciled_commits";
+
     /// <summary>The only value <see cref="Complete"/> takes.</summary>
     public const string CompleteValue = "complete";
 
@@ -38,6 +45,19 @@ public static class Reconciliation
 
     /// <summary>Whether this lock's whole window has been checked, so no run need look at it again.</summary>
     public static bool IsComplete(string? body) => Markers.Field(body, Complete) == CompleteValue;
+
+    /// <summary>
+    /// How many commits of <paramref name="after"/>'s range an earlier pass already read, from <see cref="Commits"/>. It is 0
+    /// for every other entry, so the marker left behind by a finished range is inert rather than needing to be cleared.
+    /// </summary>
+    public static int Read(string? body, string after) =>
+        Markers.Field(body, Commits)?.Split(':') is [var sha, var count] && sha == after
+            && int.TryParse(count, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var read) ? read : 0;
+
+    /// <summary>The <see cref="Commits"/> value for a range this pass read <paramref name="read"/> commits of in total.</summary>
+    public static string Progress(string after, int read) =>
+        $"{after}:{read.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
 
     static readonly System.Text.RegularExpressions.Regex MergeSubject = new(@"^Merge pull request #(?<number>\d+) from ");
     static readonly System.Text.RegularExpressions.Regex SquashSubject = new(@"\(#(?<number>\d+)\)$");

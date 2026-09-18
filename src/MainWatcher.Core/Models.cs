@@ -44,9 +44,9 @@ public sealed record FailOpen(long RunId, string Sha, string Branch, DateTimeOff
 /// </summary>
 public sealed record MergedCommit(string Sha, string Subject, DateTimeOffset At, int? Pull);
 /// <summary>
-/// What one activity entry added to <c>main</c>. <see cref="Truncated"/> is true when the range holds more commits than were
-/// read, so the pull requests <see cref="Commits"/> names may not be all of them: a pull request is named by its last commit,
-/// so what is missing from the end is exactly what would have named the rest.
+/// What one pass read of an activity entry's range. <see cref="Truncated"/> is true when commits remain beyond it, so the pull
+/// requests <see cref="Commits"/> names are not yet all of them: a pull request is named by its last commit, so what is left
+/// unread is exactly what would name the rest. The next pass continues from where this one stopped.
 /// </summary>
 public sealed record MergedRange(IReadOnlyList<MergedCommit> Commits, bool Truncated);
 /// <summary>

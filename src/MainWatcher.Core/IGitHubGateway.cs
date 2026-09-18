@@ -36,10 +36,10 @@ public interface IGitHubGateway
     Task<IReadOnlyList<GateBlock>> GateBlocks(string repo, DateTimeOffset since, CancellationToken ct);
     /// <summary>
     /// The commits <paramref name="after"/> added over <paramref name="before"/>, oldest first, each with the pull request its
-    /// subject names, and whether the range is longer than was read (ADR-015). Null when GitHub cannot compare the two
-    /// commits, which a force push can cause.
+    /// subject names, from the <paramref name="skip"/>th onwards, and whether more of the range remains (ADR-015). Null when
+    /// GitHub cannot compare the two commits, which a force push can cause.
     /// </summary>
-    Task<MergedRange?> MergedCommits(string repo, string before, string after, CancellationToken ct);
+    Task<MergedRange?> MergedCommits(string repo, string before, string after, int skip, CancellationToken ct);
     /// <summary>
     /// A pull request's <c>labeled</c>, <c>unlabeled</c> and <c>merged</c> events, oldest first (ADR-015 point 8). One read
     /// gives both the label history and the moment it is judged at.

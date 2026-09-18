@@ -429,7 +429,7 @@ public class GatewayTests
                 + "{\"sha\":\"c3\",\"commit\":{\"message\":\"Merge pull request #7 from owner/fix\",\"committer\":{\"date\":\"2026-09-17T10:00:00Z\"}}}]}"));
         });
         using var http = Client(handler);
-        var range = await new GitHubGateway(http, 1).MergedCommits("owner/repo", new('a', 40), new('b', 40),
+        var range = await new GitHubGateway(http, 1).MergedCommits("owner/repo", new('a', 40), new('b', 40), 0,
             TestContext.Current.CancellationToken);
         Assert.NotNull(range);
         Assert.False(range.Truncated);
@@ -440,6 +440,41 @@ public class GatewayTests
         Assert.Equal([(8, DateTimeOffset.Parse("2026-09-17T09:00:00Z")), (7, DateTimeOffset.Parse("2026-09-17T10:00:00Z"))],
             Reconciliation.Pulls(commits));
         Assert.Contains("/compare/", path);
+    }
+
+    // PR #55 review: a range longer than one pass reads is finished by the next, so the read starts where the last stopped.
+    [Theory]
+    // From the start: two pages read, and the third page's absence ends it.
+    [InlineData(0, new[] { 1, 2, 3 }, 250, 250, false)]
+    // Resumed inside the second page: it starts there and drops the fifty commits already read.
+    [InlineData(150, new[] { 2, 3 }, 100, 250, false)]
+    // Resumed with the last commits left: nothing beyond them remains.
+    [InlineData(240, new[] { 3 }, 10, 250, false)]
+    // A range longer than one pass's budget stops at it and says so.
+    [InlineData(0, new[] { 1, 2, 3, 4, 5 }, 500, 900, true)]
+    public async Task ALongRangeIsReadFromWhereTheLastPassStopped(int skip, int[] pages, int expected, int total, bool truncated)
+    {
+        var read = new List<int>();
+        var handler = new Handler(request =>
+        {
+            var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query);
+            var page = int.Parse(query["page"]!);
+            read.Add(page);
+            // 100 commits a page until the range runs out, each naming nothing, so only the arithmetic is under test.
+            var on = Math.Clamp(total - (page - 1) * 100, 0, 100);
+            var commits = string.Join(",", Enumerable.Range(0, on).Select(i =>
+                $"{{\"sha\":\"c{(page - 1) * 100 + i}\",\"commit\":{{\"message\":\"a commit\",\"committer\":{{\"date\":\"2026-09-17T09:00:00Z\"}}}}}}"));
+            return Task.FromResult(Response($"{{\"total_commits\":{total},\"commits\":[{commits}]}}"));
+        });
+        using var http = Client(handler);
+        var range = await new GitHubGateway(http, 1).MergedCommits("owner/repo", new('a', 40), new('b', 40), skip,
+            TestContext.Current.CancellationToken);
+        Assert.NotNull(range);
+        Assert.Equal(pages, read);
+        Assert.Equal(expected, range.Commits.Count);
+        Assert.Equal(truncated, range.Truncated);
+        // The first commit read is the one after the last pass's, whichever page it fell in.
+        Assert.Equal($"c{skip}", range.Commits[0].Sha);
     }
 
     [Fact]
@@ -455,9 +490,9 @@ public class GatewayTests
         var gateway = new GitHubGateway(http, 1);
         var ct = TestContext.Current.CancellationToken;
         // A force push can leave "before" unreachable, and the activity's first entry has no "before" at all.
-        Assert.Null(await gateway.MergedCommits("owner/repo", new('a', 40), new('b', 40), ct));
+        Assert.Null(await gateway.MergedCommits("owner/repo", new('a', 40), new('b', 40), 0, ct));
         Assert.Equal(1, calls);
-        Assert.Null(await gateway.MergedCommits("owner/repo", new('0', 40), new('b', 40), ct));
+        Assert.Null(await gateway.MergedCommits("owner/repo", new('0', 40), new('b', 40), 0, ct));
         Assert.Equal(1, calls);
     }
 
