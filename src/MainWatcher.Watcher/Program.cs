@@ -89,7 +89,9 @@ try
         if (Environment.GetEnvironmentVariable("GITHUB_STEP_SUMMARY") is { Length: > 0 } summary) File.AppendAllLines(summary, [line]);
     }
     foreach (var failure in reporter.AlertFailures) Console.Error.WriteLine($"Alert not raised: {failure}");
-    if (recoveryFailed || reporter.AlertFailures.Count > 0 || sweepFailed) return 1;
+    // A sweep alert is never a required write (ADR-010): a failed one fails the run at the end, but the backup testing this
+    // run exists to do still happens, since it is exactly when the worker is down that nothing else will.
+    if (recoveryFailed || reporter.AlertFailures.Count > 0) return 1;
     var planned = await planner.Plan(target, Environment.GetEnvironmentVariable("MW_FORCE") == "true", timeout.Token);
     Console.WriteLine(planned is null ? "No eligible head." : string.IsNullOrEmpty(planned.ExternalId)
         ? $"Check {planned.Id} awaits dispatch recovery." : $"Started check {planned.Id}, target run {planned.ExternalId}.");

@@ -72,41 +72,6 @@ token is requested; a sweep reads every enabled target from `targets.yml` with t
 the cycles use. The concurrency group is on the cycle job, so a sweep's cycle for one target
 never runs beside a dispatched cycle for it.
 
-## Backup sweep
-
-GitHub's scheduler is delayed and sometimes drops events, so it is only a backup (C-7,
-ADR-010). `watch.yml` also runs on a schedule at minute 17, away from the congested start of
-the hour. A scheduled run, or a dispatch with no `target`, is a **sweep**: it gives every
-enabled target a cycle, at most five at a time, and is named `sweep` rather than
-`watch <target>`, so the worker never mistakes it for one target's cycle.
-
-```sh
-gh workflow run watch.yml
-```
-
-A sweep also reports the two things only it looks for. Neither is a required write: a failure is
-logged and fails the run, and the next sweep judges again. Neither delays the cycle's own work.
-
-- **Trigger worker appears down.** Before the cycle, the sweep asks the question the worker
-  asks — does this target have work? — and how long that work has waited: since the
-  `main-watcher` job completed for a report the Reporter owes, since the check run was created
-  for one awaiting linking, since the 30-minute dispatch window closed for one that never got a
-  target run, and, for an eligible head, since the push that made it current or since
-  `poll_interval` expired, whichever is later. Work older than 15 minutes raises "Trigger worker
-  appears down (work waiting on `owner/repo`)". Two kinds of work are never reported: work
-  GitHub does not date, a deleted target run or a head whose push is not in the activity read;
-  and work on a target the worker has dispatched a cycle for within those 15 minutes, since the
-  worker is then alive and something else is stuck, which its own "reporting pending" alert
-  covers (ADR-013). Reading the dispatched cycles needs `actions: read` on the watcher repo; a
-  read that fails suppresses nothing, and the alert says the cycles could not be read.
-- **Gate failed open.** After the cycle, the sweep lists the target's `main-watcher-gate.yml`
-  merge-group runs of the past hour, at most 50, newest first, and keeps those whose
-  `main-watcher/gate-fail-open` job was not skipped (ADR-008 point 3). One alert per sweep lists
-  them, with a hidden marker naming the runs, so the same set is never reported twice. This is
-  only a secondary signal: a gate that cannot reach the API usually cannot post that check run
-  either, which is why merges made while a lock was open are reported by reconciliation instead
-  (ADR-015, #20). A target that has not copied the gate workflow has no such runs.
-
 The reusable caller's job and literal step names determine the outcome. The
 Reporter ignores unrelated jobs, reads all jobs pages from the latest attempt,
 and validates and merges all JSON report files in `main-watcher-ctrf` (except
@@ -134,6 +99,48 @@ deferred to worker/production work rather than introducing new GitHub state in #
 Read calls retry transient failures up to three times with bounded exponential
 backoff, and collection reads follow GitHub's next-page links. Writes are not
 automatically retried: recovery inspects GitHub state before another dispatch.
+
+## Backup sweep
+
+GitHub's scheduler is delayed and sometimes drops events, so it is only a backup (C-7,
+ADR-010). `watch.yml` also runs on a schedule at minute 17, away from the congested start of
+the hour. A scheduled run, or a dispatch with no `target`, is a **sweep**: it gives every
+enabled target a cycle, at most five at a time, and is named `sweep` rather than
+`watch <target>`, so the worker never mistakes it for one target's cycle.
+
+```sh
+gh workflow run watch.yml
+```
+
+A sweep also reports the two things only it looks for. Neither is a required write: a failure is
+logged and fails the run at the end, but it never stops the cycle from reporting and testing,
+which is the whole point of a sweep when the worker is down. The next sweep judges again.
+
+- **Trigger worker appears down.** Before the cycle, the sweep asks the question the worker
+  asks — does this target have work? — and how long that work has waited: since the
+  `main-watcher` job completed for a report the Reporter owes, since the check run was created
+  for one awaiting linking, since the 30-minute dispatch window closed for one that never got a
+  target run, and, for an eligible head, since the push that made it current or since
+  `poll_interval` expired, whichever is later. Work older than 15 minutes raises "Trigger worker
+  appears down (work waiting on `owner/repo`)". Two kinds of work are never reported: work
+  GitHub does not date, a deleted target run or a head whose push is not in the activity read;
+  and work on a target the worker has dispatched a cycle for within those 15 minutes, since the
+  worker is then alive and something else is stuck, which its own "reporting pending" alert
+  covers (ADR-013). Reading the dispatched cycles needs `actions: read` on the watcher repo; a
+  read that fails suppresses nothing, and the alert says the cycles could not be read.
+- **Gate failed open.** After the cycle, the sweep looks for `main-watcher/gate-fail-open` check
+  runs posted in the past hour (ADR-008 point 3). It lists the target's `main-watcher-gate.yml`
+  merge-group runs, at most 50, newest first, and keeps those whose fail-open job was not
+  skipped and **started** within the hour. The job is `needs: gate`, so it appears only once the
+  gate job has finished: runs created up to an hour before the window are read as well, or a
+  merge group gated just before a sweep would fall between two of them — too new for the first
+  and too old for the second. Judging each job by its own time instead makes each sweep's window
+  abut the last one's, so a fail-open is reported exactly once. One alert per sweep lists what it
+  found, with a hidden marker naming the runs, so a second sweep within the same hour adds
+  nothing. This is only a secondary signal: a gate that cannot reach the API usually cannot post
+  that check run either, which is why merges made while a lock was open are reported by
+  reconciliation instead (ADR-015, #20). A target that has not copied the gate workflow has no
+  such runs.
 
 ## Lock issue
 
@@ -299,4 +306,9 @@ covers a real lock opening and closing, and TS-S4 with that lock. The
 [issue #11 validation record](../sandbox/issue-11-validation.md) covers TS-S2: the push list
 and the later-failure comment. The [issue #12 validation record](../sandbox/issue-12-validation.md)
 covers TS-S14 (a), (b) and (d) and the override part of TS-S3. The
-[issue #13 validation record](../sandbox/issue-13-validation.md) covers TS-S16 (a) to (f).
+[issue #13 validation record](../sandbox/issue-13-validation.md) covers TS-S16 (a) to (f). The
+[issue #16 validation record](../sandbox/issue-16-validation.md) covers TS-S11: with the worker
+scaled to zero, a sweep tested a push that had waited two hours and raised "trigger worker
+appears down", and a merge group whose gate met an expired lease was reported once. It also
+records what the schedule did: GitHub dropped two of the cron's first three slots and ran the
+third two minutes late, which is C-7 measured rather than assumed.
