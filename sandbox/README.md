@@ -42,6 +42,29 @@ commit under test to its `main`:
 git push https://github.com/main-watcher-sandbox/main-watcher.git HEAD:main
 ```
 
+That push overwrites the replica's `targets.yml` with this repo's, which lists **no** targets:
+the watcher repo watches nothing of its own, and two watchers on one target would race for its
+check runs. So after every such push, set the replica's list back to the sandbox target. Its
+`poll_interval` of 1 minute is what makes a scenario take minutes rather than a quarter of an
+hour:
+
+```
+gh api -X PUT repos/main-watcher-sandbox/main-watcher/contents/targets.yml \
+  -f message='Sandbox: watch sample-target' \
+  -f sha="$(gh api repos/main-watcher-sandbox/main-watcher/contents/targets.yml --jq .sha)" \
+  -f content="$(base64 -w0 <<'YAML'
+targets:
+  - repo: main-watcher-sandbox/sample-target
+    test_command: dotnet test --no-restore
+    results_glob: '**/TestResults/*.ctrf.json'
+    timeout: 30
+    poll_interval: 1
+    notify: []
+    enabled: true
+YAML
+)"
+```
+
 Sandbox targets are public, because the sandbox org is on the Free plan, where the merge
 queue works only in public repos. A public repo cannot use an action or reusable workflow
 from a private one, so the gate and the reusable test workflow are also published on their

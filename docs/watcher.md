@@ -1,6 +1,6 @@
 ---
 owner: platform-team
-reviewed: 2026-09-17
+reviewed: 2026-09-18
 review_by: 2027-03-15
 ---
 
@@ -27,7 +27,12 @@ malformed or disabled targets fail this step without requesting a token.
 ## Configuration
 
 `targets.yml` is a mapping with a `targets` array. Unknown fields and duplicate
-keys or repositories are rejected. Each entry supports:
+keys or repositories are rejected. An empty array is valid, and is what this repo ships:
+no target is watched from here, so the hourly sweep does nothing and the trigger worker starts
+no cycles. The scenario-test target belongs to the private sandbox replica, which holds the App
+credentials; two watchers on one target would race for its check runs. A regression test parses
+the committed file, so one the sweep could not read fails the build rather than a cycle an hour
+later. Each entry supports:
 
 | Field | Meaning | Default |
 | --- | --- | --- |

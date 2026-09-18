@@ -8,5 +8,7 @@
     <ProjectReference Include="../../src/MainWatcher.Gate/MainWatcher.Gate.csproj" />
     <None Update="Fixtures/*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../.github/workflows/run-integration-tests.yml" Link="Fixtures/run-integration-tests.yml" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The committed target list, so a file the sweep could not parse fails the build instead. -->
+    <None Include="../../targets.yml" Link="Fixtures/targets.yml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

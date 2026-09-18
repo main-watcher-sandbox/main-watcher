@@ -1,11 +1,19 @@
-# timeout and poll_interval are minutes. Add production targets on onboarding.
-# test_command, results_glob and timeout must match the target caller workflow.
-# watch.yml never executes these commands itself.
-targets:
-  - repo: main-watcher-sandbox/sample-target
-    test_command: dotnet test --no-restore
-    results_glob: '**/TestResults/*.ctrf.json'
-    timeout: 30
-    poll_interval: 1
-    notify: []
-    enabled: true
+# The repositories Main Watcher watches, one entry each. Add production targets on onboarding.
+# timeout and poll_interval are minutes; test_command, results_glob and timeout must match the
+# target's copied main-watcher-tests.yml. watch.yml never executes these commands itself.
+#
+# No targets are configured yet, so the hourly sweep does nothing and the trigger worker starts
+# no cycles. The sandbox target is watched by the private replica
+# main-watcher-sandbox/main-watcher, which holds the App credentials; see sandbox/README.md.
+# Two watchers on one target would race for its check runs, so it does not belong here.
+#
+# An entry looks like this:
+#
+#   - repo: owner/repo
+#     test_command: dotnet test --no-restore
+#     results_glob: '**/TestResults/*.ctrf.json'
+#     timeout: 30
+#     poll_interval: 15
+#     notify: []
+#     enabled: true
+targets: []
