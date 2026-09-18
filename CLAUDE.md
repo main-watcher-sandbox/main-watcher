@@ -25,8 +25,8 @@ credentials, a low rate limit and a report owed for more than 15 minutes (MainWa
 TS-S14 (c) passed. The hourly sweep at minute 17 gives every enabled target a cycle and
 raises "trigger worker appears down" and gate fail-open alerts (MainWatcher#16). In the
 sandbox a sweep tested a push that had waited two hours with the worker down, and reported a
-real `gate-fail-open` check run once, but GitHub ran neither scheduled slot during the test,
-so the cron firing at all is still unproven (C-7).
+real `gate-fail-open` check run once; TS-S11 passed. GitHub dropped two of the cron's first
+three slots and ran the third two minutes late, which is C-7 measured rather than assumed.
 
 ## Where things are
 

@@ -14,10 +14,10 @@ at 21:23Z, whose tree is MainWatcher `982dbd3`. The target is
 zero throughout (`kubectl -n main-watcher-sandbox get deploy trigger-worker` → 0 replicas), so
 nothing but a sweep or a hand-run cycle could act. "By hand" means the `pat-actium` account.
 
-**The one thing not observed: GitHub never ran the schedule.** See
-[below](#the-schedule-itself-did-not-fire). Every sweep recorded here was dispatched by hand
-with no `target`, which is the same run as a scheduled one in everything but the event: the
-same `sweep` run name, the same `targets` and matrix jobs, and `MW_SWEEP: true`.
+GitHub ran the schedule on the third slot, at 00:19:03Z, and skipped the first two; see
+[below](#the-schedule-itself). The sweeps recorded in the two sections after this one were
+dispatched by hand with no `target`, which is the same run as a scheduled one in everything but
+the event: the same `sweep` run name, the same `targets` and matrix jobs, and `MW_SWEEP: true`.
 
 ## Shape: a run with no target sweeps every enabled target
 
@@ -39,7 +39,7 @@ same `sweep` run name, the same `targets` and matrix jobs, and `MW_SWEEP: true`.
 | --- | --- |
 | 21:28:15Z | A cycle dispatched by hand reported the previous check; the target was left clean |
 | 21:29:35Z | Push [`96c87c4`](https://github.com/main-watcher-sandbox/sample-target/commit/96c87c4ce9ade84f59f518d54c2efcd0a28c6775) to `main`. Nothing tested it: the worker was down, and no cycle was dispatched after 21:28 |
-| 22:17Z, 23:17Z | The two scheduled slots passed with no run (below) |
+| 22:17Z, 23:17Z | Both scheduled slots passed with no run; GitHub ran the 00:17Z one (below) |
 | 23:29:36Z | Sweep dispatched by hand: [run 35287073574](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35287073574) |
 | 23:30:46Z | `Sweep: the trigger worker appears down; head 96c87c4 is eligible for a test.` → alert [main-watcher#10](https://github.com/main-watcher-sandbox/main-watcher/issues/10) |
 | 23:30:50Z | `Started check 105421959319, target run 35287169685` — the waiting push is tested by the sweep |
@@ -87,27 +87,28 @@ merge-group gate runs on this target, the three examined by hand
 `main-watcher/gate-fail-open` with conclusion `skipped`, so a gate that enforced the lock
 correctly is never reported.
 
-## The schedule itself did not fire
+## The schedule itself
 
-The cron `17 * * * *` reached the replica's default branch at 21:23Z. Neither the 22:17Z nor
-the 23:17Z slot produced a run of any kind: `gh run list` shows nothing between the 21:28
-dispatch and the 23:29 one, and nothing queued at either 22:27Z or 23:29Z.
+The cron `17 * * * *` reached the replica's default branch at 21:23Z. **The 22:17Z and 23:17Z
+slots produced no run of any kind**, and nothing was queued at 22:27Z or 23:29Z. The **00:17Z
+slot ran**, as [run 35290670923](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35290670923),
+created 00:19:03Z — two minutes late, on the event `schedule`:
 
-What was ruled out: the workflow is `state=active` at `.github/workflows/watch.yml` on the
-default branch `main`; Actions are enabled on the repository (`{"enabled":true,
-"allowed_actions":"all"}`); githubstatus.com reported Actions "Normal" at 22:28Z; and the
-replica started hand-dispatched runs at 23:29Z, 23:36Z and 23:39Z, so it was not out of
-Actions minutes or otherwise unable to start runs. A malformed `on.schedule` would have
-produced a failed run rather than none, and actionlint 1.7.12 accepts the file.
+| Step | Evidence |
+| --- | --- |
+| `targets` job, 00:19:07Z → 00:19:29Z | Listed the one enabled target with no input to take it from |
+| `watch` matrix leg, 00:19:33Z → 00:20:19Z | `MW_SWEEP: true` on a run nobody dispatched |
+| `No eligible head.` | `main` was green and reported, so the sweep correctly did nothing |
+| `Sweep: reported 1 merge group(s) whose gate failed open.` | The 23:35Z fail-open was still inside the hour, and alert #11 already carried its marker, so nothing was written: alert #11 still has no comments |
 
-What is left is GitHub's own scheduler: `schedule` events are delayed under load and are
-sometimes dropped altogether, and a newly registered cron often misses its first slots. That is
-C-7, the constraint this whole design rests on, and the reason ADR-010 makes the schedule a
-backup rather than the trigger. It does mean the first acceptance criterion of #16, that the
-workflow **runs** on a schedule at minute 17, is unproven here: what is proven is that a sweep
-does the right thing, and that the cron is on the default branch in a form GitHub accepts.
-Re-check the replica's run list for a `schedule` event before relying on the sweep in
-production.
+So the schedule works, but two of its first three slots were dropped — which is C-7 measured
+rather than assumed, and the reason ADR-010 makes the schedule a backup and not the trigger. A
+sweep-only design would have left `main` untested for three hours here; the trigger worker is
+what keeps NFR-1.
+
+This run was the replica's `09d4b44`, the tree before the PR #46 review fixes. Those fixes are
+in `Program.cs` and `GitHubGateway.cs`; `watch.yml`, which is what the schedule acts on, is
+unchanged by them.
 
 ## State afterwards
 
