@@ -113,7 +113,8 @@ gh workflow run watch.yml
 ```
 
 A sweep also reports the two things only it looks for. Neither is a required write: a failure is
-logged and fails the run, and the next sweep judges again. Neither delays the cycle's own work.
+logged and fails the run at the end, but it never stops the cycle from reporting and testing,
+which is the whole point of a sweep when the worker is down. The next sweep judges again.
 
 - **Trigger worker appears down.** Before the cycle, the sweep asks the question the worker
   asks — does this target have work? — and how long that work has waited: since the
@@ -127,13 +128,19 @@ logged and fails the run, and the next sweep judges again. Neither delays the cy
   worker is then alive and something else is stuck, which its own "reporting pending" alert
   covers (ADR-013). Reading the dispatched cycles needs `actions: read` on the watcher repo; a
   read that fails suppresses nothing, and the alert says the cycles could not be read.
-- **Gate failed open.** After the cycle, the sweep lists the target's `main-watcher-gate.yml`
-  merge-group runs of the past hour, at most 50, newest first, and keeps those whose
-  `main-watcher/gate-fail-open` job was not skipped (ADR-008 point 3). One alert per sweep lists
-  them, with a hidden marker naming the runs, so the same set is never reported twice. This is
-  only a secondary signal: a gate that cannot reach the API usually cannot post that check run
-  either, which is why merges made while a lock was open are reported by reconciliation instead
-  (ADR-015, #20). A target that has not copied the gate workflow has no such runs.
+- **Gate failed open.** After the cycle, the sweep looks for `main-watcher/gate-fail-open` check
+  runs posted in the past hour (ADR-008 point 3). It lists the target's `main-watcher-gate.yml`
+  merge-group runs, at most 50, newest first, and keeps those whose fail-open job was not
+  skipped and **started** within the hour. The job is `needs: gate`, so it appears only once the
+  gate job has finished: runs created up to an hour before the window are read as well, or a
+  merge group gated just before a sweep would fall between two of them — too new for the first
+  and too old for the second. Judging each job by its own time instead makes each sweep's window
+  abut the last one's, so a fail-open is reported exactly once. One alert per sweep lists what it
+  found, with a hidden marker naming the runs, so a second sweep within the same hour adds
+  nothing. This is only a secondary signal: a gate that cannot reach the API usually cannot post
+  that check run either, which is why merges made while a lock was open are reported by
+  reconciliation instead (ADR-015, #20). A target that has not copied the gate workflow has no
+  such runs.
 
 ## Lock issue
 

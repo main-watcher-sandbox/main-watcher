@@ -20,6 +20,12 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     public const string FailOpenJob = "main-watcher/gate-fail-open";
     /// <summary>At most this many gate runs are examined in one sweep, newest first, so a busy queue cannot lengthen it.</summary>
     public const int FailOpenRuns = 50;
+    /// <summary>
+    /// How much older than the window a gate run may be and still be examined. The fail-open job is <c>needs: gate</c>, so it
+    /// exists only once the gate job has finished, up to its 10-minute timeout plus queue time after the run was created. The
+    /// window itself is judged on the job's own time, so this lag only widens what is looked at, never what is reported.
+    /// </summary>
+    public static readonly TimeSpan FailOpenLag = TimeSpan.FromHours(1);
     readonly Dictionary<string, (string Head, List<CheckRun> Checks)> snapshots = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -222,7 +228,9 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         List<JsonElement> runs;
         try
         {
-            runs = await Pages($"repos/{repo}/actions/workflows/{GateWorkflow}/runs?event=merge_group&created={Uri.EscapeDataString(">=" + since.ToString("O"))}", "workflow_runs", ct);
+            // Runs from before the window are read too: one created just before it can post its fail-open check run inside it.
+            var created = Uri.EscapeDataString(">=" + (since - FailOpenLag).ToString("O"));
+            runs = await Pages($"repos/{repo}/actions/workflows/{GateWorkflow}/runs?event=merge_group&created={created}", "workflow_runs", ct);
         }
         // A target that has not copied the gate workflow, or has renamed it, has no such runs to report.
         catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.NotFound) { return []; }
@@ -232,8 +240,13 @@ public sealed class GitHubGateway(HttpClient http, long appId,
             var id = run.GetProperty("id").GetInt64();
             // The template skips this job unless the gate failed open, so a job with any other conclusion, or none yet, is one.
             var jobs = await Pages($"repos/{repo}/actions/runs/{id}/jobs?filter=latest", "jobs", ct);
-            if (!jobs.Any(j => Text(j, "name") == FailOpenJob && Text(j, "conclusion") != "skipped")) continue;
-            found.Add(new(id, Text(run, "head_sha") ?? "", Text(run, "head_branch") ?? "", Date(run, "created_at") ?? since));
+            if (jobs.Where(j => Text(j, "name") == FailOpenJob && Text(j, "conclusion") != "skipped")
+                .Select(j => (JsonElement?)j).FirstOrDefault() is not { } job) continue;
+            // ADR-008 counts the check run when it was posted, not when its run started, so each sweep's window abuts the last
+            // one's: a job that appeared after the previous sweep read it belongs to this one, and is reported exactly once.
+            var at = Date(job, "started_at") ?? Date(run, "created_at");
+            if (at < since) continue;
+            found.Add(new(id, Text(run, "head_sha") ?? "", Text(run, "head_branch") ?? "", at ?? since));
         }
         return found;
     }
