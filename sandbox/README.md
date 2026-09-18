@@ -12,6 +12,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-14-validation.md` | The trigger worker's sandbox deployment and its TS-S1 and TS-S2 evidence, for #14 |
 | `issue-15-validation.md` | TS-S14 (c): the worker's "reporting pending" alert with the Reporter's issue writes failing for 20 minutes, for #15 |
 | `issue-16-validation.md` | TS-S11: a push tested by a sweep with the worker scaled to zero, the "worker appears down" and gate fail-open alerts, and what GitHub's scheduler actually did, for #16 |
+| `issue-17-validation.md` | TS-S12 and TS-S18: a cancelled run retested on the same head, three neutral results reaching the cap, the "head untestable" alert and a forced dispatch, for #17 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
@@ -104,7 +105,14 @@ update these branches; re-create them from `main` if the published workflow chan
 For TS-S14, set the replica's `MW_SANDBOX_EXIT_AFTER` variable to the Reporter writes to
 stop after (`create`, `comment`, `update`, `close`, `override`, comma-separated). The cycle
 exits right after that write, leaving the check run `in_progress`; the next cycle replays
-the report. Delete the variable afterwards:
+the report.
+
+The check run's own completion has names too: `check:success`, `check:failure` and
+`check:neutral`. These stop the cycle after the report is finished, not part-way through it, so
+`check:neutral` kills a cycle at the exact moment ADR-017 relies on — the neutral is written and
+nothing else has run (TS-S18).
+
+Delete the variable afterwards:
 
 ```
 gh variable set MW_SANDBOX_EXIT_AFTER -R main-watcher-sandbox/main-watcher --body create

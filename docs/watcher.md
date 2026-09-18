@@ -241,9 +241,12 @@ The check run is completed last, so a replay always ends with it completed.
 ### Sandbox fault injection
 
 `MW_SANDBOX_EXIT_AFTER`, from the watcher repo's variable of that name, makes the cycle exit
-with code 3 straight after the named Reporter write: `create`, `comment`, `update`, `close`
-or `override`, or a comma-separated list. A replay skips the write that was made, so it
-does not stop at the same point again. Set it only in the sandbox replica, and delete it
+with code 3 straight after the named Reporter write, or a comma-separated list of them. The
+issue writes are `create`, `comment`, `update`, `close` and `override`; a replay skips the write
+that was made, so it does not stop at the same point again. The check run's own completion is
+`check:success`, `check:failure` and `check:neutral`, which stop the cycle after the report is
+finished and before the Planner runs: `check:neutral` is ADR-017's boundary, where the retest
+must survive on the rule alone (TS-S18). Set it only in the sandbox replica, and delete it
 after the scenario.
 
 ## Neutral results
