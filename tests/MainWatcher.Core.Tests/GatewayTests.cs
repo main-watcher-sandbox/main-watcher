@@ -414,6 +414,155 @@ public class GatewayTests
         Assert.Empty(await new GitHubGateway(http, 1).FailOpens("owner/repo", DateTimeOffset.UtcNow, TestContext.Current.CancellationToken));
     }
 
+    // ADR-015: a merge-queue entry brings in its own pull request and everything ahead of it, so the whole range is read. The
+    // pull request comes from the commit subject, not from the commits-to-pull-requests API the App cannot call (§8).
+    [Fact]
+    public async Task MergedCommitsNamesThePullRequestOfEachSubjectItRecognises()
+    {
+        var path = "";
+        var handler = new Handler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return Task.FromResult(Response("{\"total_commits\":3,\"commits\":["
+                + "{\"sha\":\"c1\",\"commit\":{\"message\":\"Add a feature (#8)\\n\\nbody\",\"committer\":{\"date\":\"2026-09-17T09:00:00Z\"}}},"
+                + "{\"sha\":\"c2\",\"commit\":{\"message\":\"a commit of its own\",\"committer\":{\"date\":\"2026-09-17T09:30:00Z\"}}},"
+                + "{\"sha\":\"c3\",\"commit\":{\"message\":\"Merge pull request #7 from owner/fix\",\"committer\":{\"date\":\"2026-09-17T10:00:00Z\"}}}]}"));
+        });
+        using var http = Client(handler);
+        var range = await new GitHubGateway(http, 1).MergedCommits("owner/repo", new('a', 40), new('b', 40), 0,
+            TestContext.Current.CancellationToken);
+        Assert.NotNull(range);
+        Assert.False(range.Truncated);
+        var commits = range.Commits;
+        Assert.Equal([8, null, 7], commits.Select(c => c.Pull));
+        Assert.Equal("a commit of its own", commits[1].Subject);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-17T10:00:00Z"), commits[2].At);
+        Assert.Equal([(8, DateTimeOffset.Parse("2026-09-17T09:00:00Z")), (7, DateTimeOffset.Parse("2026-09-17T10:00:00Z"))],
+            Reconciliation.Pulls(commits));
+        Assert.Contains("/compare/", path);
+    }
+
+    // PR #55 review: a range longer than one pass reads is finished by the next, so the read starts where the last stopped.
+    [Theory]
+    // From the start: two pages read, and the third page's absence ends it.
+    [InlineData(0, new[] { 1, 2, 3 }, 250, 250, false)]
+    // Resumed inside the second page: it starts there and drops the fifty commits already read.
+    [InlineData(150, new[] { 2, 3 }, 100, 250, false)]
+    // Resumed with the last commits left: nothing beyond them remains.
+    [InlineData(240, new[] { 3 }, 10, 250, false)]
+    // A range longer than one pass's budget stops at it and says so.
+    [InlineData(0, new[] { 1, 2, 3, 4, 5 }, 500, 900, true)]
+    public async Task ALongRangeIsReadFromWhereTheLastPassStopped(int skip, int[] pages, int expected, int total, bool truncated)
+    {
+        var read = new List<int>();
+        var handler = new Handler(request =>
+        {
+            var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query);
+            var page = int.Parse(query["page"]!);
+            read.Add(page);
+            // 100 commits a page until the range runs out, each naming nothing, so only the arithmetic is under test.
+            var on = Math.Clamp(total - (page - 1) * 100, 0, 100);
+            var commits = string.Join(",", Enumerable.Range(0, on).Select(i =>
+                $"{{\"sha\":\"c{(page - 1) * 100 + i}\",\"commit\":{{\"message\":\"a commit\",\"committer\":{{\"date\":\"2026-09-17T09:00:00Z\"}}}}}}"));
+            return Task.FromResult(Response($"{{\"total_commits\":{total},\"commits\":[{commits}]}}"));
+        });
+        using var http = Client(handler);
+        var range = await new GitHubGateway(http, 1).MergedCommits("owner/repo", new('a', 40), new('b', 40), skip,
+            TestContext.Current.CancellationToken);
+        Assert.NotNull(range);
+        Assert.Equal(pages, read);
+        Assert.Equal(expected, range.Commits.Count);
+        Assert.Equal(truncated, range.Truncated);
+        // The first commit read is the one after the last pass's, whichever page it fell in.
+        Assert.Equal($"c{skip}", range.Commits[0].Sha);
+    }
+
+    [Fact]
+    public async Task AnUncomparableOrUnusableRangeCompletesNoComparison()
+    {
+        var calls = 0;
+        var handler = new Handler(_ =>
+        {
+            calls++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        });
+        using var http = Client(handler);
+        var gateway = new GitHubGateway(http, 1);
+        var ct = TestContext.Current.CancellationToken;
+        // A force push can leave "before" unreachable, and the activity's first entry has no "before" at all.
+        Assert.Null(await gateway.MergedCommits("owner/repo", new('a', 40), new('b', 40), 0, ct));
+        Assert.Equal(1, calls);
+        Assert.Null(await gateway.MergedCommits("owner/repo", new('0', 40), new('b', 40), 0, ct));
+        Assert.Equal(1, calls);
+    }
+
+    // ADR-015 judges the labels at the merge, and the merge is in this same timeline, so one read gives both.
+    [Fact]
+    public async Task PullEventsKeepsOnlyLabelChangesAndTheMergeInTheOrderGitHubReturnsThem()
+    {
+        var handler = new Handler(request =>
+        {
+            Assert.EndsWith("/issues/7/events", request.RequestUri!.AbsolutePath);
+            return Task.FromResult(Response(
+                "[{\"event\":\"labeled\",\"label\":{\"name\":\"fixes-main\"},\"created_at\":\"2026-09-17T10:00:00Z\"},"
+                + "{\"event\":\"closed\",\"created_at\":\"2026-09-17T10:01:00Z\"},"
+                + "{\"event\":\"unlabeled\",\"label\":{\"name\":\"fixes-main\"},\"created_at\":\"2026-09-17T10:02:00Z\"},"
+                + "{\"event\":\"labeled\",\"created_at\":\"2026-09-17T10:03:00Z\"},"
+                + "{\"event\":\"merged\",\"commit_id\":\"abc\",\"created_at\":\"2026-09-17T10:04:00Z\"}]"));
+        });
+        using var http = Client(handler);
+        var events = await new GitHubGateway(http, 1).PullEvents("owner/repo", 7, TestContext.Current.CancellationToken);
+        // A label event without a label, and every other kind of event, is dropped.
+        Assert.Equal(["labeled", "unlabeled", "merged"], events.Select(e => e.Name));
+        Assert.Equal("fixes-main", events[1].Label);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-17T10:02:00Z"), events[1].At);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-17T10:04:00Z"), Reconciliation.MergedAt(events));
+        // The label was taken off before the merge, so it was not a fix when it merged.
+        Assert.False(Reconciliation.WasFix(events, Reconciliation.MergedAt(events)!.Value));
+    }
+
+    // R-7: the queue branch names the entry the queue removed when its gate failed.
+    [Fact]
+    public async Task GateBlocksNamesThePullRequestOfEachFailedMergeGroup()
+    {
+        var query = "";
+        var handler = new Handler(request =>
+        {
+            query = request.RequestUri!.PathAndQuery;
+            return Task.FromResult(Response("{\"workflow_runs\":[" +
+                $"{{\"id\":9,\"head_branch\":\"gh-readonly-queue/main/pr-12-{new string('a', 40)}\",\"run_started_at\":\"2026-09-17T10:20:00Z\"}}," +
+                "{\"id\":8,\"head_branch\":\"main\",\"run_started_at\":\"2026-09-17T10:10:00Z\"}," +
+                $"{{\"id\":7,\"head_branch\":\"gh-readonly-queue/main/pr-3-{new string('b', 40)}\",\"created_at\":\"2026-09-17T10:00:00Z\"}}]}}"));
+        });
+        using var http = Client(handler);
+        var blocked = await new GitHubGateway(http, 1).GateBlocks("owner/repo", DateTimeOffset.Parse("2026-09-17T09:00:00Z"),
+            TestContext.Current.CancellationToken);
+        // Oldest first, and a run that is not a merge-queue entry names no pull request.
+        Assert.Equal([3, 12], blocked.Select(b => b.Pull));
+        Assert.Equal(7, blocked[0].RunId);
+        Assert.Contains("event=merge_group&status=failure", query);
+    }
+
+    [Fact]
+    public async Task ATargetWithoutTheGateWorkflowBlocksNothing()
+    {
+        using var http = Client(new Handler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound))));
+        Assert.Empty(await new GitHubGateway(http, 1).GateBlocks("owner/repo", DateTimeOffset.UtcNow, TestContext.Current.CancellationToken));
+    }
+
+    // ADR-015: the window a lock's reconciliation covers comes from these two fields.
+    [Fact]
+    public async Task IssuesCarryTheirCreationAndClosureTimes()
+    {
+        using var http = Client(new Handler(_ => Task.FromResult(Response(
+            "[{\"number\":1,\"title\":\"main is broken\",\"body\":\"\",\"user\":{\"login\":\"main-watcher[bot]\",\"type\":\"Bot\"},"
+            + "\"state\":\"closed\",\"created_at\":\"2026-09-17T08:00:00Z\",\"closed_at\":\"2026-09-17T10:00:00Z\"}]"))));
+        var issue = Assert.Single(await new GitHubGateway(http, 1).Issues("owner/repo", "main-broken",
+            DateTimeOffset.Parse("2026-09-01T00:00:00Z"), TestContext.Current.CancellationToken));
+        Assert.Equal(DateTimeOffset.Parse("2026-09-17T08:00:00Z"), issue.CreatedAt);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-17T10:00:00Z"), issue.ClosedAt);
+    }
+
     static HttpClient Client(HttpMessageHandler handler) => new(handler) { BaseAddress = new Uri("https://api.github.com/") };
     static HttpResponseMessage Response(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
     sealed class Handler(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) : HttpMessageHandler

@@ -205,6 +205,38 @@ public class WorkerTests
         Assert.NotNull(await new WorkFinder(() => Now, botLogin: "other-app[bot]").Find(Watched(), target, Ct));
     }
 
+    static Issue ClosedLock(int number, DateTimeOffset closed, string? body = "Locked.", string author = "main-watcher[bot]") =>
+        new(number, "main is broken", body, author, "Bot", $"https://github.com/owner/repo/issues/{number}",
+            "closed", "completed", closed, Id: number, CreatedAt: closed.AddHours(-1), ClosedAt: closed);
+
+    // TS-U5 (e): a lock that has closed still owes reports for the merges made during it, and nothing else asks for a cycle
+    // once it is closed (ADR-015 point 6).
+    [Fact]
+    public async Task AClosedLockNotYetReconciledIsWork()
+    {
+        var target = new FakeGitHub { CheckList = [Done()] };
+        target.IssueList.Add(ClosedLock(1, Now.AddMinutes(-30)));
+        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        Assert.Equal("lock #1: it closed without being reconciled", work!.Reason);
+        // Dated by the closure, so the sweep can say how long the reports have been owed.
+        Assert.Equal(Now.AddMinutes(-30), work.Since);
+        Assert.Null(work.Check);
+    }
+
+    [Fact]
+    public async Task AReconciledOrForeignOrRecentlyOpenLockIsNotWork()
+    {
+        var target = new FakeGitHub { CheckList = [Done()] };
+        // Complete: its whole window has been checked.
+        target.IssueList.Add(ClosedLock(1, Now.AddMinutes(-30),
+            Markers.Set("Locked.", (Reconciliation.Complete, Reconciliation.CompleteValue))));
+        // Not the App's lock, so not the App's window.
+        target.IssueList.Add(ClosedLock(2, Now.AddMinutes(-30), "Locked.", "other-app[bot]"));
+        // Closed longer ago than reconcile_lookback: not revisited (R-21). The Issues read bounds this by its own window.
+        target.IssueList.Add(ClosedLock(3, Now - Reporter.ReconcileLookback - TimeSpan.FromDays(1)));
+        Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+    }
+
     [Fact]
     public async Task WorkFoundEarlierWinsOverAnOldLease()
     {

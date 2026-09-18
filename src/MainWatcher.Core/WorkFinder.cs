@@ -11,7 +11,7 @@ namespace MainWatcher.Core;
 /// made an eligible head current (ADR-017), and the moment an open lock's lease wanted renewing (ADR-014). It is null when
 /// GitHub does not date the work — a
 /// deleted target run, or a head whose push the activity read does not name — so the hourly sweep never judges how long work
-/// has waited from a guess. <see cref="Check"/> is set only when the work is a report already owed.
+/// has waited from a guess. A closed lock still owing reconciliation is dated by its closure (ADR-015). <see cref="Check"/> is set only when the work is a report already owed.
 /// </para>
 /// </summary>
 public sealed record Work(string Reason, DateTimeOffset? Since = null, long? Check = null);
@@ -81,6 +81,13 @@ public sealed class WorkFinder(Func<DateTimeOffset>? clock = null, TimeSpan? que
             return new($"lock #{issue.Number}: its lease " + (due is null
                 ? "is missing or unreadable" : $"has wanted renewing since {Markers.Stamp(due.Value)}"), due);
         }
+        // ADR-015 point 6: a lock that has closed still owes reports for the merges made during it, and nothing else would ask
+        // for a cycle once it is closed. Closures older than reconcile_lookback are not revisited (R-21), which is what bounds
+        // this read: the same Issues: read permission the lease uses, over a 30-day window.
+        foreach (var issue in (await github.Issues(repo, Reporter.LockLabel, now - Reporter.ReconcileLookback, ct))
+            .Where(i => i.Author == botLogin && i.AuthorType == "Bot" && i.State == "closed" && !Reconciliation.IsComplete(i.Body))
+            .OrderBy(i => i.Number))
+            return new($"lock #{issue.Number}: it closed without being reconciled", issue.ClosedAt);
         return null;
     }
 

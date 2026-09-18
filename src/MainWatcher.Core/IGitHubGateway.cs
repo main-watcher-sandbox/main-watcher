@@ -29,6 +29,22 @@ public interface IGitHubGateway
     /// when the target has no such workflow.
     /// </summary>
     Task<IReadOnlyList<FailOpen>> FailOpens(string repo, DateTimeOffset since, CancellationToken ct);
+    /// <summary>
+    /// Merge groups the gate failed, from its runs created at or after <paramref name="since"/>; empty when the target has no
+    /// such workflow. Each names the pull request its merge-queue branch carries, which is the entry the queue removed (R-7).
+    /// </summary>
+    Task<IReadOnlyList<GateBlock>> GateBlocks(string repo, DateTimeOffset since, CancellationToken ct);
+    /// <summary>
+    /// The commits <paramref name="after"/> added over <paramref name="before"/>, oldest first, each with the pull request its
+    /// subject names, from the <paramref name="skip"/>th onwards, and whether more of the range remains (ADR-015). Null when
+    /// GitHub cannot compare the two commits, which a force push can cause.
+    /// </summary>
+    Task<MergedRange?> MergedCommits(string repo, string before, string after, int skip, CancellationToken ct);
+    /// <summary>
+    /// A pull request's <c>labeled</c>, <c>unlabeled</c> and <c>merged</c> events, oldest first (ADR-015 point 8). One read
+    /// gives both the label history and the moment it is judged at.
+    /// </summary>
+    Task<IReadOnlyList<PullEvent>> PullEvents(string repo, int number, CancellationToken ct);
     Task Link(string repo, long checkId, long runId, CancellationToken ct);
     Task<IReadOnlyList<WorkflowJob>?> Jobs(string repo, long runId, CancellationToken ct);
     Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct);

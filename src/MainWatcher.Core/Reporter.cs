@@ -20,7 +20,6 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     const int MaxMentions = 50;
     const int FailureBudget = 20000;
     const int PushBudget = 25000;
-    const int MaxFieldLength = 200;
     /// <summary>A comment for a check is never older than its check run, give or take clock differences.</summary>
     static readonly TimeSpan ClockSkew = TimeSpan.FromMinutes(5);
 
@@ -56,6 +55,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
                     if (!await locks.Names(open, check, ct))
                         await Write("comment", github.Comment(repo, open.Number,
                             $"Tests passed on {Commit(repo, check.Sha)} ([target run]({runUrl})), so `main` is green again. Closing the lock." +
+                            await Removed(repo, open, ct) +
                             $"\n\n<!-- main-watcher check={check.Id} sha={check.Sha} closed=green -->", ct));
                     await Write("close", github.Close(repo, open.Number, "completed", null, ct));
                 }
@@ -171,6 +171,28 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
             posted++;
         }
         return posted;
+    }
+
+    /// <summary>
+    /// The pull requests the gate removed from the merge queue while this lock was open, for the unlock comment. GitHub does
+    /// not re-queue them, so unlocking without naming them is how they are forgotten (R-7); automatic re-queueing is deferred
+    /// (§17). Never a required read: a gate run list that cannot be read leaves the comment shorter, not the lock open.
+    /// </summary>
+    async Task<string> Removed(string repo, Issue issue, CancellationToken ct)
+    {
+        IReadOnlyList<GateBlock> blocked;
+        // A lock GitHub does not date could only be answered with the whole history of the queue, which is not this list.
+        if (issue.CreatedAt is not { } since) return "";
+        try { blocked = await github.GateBlocks(repo, since, ct); }
+        catch (Exception e) when (!ct.IsCancellationRequested && e is HttpRequestException or IOException or TaskCanceledException)
+        {
+            return "\n\nThe pull requests the gate removed from the merge queue could not be read: " + Markdown.Escape(e.Message) + ".";
+        }
+        var pulls = blocked.Select(b => b.Pull).Distinct().Order().ToArray();
+        if (pulls.Length == 0) return "";
+        return "\n\n**Pull requests the gate removed from the merge queue while this lock was open**\n\n"
+            + string.Join("\n", pulls.Select(p => $"- #{p}"))
+            + "\n\nThe merge queue does not put them back, so re-queue the ones you still want merged.";
     }
 
     /// <summary>A write the sandbox fault switch can stop the cycle after, by name (TS-S14, TS-S18).</summary>
@@ -378,8 +400,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         return string.Join("\n", lines) + (more > 0 ? $"\n\n…and {more} more; see the target run." : "");
     }
 
-    // Clipped before escaping, so an escaped field is at most a few times this length.
-    static string Clip(string text) => text.Length > MaxFieldLength ? text[..MaxFieldLength] + "…" : text;
+    static string Clip(string text) => Markdown.Clip(text);
 
     static string Short(string sha) => Markdown.Short(sha);
     static string Commit(string repo, string sha) => Markdown.Commit(repo, sha);

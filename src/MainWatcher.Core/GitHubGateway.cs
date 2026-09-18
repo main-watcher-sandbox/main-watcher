@@ -253,6 +253,103 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         return found;
     }
 
+    public async Task<IReadOnlyList<GateBlock>> GateBlocks(string repo, DateTimeOffset since, CancellationToken ct)
+    {
+        List<JsonElement> runs;
+        try
+        {
+            var created = Uri.EscapeDataString(">=" + since.ToString("O"));
+            runs = await Pages($"repos/{repo}/actions/workflows/{GateWorkflow}/runs?event=merge_group&status=failure&created={created}", "workflow_runs", ct);
+        }
+        // A target that has not copied the gate workflow, or has renamed it, has no such runs to report.
+        catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.NotFound) { return []; }
+        var blocked = new List<GateBlock>();
+        foreach (var run in runs)
+        {
+            // The queue branch names the entry's own pull request, which is the one the queue removes when the gate fails it.
+            if (QueueBranch.Match(Text(run, "head_branch") ?? "") is not { Success: true } match) continue;
+            blocked.Add(new(run.GetProperty("id").GetInt64(), int.Parse(match.Groups["number"].Value, System.Globalization.CultureInfo.InvariantCulture),
+                Text(run, "head_branch")!, Date(run, "run_started_at") ?? Date(run, "created_at") ?? since));
+        }
+        return blocked.OrderBy(b => b.At).ToArray();
+    }
+
+    /// <summary>
+    /// A merge-queue branch, <c>gh-readonly-queue/&lt;branch&gt;/pr-&lt;number&gt;-&lt;base sha&gt;</c> (A-7, confirmed in the
+    /// sandbox on 2026-09-16). The gate reads the same shape through its own copy, because it shares no code with the watcher.
+    /// </summary>
+    static readonly System.Text.RegularExpressions.Regex QueueBranch =
+        new(@"^gh-readonly-queue/.+/pr-(?<number>\d+)-[0-9a-f]{40}$");
+
+    /// <remarks>
+    /// The pull request is read from the commit subject, not from the commits-to-pull-requests API, because that endpoint
+    /// needs a Pull requests permission the <c>main-watcher</c> App does not hold (§8, ADR-008). The subjects are the ones the
+    /// gate already matches, and a merge group's own merge commit always carries one.
+    /// </remarks>
+    public async Task<MergedRange?> MergedCommits(string repo, string before, string after, int skip, CancellationToken ct)
+    {
+        if (!IsSha(before) || !IsSha(after) || before.All(c => c == '0') || after.All(c => c == '0')) return null;
+        var commits = new List<MergedCommit>();
+        var total = 0;
+        try
+        {
+            // A merge group holds one queue entry's own pull request and everything ahead of it, so the whole range is read,
+            // not only the head commit. It is read to the end, because a pull request is named by its **last** commit, the
+            // merge or squash commit: stopping early would drop exactly the commits that name the later pull requests, and the
+            // earlier ones it did name would hide that anything was missing. A range too long for one pass is continued from
+            // where the last one stopped, so the entry is finished across several rather than left part-judged.
+            // `total_commits` counts the whole range however much of it one response carries, so it is what says whether the
+            // read reached the end.
+            var first = true;
+            for (var page = skip / ComparePageSize + 1; ; page++)
+            {
+                var comparison = await Send(HttpMethod.Get,
+                    $"repos/{repo}/compare/{before}...{after}?per_page={ComparePageSize}&page={page}", null, ct);
+                total = comparison.TryGetProperty("total_commits", out var counted) && counted.ValueKind == JsonValueKind.Number
+                    ? counted.GetInt32() : 0;
+                var read = comparison.GetProperty("commits").EnumerateArray().Select(Merged).ToArray();
+                // The first page read may start part-way into itself, where an earlier pass stopped inside it.
+                commits.AddRange(first ? read.Skip(skip % ComparePageSize) : read);
+                first = false;
+                if (read.Length < ComparePageSize || skip + commits.Count >= total || commits.Count >= MaxMergedCommits) break;
+            }
+        }
+        // A force push can leave "before" unreachable, and GitHub cannot compare it any more.
+        catch (HttpRequestException e) when (e.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.UnprocessableEntity) { return null; }
+        // A page can carry the bound past itself, so the pass keeps exactly what it promised to read.
+        if (commits.Count > MaxMergedCommits) commits.RemoveRange(MaxMergedCommits, commits.Count - MaxMergedCommits);
+        return new(commits, skip + commits.Count < total);
+    }
+
+    static MergedCommit Merged(JsonElement json)
+    {
+        var commit = json.GetProperty("commit");
+        var subject = (Text(commit, "message") ?? "").Split('\n')[0].Trim();
+        return new(Text(json, "sha") ?? "", subject,
+            Date(commit.GetProperty("committer"), "date") ?? DateTimeOffset.MinValue, Reconciliation.PullOf(subject));
+    }
+
+    /// <summary>The compare API's largest page.</summary>
+    const int ComparePageSize = 100;
+
+    /// <summary>
+    /// How many commits of one activity entry one pass reads. It is a budget, not a limit: a longer range is continued by the
+    /// next pass from where this one stopped, so every pull request it merged is still named and judged, while no single cycle
+    /// spends a hundred requests on one enormous merge (R-13).
+    /// </summary>
+    public const int MaxMergedCommits = 500;
+
+    public async Task<IReadOnlyList<PullEvent>> PullEvents(string repo, int number, CancellationToken ct) =>
+        // Oldest first, as GitHub returns them: two events in the same second are told apart by their order, not their times.
+        // A pull request's merge is in this same timeline, so the moment its labels are judged at costs no extra request and
+        // no Pull requests permission.
+        (await Pages($"repos/{repo}/issues/{number}/events", null, ct))
+        .Where(e => Text(e, "event") is "labeled" or "unlabeled" or Reconciliation.Merged)
+        .Select(e => new PullEvent(Text(e, "event")!,
+            e.TryGetProperty("label", out var label) && label.ValueKind == JsonValueKind.Object ? Text(label, "name") : null,
+            Date(e, "created_at") ?? DateTimeOffset.MinValue))
+        .Where(e => e.Name == Reconciliation.Merged || e.Label is not null).ToArray();
+
     public async Task Link(string repo, long checkId, long runId, CancellationToken ct) =>
         await Send(HttpMethod.Patch, $"repos/{repo}/check-runs/{checkId}", new { external_id = runId.ToString(System.Globalization.CultureInfo.InvariantCulture), details_url = $"https://github.com/{repo}/actions/runs/{runId}" }, ct);
 
@@ -345,7 +442,8 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     static Issue ToIssue(JsonElement json) => new(json.GetProperty("number").GetInt32(), Text(json, "title") ?? "", Text(json, "body"),
         Text(json.GetProperty("user"), "login") ?? "", Text(json.GetProperty("user"), "type") ?? "", Text(json, "html_url") ?? "",
         Text(json, "state") ?? "open", Text(json, "state_reason"), Date(json, "updated_at"),
-        json.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number ? id.GetInt64() : 0);
+        json.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number ? id.GetInt64() : 0,
+        Date(json, "created_at"), Date(json, "closed_at"));
 
     static string Since(DateTimeOffset since) => Uri.EscapeDataString(since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture));
 

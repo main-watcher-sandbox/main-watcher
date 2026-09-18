@@ -22,9 +22,12 @@ public sealed record WorkflowJob(string Name, string Status, IReadOnlyList<JobSt
 /// <summary>
 /// An issue. <see cref="StateReason"/> is GitHub's <c>state_reason</c>, such as <c>duplicate</c>; <see cref="UpdatedAt"/> is null
 /// when unknown. <see cref="Id"/> is the database ID, which <c>duplicate_issue_id</c> takes, not the number.
+/// <see cref="CreatedAt"/> and <see cref="ClosedAt"/> bound a lock's window (ADR-015); <see cref="ClosedAt"/> is null while it
+/// is open, and both are null when GitHub does not say.
 /// </summary>
 public sealed record Issue(int Number, string Title, string? Body, string Author, string AuthorType, string Url,
-    string State = "open", string? StateReason = null, DateTimeOffset? UpdatedAt = null, long Id = 0);
+    string State = "open", string? StateReason = null, DateTimeOffset? UpdatedAt = null, long Id = 0,
+    DateTimeOffset? CreatedAt = null, DateTimeOffset? ClosedAt = null);
 public sealed record IssueComment(string Body, string Author, string AuthorType);
 /// <summary>A GitHub account, with its <c>type</c> (<c>User</c> or <c>Bot</c>).</summary>
 public sealed record Account(string Login, string Type);
@@ -35,3 +38,24 @@ public sealed record Push(string Before, string After, DateTimeOffset Timestamp,
 /// a <c>main-watcher/gate-fail-open</c> check run. <see cref="Branch"/> is the merge-queue branch it ran on.
 /// </summary>
 public sealed record FailOpen(long RunId, string Sha, string Branch, DateTimeOffset At);
+/// <summary>
+/// One commit an activity entry put on <c>main</c> (ADR-015). <see cref="Pull"/> is the pull request its subject names, or
+/// null when it names none, and <see cref="At"/> is when it was committed, which is when its pull request merged.
+/// </summary>
+public sealed record MergedCommit(string Sha, string Subject, DateTimeOffset At, int? Pull);
+/// <summary>
+/// What one pass read of an activity entry's range. <see cref="Truncated"/> is true when commits remain beyond it, so the pull
+/// requests <see cref="Commits"/> names are not yet all of them: a pull request is named by its last commit, so what is left
+/// unread is exactly what would name the rest. The next pass continues from where this one stopped.
+/// </summary>
+public sealed record MergedRange(IReadOnlyList<MergedCommit> Commits, bool Truncated);
+/// <summary>
+/// One entry of a pull request's timeline, from the Issues events API: <c>labeled</c> and <c>unlabeled</c> carry a
+/// <see cref="Label"/>, and <c>merged</c> dates the merge itself (ADR-015).
+/// </summary>
+public sealed record PullEvent(string Name, string? Label, DateTimeOffset At);
+/// <summary>
+/// A merge group the gate failed while a lock was open (ADR-002, R-7): the gate run that failed it, and the pull request its
+/// merge-queue branch names, which is the entry the queue removed.
+/// </summary>
+public sealed record GateBlock(long RunId, int Pull, string Branch, DateTimeOffset At);
