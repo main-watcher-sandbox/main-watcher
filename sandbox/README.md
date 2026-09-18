@@ -54,6 +54,8 @@ gh api -X PUT repos/main-watcher-sandbox/main-watcher/contents/targets.yml \
   -f message='Sandbox: watch sample-target' \
   -f sha="$(gh api repos/main-watcher-sandbox/main-watcher/contents/targets.yml --jq .sha)" \
   -f content="$(base64 -w0 <<'YAML'
+# A 10-minute lock_lease, so a lapse takes minutes rather than four hours (TS-S7).
+lock_lease: 10
 targets:
   - repo: main-watcher-sandbox/sample-target
     test_command: dotnet test --no-restore
@@ -154,10 +156,11 @@ and `timeout-minutes`, so the extra input is accepted.
 
 ## Reporter fault switch
 
-For TS-S14, set the replica's `MW_SANDBOX_EXIT_AFTER` variable to the Reporter writes to
+For TS-S14, set the replica's `MW_SANDBOX_EXIT_AFTER` variable to the issue writes to
 stop after (`create`, `comment`, `update`, `close`, `override`, comma-separated). The cycle
 exits right after that write, leaving the check run `in_progress`; the next cycle replays
-the report.
+the report. The lease's writes have names too — `renew`, `lapse` and `lapse_reported` — which is
+how TS-S17 (b) stops a cycle between a renewal and its queue sweep.
 
 The check run's own completion has names too: `check:success`, `check:failure` and
 `check:neutral`. These stop the cycle after the report is finished, not part-way through it, so

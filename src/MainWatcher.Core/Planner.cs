@@ -1,17 +1,21 @@
 namespace MainWatcher.Core;
 
 /// <summary>
-/// Starts eligible heads, recovers unlinked dispatches (R-14, ADR-017) and stops target runs that have passed a deadline
-/// (ADR-013 point 5).
+/// Starts eligible heads, recovers unlinked dispatches (R-14, ADR-017), renews open locks' leases (ADR-014) and stops target
+/// runs that have passed a deadline (ADR-013 point 5).
 /// </summary>
 /// <param name="queueDeadline">The ADR-013 queue deadline; the sandbox shortens it (TS-S16 (g)).</param>
 /// <param name="cancelsRuns">
 /// Whether a stop request is really sent. The sandbox sets it false so that every cancel fails, which is how TS-S16 (h)
 /// reaches "target run could not be stopped" without a run GitHub genuinely cannot stop.
 /// </param>
+/// <param name="afterWrite">
+/// Called after each lock-issue write, by name, so the sandbox fault switch can stop a cycle between two of them
+/// (TS-S17 (b)); the Reporter's own writes go through the same switch.
+/// </param>
 public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock = null,
     Func<TimeSpan, CancellationToken, Task>? delay = null, Alerts? alerts = null, string botLogin = Reporter.DefaultBotLogin,
-    TimeSpan? queueDeadline = null, bool cancelsRuns = true)
+    TimeSpan? queueDeadline = null, bool cancelsRuns = true, Action<string>? afterWrite = null)
 {
     /// <summary>The check run's output title while its target run is testing.</summary>
     public const string TestingTitle = "Tests running";
@@ -78,6 +82,73 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
             return check with { Status = "completed", Conclusion = "neutral" };
         }
         return check;
+    }
+
+    /// <summary>
+    /// ADR-014: sets every open App lock's lease to now + the target's <c>lock_lease</c>, so that the gate keeps enforcing it.
+    /// Renewal is what says the watcher still maintains this lock, so it happens on every cycle that processes the target,
+    /// whether or not anything else in that cycle works: a watcher that cannot start a test is still a watcher, while one that
+    /// has stopped renews nothing and the gate lets ordinary merges through within <c>lock_lease</c> (NFR-3).
+    /// <para>
+    /// A lease that had already run out is a lapse. Its window and the ADR-016 sweep obligation are written in the <b>same</b>
+    /// issue update as the new lease, so a crash right after the renewal cannot hide it; the comment, the alert and the
+    /// <c>lapse_reported</c> marker follow, and a cycle that stops between them posts nothing twice.
+    /// </para>
+    /// </summary>
+    /// <returns>A line per lock renewed, for the log.</returns>
+    public async Task<IReadOnlyList<string>> Renew(Target target, CancellationToken ct)
+    {
+        var repo = target.Repo;
+        var lines = new List<string>();
+        foreach (var issue in (await github.OpenIssues(repo, Reporter.LockLabel, ct)).Where(IsApp).OrderBy(i => i.Number))
+        {
+            var now = Now;
+            var until = now + target.LockLease;
+            // A lock with no readable lease is not a lapse: the gate has been failing open, but nothing says since when, and a
+            // guessed window would be reported as fact. The renewal alone puts the lock back under enforcement.
+            var expired = Markers.Time(issue.Body, Lease.Until) is { } previous && previous <= now ? previous : (DateTimeOffset?)null;
+            (string Name, string Value)[] fields = expired is null
+                ? [(Lease.Until, Markers.Stamp(until))]
+                : [(Lease.Until, Markers.Stamp(until)), (Lease.Lapsed, $"{Markers.Stamp(expired.Value)}..{Markers.Stamp(now)}"),
+                    (Lease.SweepRequired, Markers.Stamp(now))];
+            var body = Markers.Set(issue.Body, fields);
+            await github.EditBody(repo, issue.Number, body, ct);
+            afterWrite?.Invoke("renew");
+            lines.Add($"Lock #{issue.Number}: lease renewed until {Markers.Stamp(until)}"
+                + (expired is null ? "." : $"; it had lapsed at {Markers.Stamp(expired.Value)}."));
+            if (Lease.Unreported(body) is { } lapse) await ReportLapse(target, issue, body, lapse, ct);
+        }
+        return lines;
+    }
+
+    /// <summary>
+    /// Reports a lapse the renewal recorded: a comment on the lock and a <c>watcher-infra</c> alert, then the
+    /// <c>lapse_reported</c> marker that says both were posted. Each carries the lapse window as a hidden key, so a replay
+    /// after a crash between them creates nothing new (ADR-012, ADR-014 point 4). Like the neutral result's alert, these are
+    /// required writes: a failure is thrown and the marker stays unwritten, so a later cycle posts what is still missing.
+    /// </summary>
+    async Task ReportLapse(Target target, Issue issue, string body, (DateTimeOffset From, DateTimeOffset At) lapse, CancellationToken ct)
+    {
+        if (alerts is null) throw new InvalidOperationException("A lock lapse cannot be reported without an alert sink.");
+        var repo = target.Repo;
+        var key = $"<!-- main-watcher {Lease.Lapsed}={Markers.Stamp(lapse.From)}..{Markers.Stamp(lapse.At)} -->";
+        var what = $"This lock's lease ran out at {Markers.Stamp(lapse.From)} and was renewed at {Markers.Stamp(lapse.At)}, "
+            + $"{(lapse.At - lapse.From).TotalMinutes:0} minutes later. While a lease is expired the gate fails open, so the "
+            + "merge queue accepted pull requests without the `fixes-main` label during that window (ADR-014). The lock is "
+            + "enforced again now.";
+        if (!(await github.Comments(repo, issue.Number, null, ct)).Any(c => c.Body.Contains(key, StringComparison.Ordinal)))
+        {
+            await github.Comment(repo, issue.Number, what + "\n\n" + key, ct);
+            afterWrite?.Invoke("lapse");
+        }
+        await alerts.Raise($"Lock lease lapsed on {repo}",
+            $"Lock {issue.Url} on `{repo}` was open but unenforced: {char.ToLowerInvariant(what[0])}{what[1..]}\n\n"
+            + "Main Watcher renews a lease every cycle and the trigger worker asks for one each hour, so a lapse means the "
+            + "watcher did not run for the whole of `lock_lease`: check `watch.yml`, the trigger worker and the `main-watcher` "
+            + "App's credentials. Merges made during the window are reported by reconciliation, and merge groups queued then "
+            + "have their gate re-run (ADR-015, ADR-016).", ct, key);
+        await github.EditBody(repo, issue.Number, Markers.Set(body, (Lease.Reported, Markers.Stamp(lapse.At))), ct);
+        afterWrite?.Invoke("lapse_reported");
     }
 
     /// <summary>
@@ -191,8 +262,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         if (alerts is null) { AlertFailures.Add($"{title}: no alert sink configured"); return; }
         try
         {
-            var open = (await github.OpenIssues(repo, Reporter.LockLabel, ct))
-                .Where(i => i.Author == botLogin && i.AuthorType == "Bot").OrderBy(i => i.Number).ToArray();
+            var open = (await github.OpenIssues(repo, Reporter.LockLabel, ct)).Where(IsApp).OrderBy(i => i.Number).ToArray();
             await alerts.Raise(title,
                 $"`main` of `{repo}` is at {Markdown.Commit(repo, sha)}, which has {Eligibility.Cap} `neutral` check runs and no "
                 + "result since, so the tests have never run to completion on it. Main Watcher has stopped testing this head "
@@ -206,6 +276,9 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         }
         catch (Exception e) when (!ct.IsCancellationRequested) { AlertFailures.Add($"{title}: {e.Message}"); }
     }
+
+    /// <summary>Only the App's own locks count, matching the gate and the Reporter.</summary>
+    bool IsApp(Issue issue) => issue.Author == botLogin && issue.AuthorType == "Bot";
 
     async Task<CheckRun> Link(string repo, CheckRun check, long runId, CancellationToken ct)
     {

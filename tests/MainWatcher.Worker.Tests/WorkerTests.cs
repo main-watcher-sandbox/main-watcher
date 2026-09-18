@@ -148,6 +148,72 @@ public class WorkerTests
         Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
     }
 
+    static Issue Lock(int number, DateTimeOffset? until, string author = "main-watcher[bot]", string type = "Bot") =>
+        new(number, "main is broken", until is null ? "Locked." : Markers.Set("Locked.", (Lease.Until, Markers.Stamp(until.Value))),
+            author, type, $"https://github.com/owner/repo/issues/{number}");
+
+    // TS-U5 (d): a lock is enforced only while the watcher renews its lease, so a lease an hour old is work (ADR-014).
+    [Theory]
+    [InlineData(181, false)]
+    [InlineData(180, true)]
+    public async Task AnOpenLockWhoseLeaseIsAnHourOldIsWork(int until, bool expected)
+    {
+        // A head with a result of its own: the lease is then the only thing left that could need a cycle.
+        var target = new FakeGitHub { CheckList = [Done()] };
+        target.IssueList.Add(Lock(1, Now.AddMinutes(until)));
+        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        Assert.Equal(expected, work is not null);
+        if (!expected) return;
+        Assert.Contains("lock #1: its lease has wanted renewing since 2026-09-16T19:00:00Z", work!.Reason);
+        // Dated by the moment renewal became due, and not a report owed: only the Reporter's own work carries a check ID.
+        Assert.Equal(Now, work.Since);
+        Assert.Null(work.Check);
+    }
+
+    [Fact]
+    public async Task TheSandboxLockLeaseIsSharedWithThePlanner()
+    {
+        var target = new FakeGitHub { CheckList = [Done()] };
+        target.IssueList.Add(Lock(1, Now.AddMinutes(1)));
+        var short10 = new Target { Repo = "owner/repo", PollInterval = 15, LockLease = TimeSpan.FromMinutes(10) };
+        // A lease shorter than the renewal interval expires before it is an hour old, and an expired lease always wants one.
+        Assert.Null(await new WorkFinder(() => Now).Find(short10, target, Ct));
+        target.IssueList[0] = Lock(1, Now);
+        Assert.NotNull(await new WorkFinder(() => Now).Find(short10, target, Ct));
+    }
+
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData(241, true)]
+    public async Task AnUnreadableOrImpossibleLeaseIsWorkAndDatesNothing(int? until, bool expected)
+    {
+        var target = new FakeGitHub { CheckList = [Done()] };
+        target.IssueList.Add(Lock(1, until is null ? null : Now.AddMinutes(until.Value)));
+        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        Assert.Equal(expected, work is not null);
+        Assert.Null(work!.Since);
+    }
+
+    [Fact]
+    public async Task OnlyTheAppsOwnLocksCarryALeaseToRenew()
+    {
+        var target = new FakeGitHub { CheckList = [Done()] };
+        target.IssueList.Add(Lock(1, Now.AddMinutes(-1), "alice", "User"));
+        target.IssueList.Add(Lock(2, Now.AddMinutes(-1), "other-app[bot]"));
+        Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+        // A renamed App is still the App: MW_BOT_LOGIN names it, as watch.yml and the gate do.
+        Assert.NotNull(await new WorkFinder(() => Now, botLogin: "other-app[bot]").Find(Watched(), target, Ct));
+    }
+
+    [Fact]
+    public async Task WorkFoundEarlierWinsOverAnOldLease()
+    {
+        var target = new FakeGitHub { CheckList = [Pending()] };
+        target.JobsByRun[41] = [Finished()];
+        target.IssueList.Add(Lock(1, Now.AddMinutes(-1)));
+        Assert.Contains("has completed", (await new WorkFinder(() => Now).Find(Watched(), target, Ct))!.Reason);
+    }
+
     sealed class Setup
     {
         public FakeGitHub Watcher { get; } = new();

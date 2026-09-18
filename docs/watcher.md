@@ -15,7 +15,7 @@ head again until it gives one. #14 adds the trigger worker,
 which dispatches this workflow whenever a target has work; see [worker.md](worker.md). #16 adds
 the hourly backup sweep, which processes every enabled target and watches the worker in turn.
 #18 stops a target run that has passed a deadline and judges it once it has stopped.
-Lease renewal is a separate backlog item.
+#19 renews each open lock's lease, so the gate goes on enforcing it.
 
 Configure the `reporter` environment with `MAIN_WATCHER_APP_ID` (variable) and
 `MAIN_WATCHER_PRIVATE_KEY` (secret). Install that App on each target with
@@ -33,7 +33,14 @@ no target is watched from here, so the hourly sweep does nothing and the trigger
 no cycles. The scenario-test target belongs to the private sandbox replica, which holds the App
 credentials; two watchers on one target would race for its check runs. A regression test parses
 the committed file, so one the sweep could not read fails the build rather than a cycle an hour
-later. Each entry supports:
+later.
+
+`lock_lease` sits beside `targets`, outside the list: how long, in whole minutes, a renewal keeps
+an open lock enforced (ADR-014). It defaults to 240 and is at most 1440, because the gate rejects
+a lease more than 24 hours ahead. ADR-014 sets it once for every target, since it is how long an
+unmaintained lock may block merges — a property of the watcher, not of any one repository — so an
+entry carrying its own `lock_lease` is rejected like any unknown field. The sandbox sets 10 for
+TS-S7. Each entry supports:
 
 | Field | Meaning | Default |
 | --- | --- | --- |
@@ -159,9 +166,9 @@ so a failed issue write leaves the check `in_progress` for the next cycle.
   opens one. Its body mentions the target's `notify` handles, else the owners of the
   last `*` rule in the first CODEOWNERS file on `main` (`.github/`, root, `docs/`), then
   shows the failing commit, the failing tests (or "failing tests unknown") and the target
-  run. The hidden marker holds `first_red`, `lease_until` (now + 4 h, read by the gate),
-  `reported_check` and `reported_sha`, plus `last_green` when a green run was found.
-  Lease renewal comes with #19.
+  run. The hidden marker holds `first_red`, `lease_until` (now + `lock_lease`, read by the gate
+  and renewed on every later cycle), `reported_check` and `reported_sha`, plus `last_green` when
+  a green run was found.
   Test output is HTML-encoded, so it cannot mention anyone or add a second marker.
   The body stays well under GitHub's 65,536-character limit whatever the CTRF report holds:
   names, suites and messages are clipped to 200 characters, the failure list stops at
@@ -248,13 +255,47 @@ The check run is completed last, so a replay always ends with it completed.
 ### Sandbox fault injection
 
 `MW_SANDBOX_EXIT_AFTER`, from the watcher repo's variable of that name, makes the cycle exit
-with code 3 straight after the named Reporter write, or a comma-separated list of them. The
-issue writes are `create`, `comment`, `update`, `close` and `override`; a replay skips the write
+with code 3 straight after the named issue write, or a comma-separated list of them. The
+Reporter's writes are `create`, `comment`, `update`, `close` and `override`, and the lease's are
+`renew`, `lapse` and `lapse_reported`; a replay skips the write
 that was made, so it does not stop at the same point again. The check run's own completion is
 `check:success`, `check:failure` and `check:neutral`, which stop the cycle after the report is
 finished and before the Planner runs: `check:neutral` is ADR-017's boundary, where the retest
 must survive on the rule alone (TS-S18). Set it only in the sandbox replica, and delete it
 after the scenario.
+
+## Lock lease
+
+An open lock issue says nothing about whether anyone still maintains it, so the gate enforces one
+only while its `lease_until` marker is in the future and at most 24 hours ahead (ADR-014). The
+Reporter writes the first lease when it opens the lock, and every later cycle that processes the
+target sets it to now + `lock_lease`, whatever else that cycle does: renewal runs before planning,
+so a watcher that cannot start a test still keeps its lock enforced, while a watcher that has
+stopped renews nothing and the gate lets ordinary merges through within `lock_lease` (NFR-3).
+Renewal covers every open lock the App authored; a hand-made `main-broken` issue has no lease,
+because the gate does not enforce one either.
+
+The trigger worker asks for a cycle once a lease is an hour old, so renewal never depends on the
+unreliable schedule (C-7); the hourly sweep renews as a backup. A `lock_lease` shorter than that
+hour, as the sandbox uses, expires first, and an expired lease always wants renewing.
+
+A renewal of a lease that had already run out is a **lapse**, and the recovery is written in this
+order, so that a cycle stopped at any point resumes where it left off:
+
+1. the same issue-body update that sets the new `lease_until` also writes
+   `lapsed=<old lease_until>..<renewal time>` and the ADR-016 `sweep_required`, so a crash right
+   after the renewal cannot hide that the lock was unenforced;
+2. a comment on the lock gives the window and says the merge queue accepted unlabelled pull
+   requests during it, carrying `<!-- main-watcher lapsed=<from>..<to> -->`;
+3. a `watcher-infra` alert, "Lock lease lapsed on `owner/repo`", carries the same key, so
+   ADR-012 de-duplication makes a repeat create nothing;
+4. `lapse_reported=<renewal time>` records that both were posted.
+
+While `lapse_reported` is missing or older than the lapse, a later cycle posts what is still
+missing, and the marker on the comment keeps it from being written twice. The merges made during
+the window are reported by reconciliation (#20), and the merge groups queued then have their
+gates re-run (#21); a lock with no readable lease at all is simply given one, because nothing
+says since when the gate had been failing open.
 
 ## Neutral results
 
@@ -389,10 +430,12 @@ alert with the same title gets a comment instead of a new issue (ADR-012). A loc
 mentions nobody raises "Lock issues on `owner/repo` mention nobody". Neutral results raise the
 alerts [above](#neutral-results), a target run GitHub will not stop raises the one
 [above](#stale-target-runs), a head out of attempts raises the one
-[above](#retesting-a-neutral-head), and a sweep raises the two [above](#backup-sweep). A failed
+[above](#retesting-a-neutral-head), a lock that went unenforced raises the one
+[above](#lock-lease), and a sweep raises the two [above](#backup-sweep). A failed
 "mention nobody", "target run could not be stopped" or "head untestable" alert never blocks the
 lock, the check run or the testing the cycle does; the cycle logs it and exits non-zero. A failed
-neutral-result alert leaves the check run `in_progress` for a replay.
+neutral-result alert leaves the check run `in_progress` for a replay, and a failed "lock lease
+lapsed" alert leaves `lapse_reported` unwritten, so a later cycle raises it.
 
 ## Validation
 

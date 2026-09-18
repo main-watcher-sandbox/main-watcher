@@ -36,6 +36,23 @@ public class SettingsTests
             Assert.Equal(TimeSpan.FromSeconds(60), settings.CheckPeriod);
             Assert.Equal("targets.yml", settings.TargetsPath);
             Assert.Equal("https://api.github.com/", settings.Api.AbsoluteUri);
+            Assert.Equal(MainWatcher.Core.Reporter.DefaultBotLogin, settings.BotLogin);
+        }
+        finally { File.Delete(key); }
+    }
+
+    // The App that authors lock issues, which the worker reads the lease from (ADR-014); watch.yml names the same App.
+    [Fact]
+    public void TheLockAuthorCanBeNamed()
+    {
+        var key = KeyFile();
+        try
+        {
+            var env = Valid(key);
+            env["MW_BOT_LOGIN"] = " sandbox-watcher[bot] ";
+            Assert.Equal("sandbox-watcher[bot]", WorkerSettings.Load(env.GetValueOrDefault).BotLogin);
+            env["MW_BOT_LOGIN"] = "   ";
+            Assert.Equal(MainWatcher.Core.Reporter.DefaultBotLogin, WorkerSettings.Load(env.GetValueOrDefault).BotLogin);
         }
         finally { File.Delete(key); }
     }

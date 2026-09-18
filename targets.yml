@@ -2,6 +2,10 @@
 # timeout and poll_interval are minutes; test_command, results_glob and timeout must match the
 # target's copied main-watcher-tests.yml. watch.yml never executes these commands itself.
 #
+# lock_lease is the one setting outside the list (ADR-014): how long, in minutes, a renewal keeps
+# an open lock enforced, and so the longest a watcher outage can block ordinary merges. It is 240
+# by default and at most 1440, because the gate rejects a lease more than 24 hours ahead.
+#
 # No targets are configured yet, so the hourly sweep does nothing and the trigger worker starts
 # no cycles. The sandbox target is watched by the private replica
 # main-watcher-sandbox/main-watcher, which holds the App credentials; see sandbox/README.md.

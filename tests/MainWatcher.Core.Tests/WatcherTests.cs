@@ -114,6 +114,133 @@ public class WatcherTests
         Assert.Equal(["Head untestable on owner/repo: no alert sink configured"], sinkless.AlertFailures);
     }
 
+    // ADR-014: a cycle that processes a target renews its open App locks' leases, and touches nothing else.
+    [Fact]
+    public async Task RenewalSetsTheLeaseOnEveryOpenAppLockAndOnNothingElse()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        var body = Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(30))));
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot", body);
+        // Neither of these is a lock the gate enforces, so neither is a lease to keep alive.
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken: opened by hand", "alice", "User", body);
+        var closed = fake.Seed("owner/repo", Reporter.LockLabel, "an older lock", "main-watcher[bot]", "Bot", body);
+        closed.Issue = closed.Issue with { State = "closed", StateReason = "completed" };
+
+        var lines = await new Planner(fake, () => Now).Renew(new() { Repo = "owner/repo" }, ct);
+        Assert.Equal(["update:1"], fake.Order);
+        Assert.Equal(Now + Lease.Default, MainWatcher.Gate.LockLease.ReadLeaseUntil(fake.Find("owner/repo", 1).Body));
+        Assert.Contains("lease renewed until 2026-09-16T23:00:00Z", lines.Single());
+        // A lease that had not run out is no lapse, so nothing is recorded and nothing is reported.
+        Assert.Null(Markers.Field(fake.Find("owner/repo", 1).Body, Lease.Lapsed));
+        Assert.Empty(fake.Comments);
+    }
+
+    [Fact]
+    public async Task RenewalUsesTheConfiguredLockLeaseAndWritesOneEvenWhereTheMarkerIsMissing()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot", "Locked, with no marker.");
+        var target = TargetConfiguration.Parse("lock_lease: 10\ntargets:\n  - repo: owner/repo").Targets.Single();
+        await new Planner(fake, () => Now).Renew(target, ct);
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Equal(Now.AddMinutes(10), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
+        // Nothing says since when the gate has been failing open, so no window is invented and no lapse is reported.
+        Assert.Null(Markers.Field(body, Lease.Lapsed));
+        Assert.Equal(["update:1"], fake.Order);
+    }
+
+    // ADR-014 point 4: the lapse is written with the new lease, then commented, alerted and marked reported.
+    [Fact]
+    public async Task RenewingAnExpiredLeaseRecordsTheLapseThenReportsItOnce()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var expiry = Now.AddMinutes(-90);
+        var fake = new FakeGitHub();
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+            Markers.Set("Locked.", (Lease.Until, Markers.Stamp(expiry))));
+        var watcher = new FakeGitHub();
+        var planner = new Planner(fake, () => Now, alerts: new Alerts(watcher, "owner/watcher"));
+
+        await planner.Renew(new() { Repo = "owner/repo" }, ct);
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Equal($"{Markers.Stamp(expiry)}..{Markers.Stamp(Now)}", Markers.Field(body, Lease.Lapsed));
+        Assert.Equal(Now, Markers.Time(body, Lease.SweepRequired));
+        Assert.Equal(Now + Lease.Default, MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
+        Assert.Equal(Now, Markers.Time(body, Lease.Reported));
+        Assert.Equal(["update:1", "comment:1", "update:1"], fake.Order);
+        Assert.Contains("90 minutes later", fake.Comments.Single());
+        Assert.Contains($"<!-- main-watcher lapsed={Markers.Stamp(expiry)}..{Markers.Stamp(Now)} -->", fake.Comments.Single());
+        var alert = watcher.Issues["owner/watcher"].Single();
+        Assert.Equal("Lock lease lapsed on owner/repo", alert.Issue.Title);
+        Assert.Contains("https://github.com/owner/repo/issues/1", alert.Issue.Body);
+
+        // The next cycle renews a lease that is valid: no second lapse, no second comment and no second alert.
+        await planner.Renew(new() { Repo = "owner/repo" }, ct);
+        Assert.Equal(["update:1", "comment:1", "update:1", "update:1"], fake.Order);
+        Assert.Single(fake.Comments);
+        Assert.Single(watcher.Issues["owner/watcher"]);
+    }
+
+    // A cycle stopped between the renewal and its report leaves the lapse recorded and still owed.
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task ALapseInterruptedAfterAnyWriteIsReportedExactlyOnce(int stopAfter)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { StopAfterWrites = stopAfter };
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+            Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(-90)))));
+        var watcher = new FakeGitHub();
+        Planner Cycle() => new(fake, () => Now, alerts: new Alerts(watcher, "owner/watcher"));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => Cycle().Renew(new() { Repo = "owner/repo" }, ct));
+        Assert.Null(Markers.Time(fake.Find("owner/repo", 1).Body, Lease.Reported));
+        fake.StopAfterWrites = null;
+
+        await Cycle().Renew(new() { Repo = "owner/repo" }, ct);
+        Assert.Single(fake.Comments);
+        Assert.Single(watcher.Issues["owner/watcher"]);
+        Assert.Equal(Now, Markers.Time(fake.Find("owner/repo", 1).Body, Lease.Reported));
+    }
+
+    [Fact]
+    public async Task ALapseCannotBeReportedWithoutAnAlertSink()
+    {
+        var fake = new FakeGitHub();
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+            Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(-1)))));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new Planner(fake, () => Now).Renew(new() { Repo = "owner/repo" }, TestContext.Current.CancellationToken));
+    }
+
+    /// <summary>
+    /// The renewal rule the trigger worker reads (TS-U5 (d)). <paramref name="until"/> and <paramref name="dueAt"/> are
+    /// minutes from <see cref="Now"/>, and a null <paramref name="until"/> is an issue body with no lease marker.
+    /// </summary>
+    [Theory]
+    // A four-hour lease: renewal is wanted once it is an hour old, counted from the renewal rather than from now.
+    [InlineData(240, 240, false, 60)]
+    [InlineData(240, 181, false, 1)]
+    [InlineData(240, 180, true, 0)]
+    [InlineData(240, -1, true, -181)]
+    // A lease shorter than the renewal interval runs out first, so expiry is what the worker waits for.
+    [InlineData(10, 1, false, 1)]
+    [InlineData(10, 0, true, 0)]
+    // Missing, unreadable, or further ahead than a renewal could have set it: renew now, and date nothing.
+    [InlineData(240, null, true, null)]
+    [InlineData(240, 241, true, null)]
+    public void LeaseRenewalRule(int lockLease, int? until, bool due, int? dueAt)
+    {
+        var lease = TimeSpan.FromMinutes(lockLease);
+        var body = until is null ? "Locked." : Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(until.Value))));
+        Assert.Equal(due, Lease.RenewalDue(body, lease, Now));
+        Assert.Equal(dueAt is null ? null : Now.AddMinutes(dueAt.Value), Lease.Due(body, lease, Now));
+        Assert.True(Lease.RenewalDue(Markers.Set("Locked.", (Lease.Until, "not a time")), lease, Now));
+    }
+
     // TS-U11. Steps are "name=conclusion" in job order; "-" is a step with no conclusion.
     [Theory]
     [InlineData(OutcomeKind.Passed, "Restore=success", "main-watcher-test=success", "main-watcher-tests-finished=success")]
@@ -219,6 +346,13 @@ public class WatcherTests
         Assert.ThrowsAny<Exception>(() => TargetConfiguration.Parse("targets:\n  - repo: owner/repo\n    enabled: true\n    enabled: false"));
         // No targets is a valid configuration: the sweep and the worker then have nothing to do.
         Assert.Empty(TargetConfiguration.Parse("targets: []").Targets);
+        // lock_lease (ADR-014) is one setting for the whole file, and the gate rejects a lease more than 24 hours ahead.
+        Assert.Equal(Lease.Default, target.LockLease);
+        Assert.Equal(TimeSpan.FromMinutes(10), TargetConfiguration.Parse("lock_lease: 10\ntargets:\n  - repo: owner/repo").Targets.Single().LockLease);
+        Assert.Throws<InvalidDataException>(() => TargetConfiguration.Parse("lock_lease: 1441\ntargets: []"));
+        Assert.Throws<InvalidDataException>(() => TargetConfiguration.Parse("lock_lease: 0\ntargets: []"));
+        // It is set once, never per target: one repository cannot hold the queue longer than another.
+        Assert.ThrowsAny<Exception>(() => TargetConfiguration.Parse("targets:\n  - repo: owner/repo\n    lock_lease: 10"));
     }
 
     /// <summary>
@@ -342,7 +476,7 @@ public class WatcherTests
         Assert.Contains("- Alpha (suite): failed", issue.Body);
         Assert.Contains("https://github.com/owner/repo/actions/runs/42", issue.Body);
         Assert.Contains("reported_check=1 reported_sha=abcdef1234567890", issue.Body);
-        Assert.Equal(Now.Add(Reporter.LockLease), MainWatcher.Gate.LockLease.ReadLeaseUntil(issue.Body));
+        Assert.Equal(Now.Add(Lease.Default), MainWatcher.Gate.LockLease.ReadLeaseUntil(issue.Body));
         Assert.Contains(issue.Url, fake.Summary);
         Assert.Empty(reporter.AlertFailures);
     }
@@ -366,7 +500,7 @@ public class WatcherTests
         await new Reporter(fake, clock: () => Now).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(), TestContext.Current.CancellationToken);
         var body = fake.Issues["owner/repo"].Single().Body;
         Assert.DoesNotContain("@owner", body);
-        Assert.Equal(Now.Add(Reporter.LockLease), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
+        Assert.Equal(Now.Add(Lease.Default), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
     }
 
     [Fact]
@@ -409,7 +543,7 @@ public class WatcherTests
         Assert.True(body.Length <= Reporter.MaxIssueBody, $"body is {body.Length} characters");
         Assert.Contains("more; see the target run", body);
         Assert.Contains("https://github.com/owner/repo/actions/runs/42", body);
-        Assert.Equal(Now.Add(Reporter.LockLease), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
+        Assert.Equal(Now.Add(Lease.Default), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
         Assert.Contains("reported_check=1", body);
     }
 
@@ -686,7 +820,7 @@ public class WatcherTests
         Assert.DoesNotContain("dave", body);
         Assert.DoesNotContain("@alice", body);
         Assert.Contains($"<!-- main-watcher last_green={Sha('a')} first_red={Sha('f')} ", body);
-        Assert.Equal(Now.Add(Reporter.LockLease), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
+        Assert.Equal(Now.Add(Lease.Default), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
     }
 
     [Theory]
