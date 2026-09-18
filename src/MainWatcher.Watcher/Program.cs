@@ -36,7 +36,11 @@ try
     var watcherGithub = new GitHubGateway(alertHttp, appId);
     var alerts = new Alerts(watcherGithub, alertRepo);
     var botLogin = Environment.GetEnvironmentVariable("MW_BOT_LOGIN") is { Length: > 0 } app ? app : Reporter.DefaultBotLogin;
-    var planner = new Planner(github, alerts: alerts, botLogin: botLogin);
+    // Sandbox fault injection (TS-S16 (g) and (h)): a shorter queue deadline, so a job that will never get a runner is
+    // cancelled in minutes, and a switch that makes every cancel fail. The worker must be given the same deadline.
+    var queueDeadline = StaleRun.ConfiguredQueueDeadline(Environment.GetEnvironmentVariable("MW_QUEUE_DEADLINE_MINUTES"));
+    var planner = new Planner(github, alerts: alerts, botLogin: botLogin, queueDeadline: queueDeadline,
+        cancelsRuns: Environment.GetEnvironmentVariable("MW_SANDBOX_REFUSE_CANCEL") != "true");
     // Sandbox fault injection (TS-S14): exit right after the named Reporter write, so the next cycle replays the report.
     var exitAfter = Environment.GetEnvironmentVariable("MW_SANDBOX_EXIT_AFTER") ?? "";
     var reporter = new Reporter(github, alerts, botLogin,
@@ -72,8 +76,13 @@ try
         try
         {
             var check = await planner.Recover(repo, pending, timeout.Token);
-            Console.WriteLine(check.Status == "completed" || await reporter.Report(target, check, timeout.Token)
-                ? $"Reported check {check.Id}." : $"Check {check.Id} remains pending.");
+            if (check.Status == "completed" || await reporter.Report(target, check, timeout.Token))
+            {
+                Console.WriteLine($"Reported check {check.Id}.");
+                continue;
+            }
+            // Nothing to report yet: the target run may instead have passed a deadline and need stopping (ADR-013 point 5).
+            Console.WriteLine(await planner.Stop(target, check, timeout.Token) ?? $"Check {check.Id} remains pending.");
         }
         catch (Exception e) when (!timeout.IsCancellationRequested)
         {

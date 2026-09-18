@@ -32,6 +32,12 @@ public sealed record WorkerSettings(
     /// </summary>
     public TimeSpan VerifyTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// The ADR-013 queue deadline, from <c>MW_QUEUE_DEADLINE_MINUTES</c>. Only the sandbox sets it, and <c>watch.yml</c> must
+    /// read the same variable, so that the worker starts a cycle for exactly the runs the Planner would then cancel.
+    /// </summary>
+    public TimeSpan QueueDeadline { get; init; } = StaleRun.DefaultQueueDeadline;
+
     public static WorkerSettings Load(Func<string, string?> env)
     {
         var errors = new List<string>();
@@ -79,7 +85,10 @@ public sealed record WorkerSettings(
             errors.Add("MW_GITHUB_API_URL must be an absolute http(s) URL.");
         else if (!api.AbsoluteUri.EndsWith('/')) api = new(api.AbsoluteUri + "/");
         if (errors.Count > 0) throw new WorkerConfigurationException(string.Join(" ", errors));
-        return new(watcherRepo, mainWatcher, observer, doorbell, period, targets, api!);
+        return new(watcherRepo, mainWatcher, observer, doorbell, period, targets, api!)
+        {
+            QueueDeadline = StaleRun.ConfiguredQueueDeadline(env("MW_QUEUE_DEADLINE_MINUTES"))
+        };
     }
 
     static TimeSpan Seconds(string? text, int fallback, List<string> errors)

@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text.RegularExpressions;
 
 namespace MainWatcher.Core;
 
@@ -26,7 +25,6 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     const int MaxFieldLength = 200;
     /// <summary>A comment for a check is never older than its check run, give or take clock differences.</summary>
     static readonly TimeSpan ClockSkew = TimeSpan.FromMinutes(5);
-    static readonly Regex Marker = new(@"<!--\s*main-watcher\s(?<fields>.*?)-->", RegexOptions.Singleline);
 
     /// <summary>Alerts that could not be raised. They never block the lock or the check run.</summary>
     public List<string> AlertFailures { get; } = [];
@@ -44,6 +42,10 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         if (outcome is null) return false;
         var runUrl = $"https://github.com/{repo}/actions/runs/{runId}";
         var summary = outcome.Description + $"\n\n[Target run]({runUrl})";
+        // The Planner records a stale run's stopping in this same output (ADR-013 point 5). Say so, because the step
+        // conclusions alone do not tell a cancelled run from one the target's own code stopped.
+        if (Markers.Time(check.Summary, StaleRun.CancelRequested) is { } stopped)
+            summary += $"\n\nMain Watcher cancelled this run at {Markers.Stamp(stopped)} after it passed its deadline.";
         if (outcome.Conclusion is "success" or "failure")
         {
             var reports = await github.Reports(repo, runId, ct);
@@ -255,28 +257,18 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
 
     static string Id(CheckRun check) => check.Id.ToString(CultureInfo.InvariantCulture);
 
-    /// <summary>The last value of <paramref name="name"/> in the hidden markers of <paramref name="text"/>.</summary>
-    static string? Field(string? text, string name) => Marker.Matches(text ?? "")
-        .SelectMany(m => m.Groups["fields"].Value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
-        .Where(f => f.StartsWith(name + "=", StringComparison.Ordinal)).Select(f => f[(name.Length + 1)..]).LastOrDefault();
+    static string? Field(string? text, string name) => Markers.Field(text, name);
 
     /// <summary>Points the body's marker at <paramref name="check"/>, keeping its other fields, such as <c>lease_until</c>.</summary>
-    static string WithReported(string body, CheckRun check)
-    {
-        var reported = $"reported_check={check.Id} reported_sha={check.Sha}";
-        if (Marker.Matches(body) is not { Count: > 0 } markers) return body + $"\n\n<!-- main-watcher {reported} -->";
-        var marker = markers[^1];
-        var fields = marker.Groups["fields"].Value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
-            .Where(f => !f.StartsWith("reported_check=", StringComparison.Ordinal) && !f.StartsWith("reported_sha=", StringComparison.Ordinal));
-        return body[..marker.Index] + $"<!-- main-watcher {string.Join(" ", fields.Append(reported))} -->" + body[(marker.Index + marker.Length)..];
-    }
+    static string WithReported(string body, CheckRun check) =>
+        Markers.Set(body, ("reported_check", Id(check)), ("reported_sha", check.Sha));
 
     async Task<Issue> OpenLock(Target target, CheckRun check, CtrfResult reports, string runUrl, Issue? overridden, CancellationToken ct)
     {
         var mentions = await MentionList(target, ct);
         var pushes = await PushList.Collect(github, target.Repo, check.Sha, ct);
         WalkBacks.Add(new(check.Id, pushes.CommitsChecked, pushes.Source));
-        var leaseUntil = Now.Add(LockLease).UtcDateTime;
+        var leaseUntil = Markers.Stamp(Now.Add(LockLease));
         var body = (mentions.Count > 0 ? string.Join(" ", mentions) + "\n\n" : "")
             + $"Main Watcher tests failed on `main` at {Commit(target.Repo, check.Sha)}.\n\n"
             + "**Failing tests**\n\n" + FailureList(reports, FailureBudget) + "\n\n"
@@ -286,7 +278,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
             + "**Pushes since the last green run**\n\n" + PushTable(target.Repo, check.Sha, pushes, PushBudget) + "\n\n"
             + $"While this issue is open, the merge queue accepts only pull requests labelled `fixes-main`. "
             + "A green Main Watcher run on `main` closes it. Closing it by hand overrides the lock.\n\n"
-            + "<!-- main-watcher " + (pushes.Green is { } green ? $"last_green={green.Sha} " : "") + $"first_red={check.Sha} lease_until={leaseUntil.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)} "
+            + "<!-- main-watcher " + (pushes.Green is { } green ? $"last_green={green.Sha} " : "") + $"first_red={check.Sha} lease_until={leaseUntil} "
             + $"reported_check={check.Id} reported_sha={check.Sha} -->";
         var issue = await github.CreateIssue(target.Repo, $"main is broken: tests failed on {Short(check.Sha)}", body, LockLabel, ct);
         afterWrite?.Invoke("create");
