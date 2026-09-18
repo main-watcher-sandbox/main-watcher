@@ -39,8 +39,11 @@ public interface IGitHubGateway
     /// subject names (ADR-015). Null when GitHub cannot compare the two commits, which a force push can cause.
     /// </summary>
     Task<IReadOnlyList<MergedCommit>?> MergedCommits(string repo, string before, string after, CancellationToken ct);
-    /// <summary>A pull request's <c>labeled</c> and <c>unlabeled</c> events, oldest first (ADR-015 point 8).</summary>
-    Task<IReadOnlyList<LabelEvent>> LabelEvents(string repo, int number, CancellationToken ct);
+    /// <summary>
+    /// A pull request's <c>labeled</c>, <c>unlabeled</c> and <c>merged</c> events, oldest first (ADR-015 point 8). One read
+    /// gives both the label history and the moment it is judged at.
+    /// </summary>
+    Task<IReadOnlyList<PullEvent>> PullEvents(string repo, int number, CancellationToken ct);
     Task Link(string repo, long checkId, long runId, CancellationToken ct);
     Task<IReadOnlyList<WorkflowJob>?> Jobs(string repo, long runId, CancellationToken ct);
     Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct);
