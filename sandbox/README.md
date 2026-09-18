@@ -47,7 +47,8 @@ That push overwrites the replica's `targets.yml` with this repo's, which lists *
 the watcher repo watches nothing of its own, and two watchers on one target would race for its
 check runs. So after every such push, set the replica's list back to the sandbox target. Its
 `poll_interval` of 1 minute is what makes a scenario take minutes rather than a quarter of an
-hour:
+hour, and `notify` keeps every lock from raising "Lock issues on … mention nobody": the target
+has no CODEOWNERS, so with an empty list that alert returns with each new lock:
 
 ```
 gh api -X PUT repos/main-watcher-sandbox/main-watcher/contents/targets.yml \
@@ -60,7 +61,7 @@ targets:
     results_glob: '**/TestResults/*.ctrf.json'
     timeout: 30
     poll_interval: 1
-    notify: []
+    notify: [pat-actium]
     enabled: true
 YAML
 )"
