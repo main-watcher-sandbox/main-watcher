@@ -166,7 +166,7 @@ public class WatcherTests
         await planner.Renew(new() { Repo = "owner/repo" }, ct);
         var body = fake.Find("owner/repo", 1).Body;
         Assert.Equal($"{Markers.Stamp(expiry)}..{Markers.Stamp(Now)}", Markers.Field(body, Lease.Lapsed));
-        Assert.Equal(Now, Markers.Time(body, Lease.SweepRequired));
+        Assert.Equal(Now, Markers.Time(body, QueueSweep.Required));
         Assert.Equal(Now + Lease.Default, MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
         Assert.Equal(Now, Markers.Time(body, Lease.Reported));
         Assert.Equal(["update:1", "comment:1", "update:1"], fake.Order);
@@ -359,6 +359,173 @@ public class WatcherTests
         Assert.Equal(due, Lease.RenewalDue(body, lease, Now));
         Assert.Equal(dueAt is null ? null : Now.AddMinutes(dueAt.Value), Lease.Due(body, lease, Now));
         Assert.True(Lease.RenewalDue(Markers.Set("Locked.", (Lease.Until, "not a time")), lease, Now));
+    }
+
+    // TS-U12 (ADR-016): a sweep is owed whenever queue_swept is missing or older than the generation sweep_required names.
+    [Theory]
+    // No generation was ever recorded, so nothing is owed.
+    [InlineData(null, null, null)]
+    [InlineData(null, 0, null)]
+    // Recorded and never swept, or swept for an older generation: the crash right after a lease renewal (TS-S17 (b)).
+    [InlineData(0, null, 0)]
+    [InlineData(0, -30, 0)]
+    // Swept for this generation, or a later one, so nothing is left.
+    [InlineData(0, 0, null)]
+    [InlineData(-30, 0, null)]
+    public void ASweepIsOwedUntilQueueSweptCatchesUpWithItsGeneration(int? required, int? swept, int? owed)
+    {
+        (string Name, string Value)[] fields = [
+            .. required is { } r ? new[] { (QueueSweep.Required, Markers.Stamp(Now.AddMinutes(r))) } : [],
+            .. swept is { } s ? new[] { (QueueSweep.Swept, Markers.Stamp(Now.AddMinutes(s))) } : []];
+        Assert.Equal(owed is { } o ? Now.AddMinutes(o) : null, QueueSweep.Owed(Markers.Set("Locked.", fields)));
+        // Only Main Watcher writes these markers: one that cannot be read names no generation to sweep for, and treating it
+        // as owed would owe a sweep that nothing could discharge.
+        Assert.Null(QueueSweep.Owed(Markers.Set("Locked.", (QueueSweep.Required, "not a time"))));
+    }
+
+    // TS-U12: which gate runs of a queued group the sweep re-runs, including the 5-minute margin on the cut-off.
+    [Theory]
+    // Passed before the cut-off: the group is waiting on a verdict taken without the lock.
+    [InlineData("completed", "success", -1, GateRunHandling.Rerun)]
+    // Inside the margin, which absorbs clock differences and the delay before a new lock is visible.
+    [InlineData("completed", "success", 4, GateRunHandling.Rerun)]
+    [InlineData("completed", "success", 5, GateRunHandling.Leave)]
+    // Still running: it may yet report "no lock", so it is re-run once it completes.
+    [InlineData("in_progress", null, -1, GateRunHandling.Wait)]
+    [InlineData("queued", null, -1, GateRunHandling.Wait)]
+    // Started after the cut-off, so it read the lock itself.
+    [InlineData("in_progress", null, 6, GateRunHandling.Leave)]
+    // Nothing that did not pass is holding the group's merge open.
+    [InlineData("completed", "failure", -1, GateRunHandling.Leave)]
+    [InlineData("completed", "cancelled", -1, GateRunHandling.Leave)]
+    public void TheSweepRerunsOnlyGatesThatPassedBeforeTheCutoff(string status, string? conclusion, int minutes, GateRunHandling handling) =>
+        Assert.Equal(handling, QueueSweep.Handle(new(9001, status, conclusion, Now.AddMinutes(minutes)), QueueSweep.Cutoff(Now)));
+
+    /// <summary>A lock owing a sweep for <paramref name="minutesAgo"/> ago, swept to <paramref name="swept"/> if at all.</summary>
+    static FakeIssue SeedSweep(FakeGitHub fake, int minutesAgo, int? swept = null) =>
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+            Markers.Set("Locked.", [(QueueSweep.Required, Markers.Stamp(Now.AddMinutes(-minutesAgo))),
+                .. swept is { } s ? new[] { (QueueSweep.Swept, Markers.Stamp(Now.AddMinutes(-s))) } : []]));
+
+    /// <summary>A group in the queue for pull request <paramref name="pull"/>, whose gate ran on commit <c>group-&lt;pull&gt;</c>.</summary>
+    static QueuedGroup Group(int pull) => new($"gh-readonly-queue/main/pr-{pull}-{Sha('a')}", $"group-{pull}", pull);
+
+    // TS-U12: the queue sweep re-runs the gate of every group still queued whose gate decided before the lock, leaves the
+    // rest alone, and records the generation done.
+    [Fact]
+    public async Task TheSweepRerunsGatesTakenBeforeTheLockAndThenRecordsItDone()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { Rerunning = Now };
+        // The lock opened 20 minutes ago, so gate runs that started before 15 minutes ago are suspect.
+        SeedSweep(fake, 20);
+        fake.Queued.AddRange([Group(12), Group(13), Group(14)]);
+        // #12 passed its gate while no lock existed: this is the group ADR-016 exists for.
+        fake.Gates["group-12"] = [new(9012, "completed", "success", Now.AddMinutes(-40))];
+        // #13's gate started well after the cut-off, so it read the lock itself.
+        fake.Gates["group-13"] = [new(9013, "completed", "success", Now.AddMinutes(-10))];
+        // #14's gate already failed, so nothing it did is holding a merge open.
+        fake.Gates["group-14"] = [new(9014, "completed", "failure", Now.AddMinutes(-40))];
+        // A group that left the queue is not swept: its commit is never asked about.
+        fake.Gates["group-99"] = [new(9099, "completed", "success", Now.AddMinutes(-40))];
+
+        var lines = await new Planner(fake, () => Now).SweepQueue(Locked, ct);
+
+        Assert.Equal(["rerun:9012", "update:1"], fake.Order);
+        Assert.DoesNotContain("gates:group-99", fake.Reads);
+        Assert.Equal(Now.AddMinutes(-20), Markers.Time(fake.Find("owner/repo", 1).Body, QueueSweep.Swept));
+        Assert.Contains("re-ran 1 gate run(s) — #12 (gate run 9012)", lines.Single());
+        Assert.Contains("complete.", lines.Single());
+
+        // Nothing is owed now, so a second cycle reads no queue and asks for no re-run.
+        fake.Reads.Clear();
+        Assert.Empty(await new Planner(fake, () => Now).SweepQueue(Locked, ct));
+        Assert.Equal(["rerun:9012", "update:1"], fake.Order);
+        Assert.Empty(fake.Reads);
+    }
+
+    // TS-U12: a gate still running may yet report "no lock", so the sweep stays owed until it completes, and re-runs it then.
+    [Fact]
+    public async Task AGateStillRunningKeepsTheSweepOwedUntilItCompletes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { Rerunning = Now };
+        SeedSweep(fake, 2);
+        fake.Queued.Add(Group(12));
+        fake.Gates["group-12"] = [new(9012, "in_progress", null, Now.AddMinutes(-20))];
+
+        var lines = await new Planner(fake, () => Now).SweepQueue(Locked, ct);
+        Assert.Empty(fake.Order);
+        Assert.Null(Markers.Time(fake.Find("owner/repo", 1).Body, QueueSweep.Swept));
+        Assert.Contains("gate run 9012 for #12 is still running", lines.Single());
+
+        // It finishes, passing, and the next cycle re-runs it and finishes the sweep.
+        fake.Gates["group-12"] = [new(9012, "completed", "success", Now.AddMinutes(-20))];
+        await new Planner(fake, () => Now).SweepQueue(Locked, ct);
+        Assert.Equal(["rerun:9012", "update:1"], fake.Order);
+        Assert.Equal(Now.AddMinutes(-2), Markers.Time(fake.Find("owner/repo", 1).Body, QueueSweep.Swept));
+    }
+
+    // TS-S17 (b): a lapsed lease renewed and then a crash, with an older queue_swept left on the issue. The obligation is in
+    // the issue, so the next cycle sweeps the group that passed its gate during the lapse.
+    [Fact]
+    public async Task ACrashRightAfterALeaseRenewalStillOwesTheSweep()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { StopAfterWrites = 1, Rerunning = Now };
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+            Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(-90))),
+                (QueueSweep.Required, Markers.Stamp(Now.AddHours(-5))), (QueueSweep.Swept, Markers.Stamp(Now.AddHours(-5)))));
+        var watcher = new FakeGitHub();
+
+        // The renewal writes the new generation and the cycle dies before it can report the lapse, let alone sweep.
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            new Planner(fake, () => Now, alerts: new Alerts(watcher, "owner/watcher")).Renew(Locked, ct));
+        fake.StopAfterWrites = null;
+        Assert.Equal(Now, QueueSweep.Owed(fake.Find("owner/repo", 1).Body));
+
+        // A group passed its gate during the lapse and is still queued, waiting for another required check.
+        fake.Queued.Add(Group(12));
+        fake.Gates["group-12"] = [new(9012, "completed", "success", Now.AddMinutes(-60))];
+        await new Planner(fake, () => Now.AddMinutes(1)).SweepQueue(Locked, ct);
+
+        Assert.Contains("rerun:9012", fake.Order);
+        Assert.Equal(Now, Markers.Time(fake.Find("owner/repo", 1).Body, QueueSweep.Swept));
+    }
+
+    // A re-run GitHub refuses leaves the group unchecked, so the sweep is still owed and the worker keeps asking (ADR-016).
+    [Fact]
+    public async Task ARerunGitHubRefusesLeavesTheSweepOwed()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { RerunRefusal = "HTTP 403" };
+        SeedSweep(fake, 2);
+        fake.Queued.Add(Group(12));
+        fake.Gates["group-12"] = [new(9012, "completed", "success", Now.AddMinutes(-20))];
+
+        var lines = await new Planner(fake, () => Now).SweepQueue(Locked, ct);
+
+        Assert.Equal(["rerun:9012"], fake.Order);
+        Assert.Null(Markers.Time(fake.Find("owner/repo", 1).Body, QueueSweep.Swept));
+        Assert.Contains("could not be re-run (HTTP 403)", lines.Single());
+    }
+
+    // Only an open App lock owes a sweep: a closed one enforces nothing, and a hand-made issue is not Main Watcher's lock.
+    [Fact]
+    public async Task NeitherAClosedLockNorAHandMadeOneIsSwept()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        var closed = SeedSweep(fake, 2);
+        closed.Issue = closed.Issue with { State = "closed", StateReason = "completed" };
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken: opened by hand", "alice", "User",
+            Markers.Set("Locked.", (QueueSweep.Required, Markers.Stamp(Now))));
+        fake.Queued.Add(Group(12));
+        fake.Gates["group-12"] = [new(9012, "completed", "success", Now.AddMinutes(-20))];
+
+        Assert.Empty(await new Planner(fake, () => Now).SweepQueue(Locked, ct));
+        Assert.Empty(fake.Order);
+        Assert.Empty(fake.Reads);
     }
 
     static readonly Target Locked = new() { Repo = "owner/repo" };
@@ -606,6 +773,146 @@ public class WatcherTests
         Assert.Equal(Reconciliation.CompleteValue, Markers.Field(body, Reconciliation.Complete));
     }
 
+    // PR #55 review: the cursor is read back with a strict ">", so a second's worth of activity moves it all at once.
+    // Advancing between two entries stamped in the same second would put the one still unjudged behind it for good, and the
+    // next run would then find nothing left and mark the lock complete.
+    [Fact]
+    public async Task TwoMergesInTheSameSecondMoveTheCursorOnlyTogether()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub
+        {
+            Activity = { PushAt('a', 'b', "pr_merge", "alice", 30), PushAt('b', 'c', "pr_merge", "bob", 30) }
+        };
+        fake.Merged[Sha('b')] = [Pull(7, 30)];
+        fake.Merged[Sha('c')] = [Pull(8, 30)];
+        fake.Labels[7] = [Merge(30)];
+        fake.LabelsError.Add(8);
+        SeedWindow(fake, 60);
+        fake.CloseByHand("owner/repo", 1, "alice", Now.AddMinutes(-5));
+        var watcher = new FakeGitHub();
+
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Contains("#7", body);
+        // Neither the cursor nor the completion moves while #8, stamped in the same second, is unjudged.
+        Assert.Null(Markers.Field(body, Reconciliation.Cursor));
+        Assert.Null(Markers.Field(body, Reconciliation.Complete));
+
+        fake.LabelsError.Clear();
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        body = fake.Find("owner/repo", 1).Body;
+        Assert.Contains("#8", body);
+        Assert.Equal(Now.AddMinutes(-30), Markers.Time(body, Reconciliation.Cursor));
+        Assert.Equal(Reconciliation.CompleteValue, Markers.Field(body, Reconciliation.Complete));
+        // #7 was looked at twice and reported once.
+        Assert.Equal(1, body.Split(Reconciliation.Key(7)).Length - 1);
+        Assert.Single(fake.Find("owner/repo", 1).Comments, c => c.Body.Contains(Reconciliation.Key(7), StringComparison.Ordinal));
+    }
+
+    // PR #55 review: a pull request is named by its **last** commit, so a range read only part-way loses exactly the commits
+    // that name the later ones. A lock is never complete while any of its range is unread — the bound is on the work one
+    // cycle does, not on what is checked — and the next pass carries on from where this one stopped.
+    [Fact]
+    public async Task ALongRangeIsFinishedAcrossPassesAndTheLockStaysIncompleteMeanwhile()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { Activity = { PushAt('a', 'b', "merge_queue_merge", "alice", 30) } };
+        // Two pull requests in one range; the fake yields one commit a pass while the range is marked longer than a pass.
+        fake.Merged[Sha('b')] = [Pull(7, 30), Pull(8, 30)];
+        fake.Truncated.Add(Sha('b'));
+        fake.Labels[7] = [Merge(30)];
+        fake.Labels[8] = [Merge(30)];
+        SeedWindow(fake, 60);
+        fake.CloseByHand("owner/repo", 1, "alice", Now.AddMinutes(-5));
+        var watcher = new FakeGitHub();
+
+        var line = Assert.Single(await Reconciler(fake, watcher).Reconcile(Locked, ct));
+        var body = fake.Find("owner/repo", 1).Body;
+        // The first pass judged #7 and stopped. #8 is named only by a commit it has not read yet.
+        Assert.Contains("[#7](https://github.com/owner/repo/pull/7)", body);
+        Assert.DoesNotContain("#8", body);
+        // Nothing it could not read is reported as unnameable, and nothing claims the window was checked.
+        Assert.DoesNotContain(Reconciliation.Key(Sha('b')), body);
+        Assert.Null(Markers.Field(body, Reconciliation.Cursor));
+        Assert.Null(Markers.Field(body, Reconciliation.Complete));
+        Assert.Equal($"{Sha('b')}:1", Markers.Field(body, Reconciliation.Commits));
+        Assert.Contains("is longer than one pass reads", line);
+
+        // The next pass carries on from the commit the last one stopped at, and finishes the entry.
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        body = fake.Find("owner/repo", 1).Body;
+        Assert.Contains("[#8](https://github.com/owner/repo/pull/8)", body);
+        Assert.Equal(Now.AddMinutes(-30), Markers.Time(body, Reconciliation.Cursor));
+        Assert.Equal(Reconciliation.CompleteValue, Markers.Field(body, Reconciliation.Complete));
+        Assert.Equal(["merged:" + Sha('b') + ":0", "labels:7", "merged:" + Sha('b') + ":1", "labels:8"], fake.Reads);
+        // Each pull request reported once, and each judged on its own rather than lumped into one warning.
+        Assert.Equal(2, watcher.Comments.Count + watcher.Issues["owner/watcher"].Count);
+    }
+
+    // PR #55 review: the two rules above meet here. The cursor cannot move until a whole second is done, so while one entry
+    // of a second is unfinished its neighbours cannot be put behind it — and an entry whose progress was forgotten would be
+    // read again from the start. Two long ranges in one second would then take turns overwriting each other's progress and
+    // neither would ever finish.
+    [Fact]
+    public async Task TwoLongRangesInTheSameSecondBothFinish()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub
+        {
+            Activity = { PushAt('a', 'b', "merge_queue_merge", "alice", 30), PushAt('b', 'c', "merge_queue_merge", "bob", 30) }
+        };
+        // Two entries stamped in the same second, each naming two pull requests and each read one commit a pass.
+        fake.Merged[Sha('b')] = [Pull(7, 30), Pull(8, 30)];
+        fake.Merged[Sha('c')] = [Pull(9, 30), Pull(10, 30)];
+        fake.Truncated.Add(Sha('b'));
+        fake.Truncated.Add(Sha('c'));
+        foreach (var pull in new[] { 7, 8, 9, 10 }) fake.Labels[pull] = [Merge(30)];
+        SeedWindow(fake, 60);
+        fake.CloseByHand("owner/repo", 1, "alice", Now.AddMinutes(-5));
+        var watcher = new FakeGitHub();
+
+        // Three passes finish both ranges: b, then b's tail and c, then c's tail.
+        for (var pass = 0; pass < 3; pass++) await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        var body = fake.Find("owner/repo", 1).Body;
+        foreach (var pull in new[] { 7, 8, 9, 10 })
+            Assert.Contains($"[#{pull}](https://github.com/owner/repo/pull/{pull})", body);
+        Assert.Equal(Now.AddMinutes(-30), Markers.Time(body, Reconciliation.Cursor));
+        Assert.Equal(Reconciliation.CompleteValue, Markers.Field(body, Reconciliation.Complete));
+        // Nothing of that second needs remembering once it is behind the cursor.
+        Assert.Equal("", Markers.Field(body, Reconciliation.Commits));
+        // The first range is never restarted: each commit of each range is read exactly once.
+        Assert.Equal([
+            "merged:" + Sha('b') + ":0", "labels:7",
+            "merged:" + Sha('b') + ":1", "labels:8", "merged:" + Sha('c') + ":0", "labels:9",
+            "merged:" + Sha('c') + ":1", "labels:10"], fake.Reads);
+    }
+
+    // PR #55 review: the writes that fail are the ones that would have said something, so nothing else would notice. The
+    // overdue alert goes to the watcher repo, which is writable when the target's issue is not.
+    [Fact]
+    public async Task AClosedLockWhoseReportsCannotBeWrittenStillRaisesReconciliationFailing()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { Activity = { PushAt('a', 'b', "pr_merge", "alice", 1500) }, IssueError = true };
+        fake.Merged[Sha('b')] = [Pull(7, 1500)];
+        fake.Labels[7] = [Merge(1500)];
+        SeedWindow(fake, 1600);
+        fake.CloseByHand("owner/repo", 1, "alice", Now.AddMinutes(-1490));
+        var watcher = new FakeGitHub();
+
+        // The cycle still fails, so the worker asks again.
+        await Assert.ThrowsAsync<HttpRequestException>(() => Reconciler(fake, watcher).Reconcile(Locked, ct));
+        var alert = Assert.Single(watcher.Issues["owner/watcher"]).Issue;
+        Assert.Equal("Reconciliation failing on owner/repo", alert.Title);
+        Assert.Contains("has still not been checked", alert.Body);
+        Assert.Contains("its reports could not be written", alert.Body);
+        // Nothing was written, so nothing advanced and nothing claims the window was checked.
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Null(Markers.Field(body, Reconciliation.Cursor));
+        Assert.Null(Markers.Field(body, Reconciliation.Complete));
+    }
+
     [Fact]
     public async Task AMergeMadeWhileLockedCannotBeReportedWithoutAnAlertSink()
     {
@@ -656,6 +963,9 @@ public class WatcherTests
         // The same pull request removed twice is named once; one removed before the lock opened is not this lock's doing.
         fake.Blocked.Add(new(9002, 12, $"gh-readonly-queue/main/pr-12-{Sha('b')}", Now.AddMinutes(-30)));
         fake.Blocked.Add(new(9003, 5, $"gh-readonly-queue/main/pr-5-{Sha('c')}", Now.AddHours(-3)));
+        // ADR-016: #20 was queued before this lock and was removed by the sweep re-running its gate, which is a second attempt
+        // of a run GitHub still dates by its first. The comment must name it too, and say why it went.
+        fake.Blocked.Add(new(9004, 20, $"gh-readonly-queue/main/pr-20-{Sha('d')}", Now.AddMinutes(-90), Attempt: 2));
 
         await new Reporter(fake, clock: () => Now).Report(Locked, Pending(), ct);
         var comment = fake.Comments.Single();
@@ -663,6 +973,8 @@ public class WatcherTests
         Assert.Contains("re-queue the ones you still want merged", comment);
         Assert.Equal(1, comment.Split("- #12").Length - 1);
         Assert.DoesNotContain("- #5", comment);
+        Assert.Contains("- #20 (its gate was re-run because it was queued before this lock)", comment);
+        Assert.DoesNotContain("- #12 (its gate", comment);
     }
 
     [Fact]
@@ -1269,6 +1581,8 @@ public class WatcherTests
         Assert.DoesNotContain("@alice", body);
         Assert.Contains($"<!-- main-watcher last_green={Sha('a')} first_red={Sha('f')} ", body);
         Assert.Equal(Now.Add(Lease.Default), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
+        // ADR-016: the sweep obligation is created by the same write as the lock, so a crash straight after cannot lose it.
+        Assert.Equal(Now, QueueSweep.Owed(body));
     }
 
     [Theory]
@@ -2149,6 +2463,8 @@ public class WatcherTests
         public HashSet<string> MergedError { get; } = [];
         /// <summary><c>after</c> commits GitHub can no longer compare, as a force push leaves behind.</summary>
         public HashSet<string> Uncomparable { get; } = [];
+        /// <summary><c>after</c> commits whose range holds more commits than the compare read.</summary>
+        public HashSet<string> Truncated { get; } = [];
         /// <summary>Timeline events by pull request, oldest first, as GitHub returns them.</summary>
         public Dictionary<int, List<PullEvent>> Labels { get; } = [];
         /// <summary>Pull requests whose label history cannot be read (ADR-015 point 8).</summary>
@@ -2156,12 +2472,15 @@ public class WatcherTests
         /// <summary>Merge groups the gate failed, for the unlock comment (R-7).</summary>
         public List<GateBlock> Blocked { get; } = [];
         public bool BlockedError { get; init; }
-        public Task<IReadOnlyList<MergedCommit>?> MergedCommits(string repo, string before, string after, CancellationToken ct)
+        public Task<MergedRange?> MergedCommits(string repo, string before, string after, int skip, CancellationToken ct)
         {
-            Reads.Add($"merged:{after}");
+            Reads.Add($"merged:{after}:{skip}");
             if (MergedError.Contains(after)) throw new HttpRequestException("comparison unavailable");
-            return Task.FromResult(Uncomparable.Contains(after) ? null
-                : (IReadOnlyList<MergedCommit>?)Merged.GetValueOrDefault(after, []).ToArray());
+            if (Uncomparable.Contains(after)) return Task.FromResult<MergedRange?>(null);
+            // One commit a pass, when the range is marked truncated, so a test can watch it being finished across several.
+            var all = Merged.GetValueOrDefault(after, []);
+            var read = Truncated.Contains(after) ? all.Skip(skip).Take(1).ToArray() : [.. all.Skip(skip)];
+            return Task.FromResult<MergedRange?>(new(read, skip + read.Length < all.Count));
         }
         public Task<IReadOnlyList<PullEvent>> PullEvents(string repo, int number, CancellationToken ct)
         {
@@ -2174,6 +2493,38 @@ public class WatcherTests
                 : Task.FromResult<IReadOnlyList<GateBlock>>(Blocked.Where(b => b.At >= since).ToArray());
         /// <summary>Every read reconciliation makes, in order, so a pass that stopped can be shown to have stopped.</summary>
         public List<string> Reads { get; } = [];
+
+        /// <summary>The merge groups still in the queue, as the sweep lists them (ADR-016).</summary>
+        public List<QueuedGroup> Queued { get; } = [];
+        /// <summary>The gate runs on each merge group's commit.</summary>
+        public Dictionary<string, List<GateRun>> Gates { get; } = [];
+        public bool QueueError { get; init; }
+        /// <summary>What GitHub says to a re-run request; null means it accepted it.</summary>
+        public string? RerunRefusal { get; init; }
+        public Task<IReadOnlyList<QueuedGroup>> QueuedGroups(string repo, CancellationToken ct)
+        {
+            Reads.Add("queue");
+            return QueueError ? throw new HttpRequestException("queue branches unavailable")
+                : Task.FromResult<IReadOnlyList<QueuedGroup>>(Queued.ToArray());
+        }
+        public Task<IReadOnlyList<GateRun>> GateRuns(string repo, string sha, CancellationToken ct)
+        {
+            Reads.Add($"gates:{sha}");
+            return Task.FromResult<IReadOnlyList<GateRun>>(Gates.GetValueOrDefault(sha, []).ToArray());
+        }
+        public Task<string?> Rerun(string repo, long runId, CancellationToken ct)
+        {
+            Order.Add($"rerun:{runId}");
+            // GitHub starts a new attempt, so the run is running again and its start moves to now: the next pass sees exactly
+            // that, which is what keeps one sweep from asking twice.
+            if (RerunRefusal is null)
+                foreach (var runs in Gates.Values)
+                    for (var i = 0; i < runs.Count; i++)
+                        if (runs[i].Id == runId) runs[i] = runs[i] with { Status = "in_progress", Conclusion = null, StartedAt = Rerunning };
+            return Task.FromResult(RerunRefusal);
+        }
+        /// <summary>When a re-run attempt starts. The tests set it to their own "now".</summary>
+        public DateTimeOffset Rerunning { get; set; } = DateTimeOffset.MaxValue;
     }
 }
 

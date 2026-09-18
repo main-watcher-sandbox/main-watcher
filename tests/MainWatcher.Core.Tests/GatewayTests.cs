@@ -423,21 +423,58 @@ public class GatewayTests
         var handler = new Handler(request =>
         {
             path = request.RequestUri!.AbsolutePath;
-            return Task.FromResult(Response("{\"commits\":["
+            return Task.FromResult(Response("{\"total_commits\":3,\"commits\":["
                 + "{\"sha\":\"c1\",\"commit\":{\"message\":\"Add a feature (#8)\\n\\nbody\",\"committer\":{\"date\":\"2026-09-17T09:00:00Z\"}}},"
                 + "{\"sha\":\"c2\",\"commit\":{\"message\":\"a commit of its own\",\"committer\":{\"date\":\"2026-09-17T09:30:00Z\"}}},"
                 + "{\"sha\":\"c3\",\"commit\":{\"message\":\"Merge pull request #7 from owner/fix\",\"committer\":{\"date\":\"2026-09-17T10:00:00Z\"}}}]}"));
         });
         using var http = Client(handler);
-        var commits = await new GitHubGateway(http, 1).MergedCommits("owner/repo", new('a', 40), new('b', 40),
+        var range = await new GitHubGateway(http, 1).MergedCommits("owner/repo", new('a', 40), new('b', 40), 0,
             TestContext.Current.CancellationToken);
-        Assert.NotNull(commits);
+        Assert.NotNull(range);
+        Assert.False(range.Truncated);
+        var commits = range.Commits;
         Assert.Equal([8, null, 7], commits.Select(c => c.Pull));
         Assert.Equal("a commit of its own", commits[1].Subject);
         Assert.Equal(DateTimeOffset.Parse("2026-09-17T10:00:00Z"), commits[2].At);
         Assert.Equal([(8, DateTimeOffset.Parse("2026-09-17T09:00:00Z")), (7, DateTimeOffset.Parse("2026-09-17T10:00:00Z"))],
             Reconciliation.Pulls(commits));
         Assert.Contains("/compare/", path);
+    }
+
+    // PR #55 review: a range longer than one pass reads is finished by the next, so the read starts where the last stopped.
+    [Theory]
+    // From the start: two pages read, and the third page's absence ends it.
+    [InlineData(0, new[] { 1, 2, 3 }, 250, 250, false)]
+    // Resumed inside the second page: it starts there and drops the fifty commits already read.
+    [InlineData(150, new[] { 2, 3 }, 100, 250, false)]
+    // Resumed with the last commits left: nothing beyond them remains.
+    [InlineData(240, new[] { 3 }, 10, 250, false)]
+    // A range longer than one pass's budget stops at it and says so.
+    [InlineData(0, new[] { 1, 2, 3, 4, 5 }, 500, 900, true)]
+    public async Task ALongRangeIsReadFromWhereTheLastPassStopped(int skip, int[] pages, int expected, int total, bool truncated)
+    {
+        var read = new List<int>();
+        var handler = new Handler(request =>
+        {
+            var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query);
+            var page = int.Parse(query["page"]!);
+            read.Add(page);
+            // 100 commits a page until the range runs out, each naming nothing, so only the arithmetic is under test.
+            var on = Math.Clamp(total - (page - 1) * 100, 0, 100);
+            var commits = string.Join(",", Enumerable.Range(0, on).Select(i =>
+                $"{{\"sha\":\"c{(page - 1) * 100 + i}\",\"commit\":{{\"message\":\"a commit\",\"committer\":{{\"date\":\"2026-09-17T09:00:00Z\"}}}}}}"));
+            return Task.FromResult(Response($"{{\"total_commits\":{total},\"commits\":[{commits}]}}"));
+        });
+        using var http = Client(handler);
+        var range = await new GitHubGateway(http, 1).MergedCommits("owner/repo", new('a', 40), new('b', 40), skip,
+            TestContext.Current.CancellationToken);
+        Assert.NotNull(range);
+        Assert.Equal(pages, read);
+        Assert.Equal(expected, range.Commits.Count);
+        Assert.Equal(truncated, range.Truncated);
+        // The first commit read is the one after the last pass's, whichever page it fell in.
+        Assert.Equal($"c{skip}", range.Commits[0].Sha);
     }
 
     [Fact]
@@ -453,9 +490,9 @@ public class GatewayTests
         var gateway = new GitHubGateway(http, 1);
         var ct = TestContext.Current.CancellationToken;
         // A force push can leave "before" unreachable, and the activity's first entry has no "before" at all.
-        Assert.Null(await gateway.MergedCommits("owner/repo", new('a', 40), new('b', 40), ct));
+        Assert.Null(await gateway.MergedCommits("owner/repo", new('a', 40), new('b', 40), 0, ct));
         Assert.Equal(1, calls);
-        Assert.Null(await gateway.MergedCommits("owner/repo", new('0', 40), new('b', 40), ct));
+        Assert.Null(await gateway.MergedCommits("owner/repo", new('0', 40), new('b', 40), 0, ct));
         Assert.Equal(1, calls);
     }
 
@@ -504,6 +541,87 @@ public class GatewayTests
         Assert.Equal([3, 12], blocked.Select(b => b.Pull));
         Assert.Equal(7, blocked[0].RunId);
         Assert.Contains("event=merge_group&status=failure", query);
+    }
+
+    // ADR-016: a group the queue sweep removed was blocked by a re-run of a gate run GitHub still dates by its first attempt,
+    // so the read reaches back past the lock and the window is judged on the attempt that failed.
+    [Fact]
+    public async Task GateBlocksCountsTheAttemptThatFailedAndNamesTheOnesTheSweepReran()
+    {
+        var query = "";
+        var handler = new Handler(request =>
+        {
+            query = request.RequestUri!.PathAndQuery;
+            return Task.FromResult(Response("{\"workflow_runs\":[" +
+                // Queued an hour before the lock, re-run by the sweep and failed inside its window.
+                $"{{\"id\":9,\"head_branch\":\"gh-readonly-queue/main/pr-12-{new string('a', 40)}\",\"run_attempt\":2," +
+                "\"created_at\":\"2026-09-17T08:00:00Z\",\"run_started_at\":\"2026-09-17T10:20:00Z\"}," +
+                // A group the gate failed before this lock existed: not this lock's doing, however recently it was read.
+                $"{{\"id\":7,\"head_branch\":\"gh-readonly-queue/main/pr-3-{new string('b', 40)}\"," +
+                "\"created_at\":\"2026-09-17T08:30:00Z\",\"run_started_at\":\"2026-09-17T08:30:00Z\"}]}"));
+        });
+        using var http = Client(handler);
+        var blocked = await new GitHubGateway(http, 1).GateBlocks("owner/repo", DateTimeOffset.Parse("2026-09-17T09:00:00Z"),
+            TestContext.Current.CancellationToken);
+        var group = Assert.Single(blocked);
+        Assert.Equal(12, group.Pull);
+        Assert.Equal(2, group.Attempt);
+        Assert.Contains("created=%3E%3D2026-09-16T09%3A00", query);
+    }
+
+    // ADR-016: the groups still in the queue, from the branches GitHub makes for them (A-7).
+    [Fact]
+    public async Task QueuedGroupsReadsTheMergeQueueBranchesAndNamesTheirPullRequests()
+    {
+        var path = "";
+        var handler = new Handler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return Task.FromResult(Response("[" +
+                $"{{\"ref\":\"refs/heads/gh-readonly-queue/main/pr-12-{new string('a', 40)}\",\"object\":{{\"sha\":\"{new string('c', 40)}\"}}}}," +
+                // A branch under the prefix that is not a queue entry still has a commit its gate ran on.
+                "{\"ref\":\"refs/heads/gh-readonly-queue/main/other\",\"object\":{\"sha\":\"" + new string('d', 40) + "\"}}]"));
+        });
+        using var http = Client(handler);
+        var groups = await new GitHubGateway(http, 1).QueuedGroups("owner/repo", TestContext.Current.CancellationToken);
+        Assert.Equal("/repos/owner/repo/git/matching-refs/heads/gh-readonly-queue/main/", path);
+        Assert.Equal([12, null], groups.Select(g => g.Pull));
+        Assert.Equal($"gh-readonly-queue/main/pr-12-{new string('a', 40)}", groups[0].Branch);
+        Assert.Equal(new string('c', 40), groups[0].Sha);
+    }
+
+    // The gate runs on one group's commit, dated by the latest attempt: a run this sweep re-ran is not re-run again.
+    [Fact]
+    public async Task GateRunsAreDatedByTheirLatestAttempt()
+    {
+        var query = "";
+        var handler = new Handler(request =>
+        {
+            query = request.RequestUri!.PathAndQuery;
+            return Task.FromResult(Response("{\"workflow_runs\":["
+                + "{\"id\":9,\"status\":\"in_progress\",\"conclusion\":null,\"created_at\":\"2026-09-17T08:00:00Z\","
+                + "\"run_started_at\":\"2026-09-17T10:20:00Z\"}]}"));
+        });
+        using var http = Client(handler);
+        var run = Assert.Single(await new GitHubGateway(http, 1).GateRuns("owner/repo", "abc", TestContext.Current.CancellationToken));
+        Assert.Equal((9L, "in_progress", (string?)null, DateTimeOffset.Parse("2026-09-17T10:20:00Z")), (run.Id, run.Status, run.Conclusion, run.StartedAt));
+        Assert.Contains("event=merge_group&head_sha=abc", query);
+    }
+
+    // A re-run GitHub will not accept is an answer, not an exception: the sweep stays owed and says why.
+    [Theory]
+    [InlineData(HttpStatusCode.OK, null)]
+    [InlineData(HttpStatusCode.Forbidden, "HTTP 403")]
+    public async Task ARefusedRerunIsReportedRatherThanThrown(HttpStatusCode status, string? refusal)
+    {
+        var path = "";
+        using var http = Client(new Handler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return Task.FromResult(status == HttpStatusCode.OK ? Response("") : new HttpResponseMessage(status));
+        }));
+        Assert.Equal(refusal, await new GitHubGateway(http, 1).Rerun("owner/repo", 42, TestContext.Current.CancellationToken));
+        Assert.Equal("/repos/owner/repo/actions/runs/42/rerun", path);
     }
 
     [Fact]

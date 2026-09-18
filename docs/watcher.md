@@ -17,6 +17,7 @@ the hourly backup sweep, which processes every enabled target and watches the wo
 #18 stops a target run that has passed a deadline and judges it once it has stopped.
 #19 renews each open lock's lease, so the gate goes on enforcing it.
 #20 reconciles the merges made during a lock, following it through its closure.
+#21 sweeps the merge queue when a lock opens, re-running the gate for the groups queued before it.
 
 Configure the `reporter` environment with `MAIN_WATCHER_APP_ID` (variable) and
 `MAIN_WATCHER_PRIVATE_KEY` (secret). Install that App on each target with
@@ -319,8 +320,60 @@ discharged by the next cycle the target has for any reason, and at the latest by
 sweep.
 
 The merges made during a window are reported by [reconciliation](#reconciliation), and the merge
-groups queued then have their gates re-run (#21); a lock with no readable lease at all is simply
-given one, because nothing says since when the gate had been failing open.
+groups queued then have their gates re-run by the [queue sweep](#queue-sweep); a lock with no
+readable lease at all is simply given one, because nothing says since when the gate had been
+failing open.
+
+## Queue sweep
+
+A merge group whose gate passed while no lock existed merges as soon as its other required checks
+finish, however red `main` has become since. No outage is involved, so the gate's fail-open path
+does not describe it, and the longer a target's own CI, the more groups are exposed each time a
+lock opens. So opening a lock, and renewing one whose lease had lapsed, records an obligation to
+re-check those groups by re-running their gates (ADR-016). The same happens for groups that passed
+during a lapse, when the gate was failing open.
+
+**The obligation is a generation, not a flag.** `sweep_required=<T>` is written by the same call
+that creates the lock issue, or that renews an expired lease, so a crash straight afterwards
+leaves it visible; `queue_swept=<T>` is written only once nothing is left to do. A sweep is owed
+whenever `queue_swept` is missing or older than `sweep_required`, which is what makes the
+interrupted case — a renewal, then a crash, with an older `queue_swept` still on the issue —
+recover by itself (TS-S17 (b)). A second lapse writes a newer generation, whose later cut-off
+covers the older one's gate runs too. A `sweep_required` that cannot be read names no generation
+and is therefore no obligation: only Main Watcher writes these markers, and a debt nothing could
+discharge would ask for cycles for ever.
+
+**What one sweep does.** It runs on every cycle, after lease renewal and before planning, for
+every open App lock that owes one — a closed lock enforces nothing, so re-running a gate for it
+would block nothing:
+
+1. list the groups still in the queue, from the `gh-readonly-queue/main/*` branches GitHub makes
+   for them (A-7), each naming its own pull request;
+2. read the gate runs on each group's commit;
+3. a run that **passed** and **started before** the cut-off, `sweep_required` plus 5 minutes, is
+   re-run. "Started" rather than "completed", because a gate reads the lock at some unknown point
+   during its run; the margin absorbs clock differences and the delay before a new lock becomes
+   visible, and re-running a gate that had already read the lock costs one gate run and changes
+   nothing;
+4. a run that started before the cut-off and is **still going** may yet report "no lock", so the
+   sweep stays owed and re-runs it once it has completed;
+5. a run that started after the cut-off read the lock itself, and one that did not pass is not
+   what is holding the group's merge open. Both are left alone.
+
+A re-run attempt's own start is what the next cycle reads, so one sweep never asks twice for the
+same run. A re-run GitHub refuses leaves the sweep owed rather than passing the group over; the
+run log names the group and the refusal.
+
+**While it is owed**, the trigger worker flags work for the target on every cycle, and raises
+"queue sweep unfinished" once the debt is 15 minutes old (see [worker.md](worker.md)). A sweep
+that fails fails the run, but never holds up the test the cycle would otherwise start: the
+obligation is in the issue, so the next cycle sweeps again whatever this one reported.
+
+**A window of seconds remains** between a lock opening and a re-run taking effect, and at most one
+gate run for a group whose gate was still going. A group that merges in it is reported by
+[reconciliation](#reconciliation), not prevented, which is what FR-4 was narrowed to promise
+(CQ-13). The groups the sweep removed are named in the unlock comment, with the ones whose gate it
+re-ran marked as such.
 
 ## Reconciliation
 
@@ -343,13 +396,29 @@ the first time — up to the issue's `closed_at`, or up to now while it is open.
 at one-second resolution, and a merge in the same second as the close is inside the window. Entries
 after the close are ignored.
 
-**Which pull requests.** The commits an entry added are read with the compare API, and the pull
-request is taken from each commit subject: `Merge pull request #N from …` or `… (#N)`, the two
-shapes the gate matches. The commits-to-pull-requests API would be exact, but it needs a Pull
-requests permission the `main-watcher` App does not hold, and ADR-008 promised reconciliation
-would need no new one. A merge whose subjects name no pull request, or whose range GitHub can no
-longer compare, is reported as itself — the commit it left on `main` — rather than passed over,
-because nothing shows it carried the label.
+**Which pull requests.** The commits an entry added are read with the compare API, to the end of
+the range, and the pull request is taken from each commit subject: `Merge pull request #N from …`
+or `… (#N)`, the two shapes the gate matches. The commits-to-pull-requests API would be exact, but
+it needs a Pull requests permission the `main-watcher` App does not hold, and ADR-008 promised
+reconciliation would need no new one. A merge is reported **as itself** — the commit it left on
+`main` — rather than passed over, when its subjects name no pull request and when GitHub can no
+longer compare its range.
+
+A pull request is named by its **last** commit, the merge or squash commit, so a range read only
+part-way loses exactly the commits that would name the later pull requests. One pass therefore reads
+at most 500 commits of one entry and, if any remain, **stops there**: what it read is judged, how far
+it got is recorded, the entry stays in front of the cursor and the lock stays incomplete. The next
+cycle carries on from that commit. What is bounded is the work one cycle does, not what is checked,
+so every pull request the entry merged is still named and judged one by one.
+
+`reconciled_commits` holds that progress for **every** entry of the second the cursor is stuck on,
+as `<commit>:<commits read>` or `<commit>:done`, comma-separated. The finished ones are kept too, and
+that is not tidiness: the cursor only moves a whole second at a time, so while one entry of a second
+is unfinished its neighbours cannot be put behind it, and an entry whose progress was forgotten would
+be read again from the start. Two long ranges stamped in one second would then take turns overwriting
+each other's progress and neither would ever finish. The field is cleared once the second is behind
+the cursor, and progress for an entry no longer in the window is dropped when it is read, so it
+stays small.
 
 **Which label.** The one the pull request carried **at the moment it merged**, replayed from its
 `labeled` and `unlabeled` events (Issues: read) up to its `merged` event, which is in the same
@@ -373,8 +442,16 @@ made twice:
 `reconciled=complete` is therefore written only after every report of that window succeeded. A
 label history that cannot be read **stops the pass at that merge**: `last_reconciled` does not move
 past it, nothing is marked complete, and the merge is judged on a later cycle rather than waved
-through. The activity read is bounded at 100 entries; if it does not reach back to the window's
-start, the issue says so once.
+through. The cursor moves **a whole second at a time**, because the next cycle reads strictly after
+it: advancing between two entries stamped in the same second would put whichever was left unjudged
+behind the cursor for good. The activity read is bounded at 100 entries; if it does not reach back
+to the window's start, the issue says so once.
+
+A lock whose reports cannot be **written** — a locked conversation, an issue GitHub will not update
+— is the case nothing else would notice, because the writes that failed are the ones that would have
+said something. So the overdue check below runs on such a lock too, before the failure is passed on;
+the cycle then fails, the other locks are still reconciled, and nothing was written, so nothing
+advanced.
 
 The trigger worker asks for a cycle for a lock that has closed without being reconciled, which is
 the only thing that would ask for one at all (ADR-015 point 6). A lock left unreconciled for 24
@@ -517,7 +594,8 @@ alerts [above](#neutral-results), a target run GitHub will not stop raises the o
 [above](#stale-target-runs), a head out of attempts raises the one
 [above](#retesting-a-neutral-head), a lock that went unenforced raises the one
 [above](#lock-lease), reconciliation raises the two [above](#reconciliation), and a sweep raises
-the two [above](#backup-sweep). A failed
+the two [above](#backup-sweep). An unfinished [queue sweep](#queue-sweep) is the trigger worker's
+alert, not this workflow's, because it is owed between cycles rather than during one. A failed
 "mention nobody", "target run could not be stopped" or "head untestable" alert never blocks the
 lock, the check run or the testing the cycle does; the cycle logs it and exits non-zero. A failed
 neutral-result alert leaves the check run `in_progress` for a replay, a failed "lock lease
@@ -537,6 +615,9 @@ covers a real lock opening and closing, and TS-S4 with that lock. The
 and the later-failure comment. The [issue #12 validation record](../sandbox/issue-12-validation.md)
 covers TS-S14 (a), (b) and (d) and the override part of TS-S3. The
 [issue #13 validation record](../sandbox/issue-13-validation.md) covers TS-S16 (a) to (f). The
+[issue #20 validation record](../sandbox/issue-20-validation.md) covers TS-S9 and TS-S15: a gate
+failing open on a 401 and on an expired lease, unlabelled merges, a human close before recovery, and
+what the next cycle reported. The
 [issue #16 validation record](../sandbox/issue-16-validation.md) covers TS-S11: with the worker
 scaled to zero, a sweep tested a push that had waited two hours and raised "trigger worker
 appears down", and a merge group whose gate met an expired lease was reported once. It also

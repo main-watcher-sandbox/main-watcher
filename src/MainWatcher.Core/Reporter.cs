@@ -188,10 +188,13 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         {
             return "\n\nThe pull requests the gate removed from the merge queue could not be read: " + Markdown.Escape(e.Message) + ".";
         }
-        var pulls = blocked.Select(b => b.Pull).Distinct().Order().ToArray();
+        // A group the queue sweep caught was removed by a re-run of a gate that had already passed, which is why it is named:
+        // it was queued before this lock and would have merged onto a red `main` (ADR-016).
+        var pulls = blocked.GroupBy(b => b.Pull).OrderBy(g => g.Key)
+            .Select(g => (Pull: g.Key, Swept: g.Any(b => b.Attempt > 1))).ToArray();
         if (pulls.Length == 0) return "";
         return "\n\n**Pull requests the gate removed from the merge queue while this lock was open**\n\n"
-            + string.Join("\n", pulls.Select(p => $"- #{p}"))
+            + string.Join("\n", pulls.Select(p => $"- #{p.Pull}" + (p.Swept ? " (its gate was re-run because it was queued before this lock)" : "")))
             + "\n\nThe merge queue does not put them back, so re-queue the ones you still want merged.";
     }
 
@@ -289,7 +292,8 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         var pushes = await PushList.Collect(github, target.Repo, check.Sha, ct);
         WalkBacks.Add(new(check.Id, pushes.CommitsChecked, pushes.Source));
         // The lease starts the moment the lock exists, and the Planner renews it on every later cycle (ADR-014).
-        var leaseUntil = Markers.Stamp(Now + target.LockLease);
+        var now = Now;
+        var leaseUntil = Markers.Stamp(now + target.LockLease);
         var body = (mentions.Count > 0 ? string.Join(" ", mentions) + "\n\n" : "")
             + $"Main Watcher tests failed on `main` at {Commit(target.Repo, check.Sha)}.\n\n"
             + "**Failing tests**\n\n" + FailureList(reports, FailureBudget) + "\n\n"
@@ -299,8 +303,10 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
             + "**Pushes since the last green run**\n\n" + PushTable(target.Repo, check.Sha, pushes, PushBudget) + "\n\n"
             + $"While this issue is open, the merge queue accepts only pull requests labelled `fixes-main`. "
             + "A green Main Watcher run on `main` closes it. Closing it by hand overrides the lock.\n\n"
+            // ADR-016: the sweep obligation is written by the same call that creates the lock, so a crash straight afterwards
+            // still leaves it owed. The generation is the lock's own moment; the sweep itself runs later in this cycle.
             + "<!-- main-watcher " + (pushes.Green is { } green ? $"last_green={green.Sha} " : "") + $"first_red={check.Sha} {Lease.Until}={leaseUntil} "
-            + $"reported_check={check.Id} reported_sha={check.Sha} -->";
+            + $"{QueueSweep.Required}={Markers.Stamp(now)} reported_check={check.Id} reported_sha={check.Sha} -->";
         var issue = await github.CreateIssue(target.Repo, $"main is broken: tests failed on {Short(check.Sha)}", body, LockLabel, ct);
         afterWrite?.Invoke("create");
         if (mentions.Count == 0) await NobodyMentioned(target, issue, ct);

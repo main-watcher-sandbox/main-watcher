@@ -18,6 +18,14 @@ public static class Reconciliation
     /// <summary>The marker field saying the whole window has been checked and every report made.</summary>
     public const string Complete = "reconciled";
 
+    /// <summary>
+    /// The marker field recording how far into each activity entry's range the commits have been read, as
+    /// <c>&lt;after sha&gt;:&lt;commits|done&gt;</c>, comma-separated. A range longer than one pass reads is finished across
+    /// several, so the entry stays in front of the cursor until every pull request it merged has been named and judged
+    /// (ADR-015 point 1).
+    /// </summary>
+    public const string Commits = "reconciled_commits";
+
     /// <summary>The only value <see cref="Complete"/> takes.</summary>
     public const string CompleteValue = "complete";
 
@@ -38,6 +46,41 @@ public static class Reconciliation
 
     /// <summary>Whether this lock's whole window has been checked, so no run need look at it again.</summary>
     public static bool IsComplete(string? body) => Markers.Field(body, Complete) == CompleteValue;
+
+    /// <summary>The <see cref="Commits"/> count an entry whose range has been read to its end carries.</summary>
+    public const string Finished = "done";
+
+    /// <summary>
+    /// How far into each activity entry the commits have been read, by the commit the entry left on <c>main</c>: the number
+    /// read so far, or null for an entry read to its end. An entry the marker does not name has not been started.
+    /// <para>
+    /// <b>Every</b> entry of the second the cursor is stuck on is kept, the finished ones included. The cursor only moves a
+    /// whole second at a time, so while one entry of a second is unfinished the others cannot be put behind it; an entry
+    /// whose progress was forgotten would then be read again from the start, and two long ranges stamped in one second would
+    /// take turns overwriting each other's progress and neither would ever finish.
+    /// </para>
+    /// </summary>
+    /// <param name="inWindow">
+    /// The entries still in the lock's window. Progress for anything else can never matter again, so it is dropped rather
+    /// than kept for good: that, and clearing the field once a second is done, is what bounds the marker.
+    /// </param>
+    public static Dictionary<string, int?> Progress(string? body, IEnumerable<string> inWindow)
+    {
+        var kept = inWindow.ToHashSet(StringComparer.Ordinal);
+        var progress = new Dictionary<string, int?>(StringComparer.Ordinal);
+        foreach (var entry in (Markers.Field(body, Commits) ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries))
+            if (entry.Split(':') is [var sha, var read] && kept.Contains(sha))
+                // An unreadable count reads the range again from the start, which costs a pass and loses nothing.
+                progress[sha] = read == Finished ? null
+                    : int.TryParse(read, System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture, out var counted) ? counted : 0;
+        return progress;
+    }
+
+    /// <summary>The <see cref="Commits"/> value holding <paramref name="progress"/>, in a stable order.</summary>
+    public static string Field(IReadOnlyDictionary<string, int?> progress) =>
+        string.Join(",", progress.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e =>
+            $"{e.Key}:{(e.Value is { } read ? read.ToString(System.Globalization.CultureInfo.InvariantCulture) : Finished)}"));
 
     static readonly System.Text.RegularExpressions.Regex MergeSubject = new(@"^Merge pull request #(?<number>\d+) from ");
     static readonly System.Text.RegularExpressions.Regex SquashSubject = new(@"\(#(?<number>\d+)\)$");

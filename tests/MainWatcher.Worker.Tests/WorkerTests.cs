@@ -237,6 +237,42 @@ public class WorkerTests
         Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
     }
 
+    // TS-U12 (ADR-016): while a lock owes a queue sweep, the worker keeps asking for cycles, and times the debt so that the
+    // "queue sweep unfinished" alert can be raised.
+    [Fact]
+    public async Task AnOpenLockOwingAQueueSweepIsWork()
+    {
+        var target = new FakeGitHub { CheckList = [Done()] };
+        // A lease renewed 40 minutes ago, so nothing but the sweep is owed.
+        var owed = Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(200))),
+            (QueueSweep.Required, Markers.Stamp(Now.AddMinutes(-20))));
+        target.IssueList.Add(Lock(1, null) with { Body = owed });
+        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        Assert.Equal("lock #1: its queue sweep for 2026-09-16T18:40:00Z is unfinished", work!.Reason);
+        // Dated by the generation it owes, and named by the lock, which is how the alert times and titles it.
+        Assert.Equal(Now.AddMinutes(-20), work.Since);
+        Assert.Equal(1, work.Sweep);
+        Assert.Null(work.Check);
+
+        // Once the sweep has caught up with that generation, the lock is no longer work.
+        target.IssueList[0] = target.IssueList[0] with
+        {
+            Body = Markers.Set(owed, (QueueSweep.Swept, Markers.Stamp(Now.AddMinutes(-20))))
+        };
+        Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+    }
+
+    // A closed lock enforces nothing, so re-running a gate for it would block nothing: its sweep debt asks for no cycle.
+    [Fact]
+    public async Task AClosedLockOwesNoQueueSweep()
+    {
+        var target = new FakeGitHub { CheckList = [Done()] };
+        target.IssueList.Add(ClosedLock(1, Now.AddMinutes(-30),
+            Markers.Set("Locked.", (QueueSweep.Required, Markers.Stamp(Now.AddMinutes(-20))),
+                (Reconciliation.Complete, Reconciliation.CompleteValue))));
+        Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+    }
+
     [Fact]
     public async Task WorkFoundEarlierWinsOverAnOldLease()
     {

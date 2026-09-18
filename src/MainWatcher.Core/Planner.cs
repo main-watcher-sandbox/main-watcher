@@ -1,8 +1,9 @@
 namespace MainWatcher.Core;
 
 /// <summary>
-/// Starts eligible heads, recovers unlinked dispatches (R-14, ADR-017), renews open locks' leases (ADR-014) and stops target
-/// runs that have passed a deadline (ADR-013 point 5).
+/// Starts eligible heads, recovers unlinked dispatches (R-14, ADR-017), renews open locks' leases (ADR-014), sweeps the merge
+/// queue for groups that passed the gate before a lock (ADR-016) and stops target runs that have passed a deadline
+/// (ADR-013 point 5).
 /// </summary>
 /// <param name="queueDeadline">The ADR-013 queue deadline; the sandbox shortens it (TS-S16 (g)).</param>
 /// <param name="cancelsRuns">
@@ -111,7 +112,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
             // followed by a second lapse, must leave both windows on the issue for this cycle or a later one to post.
             (string Name, string Value)[] fields = expired is null
                 ? [(Lease.Until, Markers.Stamp(until))]
-                : [(Lease.Until, Markers.Stamp(until)), (Lease.SweepRequired, Markers.Stamp(now)),
+                : [(Lease.Until, Markers.Stamp(until)), (QueueSweep.Required, Markers.Stamp(now)),
                     (Lease.Lapsed, Lease.Field([.. Lease.Unreported(issue.Body), new Lease.Lapse(expired.Value, now)]))];
             var body = Markers.Set(issue.Body, fields);
             await github.EditBody(repo, issue.Number, body, ct);
@@ -131,6 +132,78 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
             }
         return lines;
     }
+
+    /// <summary>
+    /// ADR-016: re-runs the gate for the merge groups still queued whose gate decided before this lock was visible. A group
+    /// whose gate passed while no lock existed, and which is still waiting for another required check, would otherwise merge
+    /// onto a red <c>main</c> with no outage involved.
+    /// <para>
+    /// The obligation is durable and is discharged here, not where it is written: a lock the Reporter opened earlier in this
+    /// cycle, a lease this cycle renewed after it had lapsed, and one either of those recorded before a crash are all the same
+    /// owed generation. <c>queue_swept</c> is written only once no queued group still has an unhandled gate run before the
+    /// cut-off, so a sweep interrupted anywhere is simply owed again.
+    /// </para>
+    /// <para>
+    /// A gate run still going, and one GitHub refuses to re-run, both leave the sweep owed rather than passing the group: the
+    /// worker keeps asking for cycles, and after <see cref="QueueSweep.UnfinishedAfter"/> says so. Only open locks are swept —
+    /// a closed one enforces nothing, so re-running a gate for it would block nothing and never finish.
+    /// </para>
+    /// </summary>
+    /// <returns>A line per lock swept, for the log.</returns>
+    public async Task<IReadOnlyList<string>> SweepQueue(Target target, CancellationToken ct)
+    {
+        var repo = target.Repo;
+        var owed = (await github.OpenIssues(repo, Reporter.LockLabel, ct)).Where(IsApp).OrderBy(i => i.Number)
+            .Select(issue => (Issue: issue, Required: QueueSweep.Owed(issue.Body)))
+            .Where(l => l.Required is not null).ToArray();
+        if (owed.Length == 0) return [];
+        // One queue read serves every owed lock, as does one gate-run read per group: the generations differ, but the queue
+        // they are swept against is the same.
+        var groups = await github.QueuedGroups(repo, ct);
+        var runs = new Dictionary<string, IReadOnlyList<GateRun>>(StringComparer.Ordinal);
+        var asked = new HashSet<long>();
+        var lines = new List<string>();
+        foreach (var (issue, required) in owed)
+        {
+            var cutoff = QueueSweep.Cutoff(required!.Value);
+            var reran = new List<string>();
+            var left = new List<string>();
+            foreach (var group in groups)
+            {
+                if (!runs.TryGetValue(group.Sha, out var gates)) runs[group.Sha] = gates = await github.GateRuns(repo, group.Sha, ct);
+                foreach (var run in gates)
+                    switch (QueueSweep.Handle(run, cutoff))
+                    {
+                        case GateRunHandling.Wait:
+                            left.Add($"gate run {run.Id} for {Name(group)} is still running");
+                            break;
+                        // A run another owed lock has already re-run in this pass is not asked for twice; GitHub would refuse
+                        // the second request anyway, and the new attempt reads the same lock state for both.
+                        case GateRunHandling.Rerun when asked.Add(run.Id):
+                            if (await github.Rerun(repo, run.Id, ct) is { } refusal)
+                            {
+                                asked.Remove(run.Id);
+                                left.Add($"gate run {run.Id} for {Name(group)} could not be re-run ({refusal})");
+                            }
+                            else reran.Add($"{Name(group)} (gate run {run.Id})");
+                            break;
+                    }
+            }
+            if (left.Count == 0)
+            {
+                await github.EditBody(repo, issue.Number,
+                    Markers.Set(issue.Body, (QueueSweep.Swept, Markers.Stamp(required.Value))), ct);
+                afterWrite?.Invoke("swept");
+            }
+            lines.Add($"Lock #{issue.Number}: queue sweep for {Markers.Stamp(required.Value)} over {groups.Count} queued "
+                + $"group(s): re-ran {reran.Count} gate run(s)" + (reran.Count > 0 ? $" — {string.Join(", ", reran)}" : "")
+                + (left.Count == 0 ? "; complete." : $"; still owed because {string.Join("; ", left)}."));
+        }
+        return lines;
+    }
+
+    /// <summary>A queued group, by the pull request its branch names where it names one.</summary>
+    static string Name(QueuedGroup group) => group.Pull is { } pull ? $"#{pull}" : $"`{Markdown.Escape(group.Branch)}`";
 
     /// <summary>
     /// Reports the lapses a renewal recorded, oldest first: a comment on the lock and a <c>watcher-infra</c> alert for each,
@@ -191,6 +264,12 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
     /// one. A history that cannot be read stops the pass at that merge, with the cursor left behind it, so the merge is judged
     /// on a later run rather than waved through.
     /// </para>
+    /// <para>
+    /// The cursor moves a whole second at a time, because it is read back with a strict "after": an entry left unjudged
+    /// beside one that succeeded in the same second would otherwise fall behind it for good. A lock whose reports cannot be
+    /// <b>written</b> still has its overdue alert judged before the failure is passed on, since the writes that failed are
+    /// the ones that would have said something; the other locks are reconciled all the same, and the cycle then fails.
+    /// </para>
     /// </summary>
     /// <returns>A line per lock examined, for the log.</returns>
     public async Task<IReadOnlyList<string>> Reconcile(Target target, CancellationToken ct)
@@ -206,7 +285,20 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         // One activity read serves every lock: the windows all end at or before now, so they overlap in this one list.
         var activity = await github.Pushes(repo, PushList.Limit, ct);
         var lines = new List<string>();
-        foreach (var issue in locks) lines.Add(await ReconcileLock(target, issue, activity, now, ct));
+        var failures = new List<string>();
+        foreach (var issue in locks)
+        {
+            // One lock whose writes fail must not stop the others: each keeps its own cursor, and this one has already had
+            // its "reconciliation failing" alert judged before the failure reached here.
+            try { lines.Add(await ReconcileLock(target, issue, activity, now, ct)); }
+            catch (Exception e) when (!ct.IsCancellationRequested && e is not InvalidOperationException)
+            {
+                failures.Add($"#{issue.Number}: {e.Message}");
+                lines.Add($"Lock #{issue.Number}: reconciliation failed: {e.Message}");
+            }
+        }
+        // The cycle still fails, so the worker asks again and the run is not reported as having reconciled anything.
+        if (failures.Count > 0) throw new HttpRequestException($"Reconciliation failed for {string.Join("; ", failures)}");
         return lines;
     }
 
@@ -228,69 +320,122 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         var reached = cursor;
         string? stopped = null;
         DateTimeOffset? blocked = null;
-        foreach (var merge in merges)
+        var complete = false;
+        // How far each entry of the second the cursor is stuck on has been read. Entries no longer in the window are dropped.
+        var progress = Reconciliation.Progress(issue.Body, merges.Select(m => m.After));
+        Exception? failed = null;
+        try
         {
-            IReadOnlyList<MergedCommit>? commits;
-            try { commits = await github.MergedCommits(repo, merge.Before, merge.After, ct); }
-            catch (Exception e) when (Unreadable(e, ct))
+            for (var i = 0; i < merges.Length; i++)
             {
-                (stopped, blocked) = ($"the commits of `{Markdown.Short(merge.After)}` could not be read ({e.Message})", merge.Timestamp);
-                break;
-            }
-            var pulls = commits is null ? [] : Reconciliation.Pulls(commits);
-            // A merge whose commits name no pull request, or whose range GitHub can no longer compare, is still a merge made
-            // while `main` was locked. Nothing shows it carried the label, so it is reported as what is known about it.
-            if (pulls.Count == 0)
-            {
-                comments = await ReportMerge(target, issue, Reconciliation.Key(merge.After),
-                    $"A {(merge.Type == "pr_merge" ? "pull request merge" : "merge-queue merge")} left "
-                    + $"{Markdown.Commit(repo, merge.After)} on `main` at {Markers.Stamp(merge.Timestamp)}. "
-                    + (commits is null
-                        ? "Its range can no longer be compared, so the pull request it merged cannot be named"
-                        : "None of its commit subjects names a pull request, so its `fixes-main` label cannot be judged"),
-                    rows, comments, ct);
-                reached = merge.Timestamp;
-                continue;
-            }
-            foreach (var (pull, committed) in pulls)
-            {
-                IReadOnlyList<PullEvent> events;
-                try { events = await github.PullEvents(repo, pull, ct); }
+                var merge = merges[i];
+                // An entry an earlier pass read to its end, while a neighbour stamped in the same second held the cursor
+                // back, is not read again — and is still remembered, because forgetting it is what would let two long ranges
+                // in one second take turns and never finish.
+                var at = progress.TryGetValue(merge.After, out var recorded) ? recorded : 0;
+                if (at is not { } read)
+                {
+                    if (i + 1 == merges.Length || merges[i + 1].Timestamp != merge.Timestamp) Passed(merge);
+                    continue;
+                }
+                MergedRange? range;
+                try { range = await github.MergedCommits(repo, merge.Before, merge.After, read, ct); }
                 catch (Exception e) when (Unreadable(e, ct))
                 {
-                    (stopped, blocked) = ($"the label history of #{pull} could not be read ({e.Message})", merge.Timestamp);
+                    (stopped, blocked) = ($"the commits of `{Markdown.Short(merge.After)}` could not be read ({e.Message})", merge.Timestamp);
                     break;
                 }
-                // The timeline's own merge is the moment ADR-015 judges the labels at. The commit's date only stands in when
-                // the timeline holds no merge: a merge-queue commit is built before its group merges, so the two differ by
-                // however long the queue took, and judging at the earlier one would report a label added while it waited.
-                var mergedAt = Reconciliation.MergedAt(events) ?? committed;
-                if (Reconciliation.WasFix(events, mergedAt)) continue;
-                comments = await ReportMerge(target, issue, Reconciliation.Key(pull),
-                    $"[#{pull}](https://github.com/{repo}/pull/{pull}) merged into `main` at {Markers.Stamp(mergedAt)} "
-                    + $"without the `{Reconciliation.FixLabel}` label", rows, comments, ct);
+                var pulls = range is null ? [] : Reconciliation.Pulls(range.Commits);
+                // A merge whose commits name no pull request, or whose range GitHub can no longer compare, is still a merge
+                // made while `main` was locked, and what cannot be named cannot be judged. It is reported as itself. A range
+                // with commits still to read says nothing yet: a pull request is named by its **last** commit, so the ones
+                // not yet read are exactly the ones that would name the rest.
+                if (pulls.Count == 0 && range is not { Truncated: true })
+                    comments = await ReportMerge(target, issue, Reconciliation.Key(merge.After),
+                        $"A {(merge.Type == "pr_merge" ? "pull request merge" : "merge-queue merge")} left "
+                        + $"{Markdown.Commit(repo, merge.After)} on `main` at {Markers.Stamp(merge.Timestamp)}. "
+                        + (range is null
+                            ? "Its range can no longer be compared, so the pull request it merged cannot be named"
+                            : "None of its commit subjects names a pull request, so its `fixes-main` label cannot be judged"),
+                        rows, comments, ct);
+                foreach (var (pull, committed) in pulls)
+                {
+                    IReadOnlyList<PullEvent> events;
+                    try { events = await github.PullEvents(repo, pull, ct); }
+                    catch (Exception e) when (Unreadable(e, ct))
+                    {
+                        (stopped, blocked) = ($"the label history of #{pull} could not be read ({e.Message})", merge.Timestamp);
+                        break;
+                    }
+                    // The timeline's own merge is the moment ADR-015 judges the labels at. The commit's date only stands in
+                    // when the timeline holds no merge: a merge-queue commit is built before its group merges, so the two
+                    // differ by however long the queue took, and judging at the earlier one would report a label added while
+                    // it waited.
+                    var mergedAt = Reconciliation.MergedAt(events) ?? committed;
+                    if (Reconciliation.WasFix(events, mergedAt)) continue;
+                    comments = await ReportMerge(target, issue, Reconciliation.Key(pull),
+                        $"[#{pull}](https://github.com/{repo}/pull/{pull}) merged into `main` at {Markers.Stamp(mergedAt)} "
+                        + $"without the `{Reconciliation.FixLabel}` label", rows, comments, ct);
+                }
+                if (stopped is not null) break;
+                // A range with commits still unread is finished by the next pass, not waved through by this one: the entry
+                // stays in front of the cursor, the lock stays incomplete, and how far this pass got is recorded so the next
+                // carries on from there. Every pull request it merged is still named and judged one by one (ADR-015 point 1);
+                // what is bounded is the work one cycle does, not what is checked.
+                if (range is { Truncated: true })
+                {
+                    progress[merge.After] = read + range.Commits.Count;
+                    (stopped, blocked) = ($"the range of `{Markdown.Short(merge.After)}` is longer than one pass reads; "
+                        + $"{read + range.Commits.Count} of its commits have been checked", merge.Timestamp);
+                    break;
+                }
+                progress[merge.After] = null;
+                if (i + 1 == merges.Length || merges[i + 1].Timestamp != merge.Timestamp) Passed(merge);
             }
-            if (stopped is not null) break;
-            reached = merge.Timestamp;
+
+            // The cursor moves a whole second at a time, because the next run reads strictly after it: advancing between two
+            // entries stamped in the same second would put the one still unjudged behind the cursor for good. Once the whole
+            // second is behind it, nothing in that second needs remembering any more.
+            void Passed(Push merge)
+            {
+                reached = merge.Timestamp;
+                progress.Clear();
+            }
+            // The activity read is bounded (ADR-003), so a window whose start it does not reach may hold merges nothing can see.
+            if (activity.Count >= PushList.Limit && from is { } begin && activity.Min(p => p.Timestamp) > begin
+                && !(issue.Body ?? "").Contains(Reconciliation.Truncated, StringComparison.Ordinal))
+                rows.Add($"- The repository activity read reaches back only to {Markers.Stamp(activity.Min(p => p.Timestamp))}, "
+                    + "which is after this lock's window began, so merges older than that could not be checked. "
+                    + Reconciliation.Truncated);
+            // Complete only once the whole window has been checked: a pass that stopped part-way is retried on the next run.
+            complete = stopped is null && issue.State == "closed";
+            var written = Reconciliation.Field(progress);
+            (string Name, string Value)[] fields = [
+                .. reached is { } mark && mark != cursor ? new[] { (Reconciliation.Cursor, Markers.Stamp(mark)) } : [],
+                .. written != (Markers.Field(issue.Body, Reconciliation.Commits) ?? "")
+                    ? new[] { (Reconciliation.Commits, written) } : [],
+                .. complete ? new[] { (Reconciliation.Complete, Reconciliation.CompleteValue) } : []];
+            if (rows.Count > 0 || fields.Length > 0)
+            {
+                var body = Reconciliation.Append(issue.Body, rows);
+                await github.EditBody(repo, issue.Number, fields.Length > 0 ? Markers.Set(body, fields) : body, ct);
+                afterWrite?.Invoke("reconcile");
+            }
         }
-        // The activity read is bounded (ADR-003), so a window whose start it does not reach may hold merges nothing can see.
-        if (activity.Count >= PushList.Limit && from is { } begin && activity.Min(p => p.Timestamp) > begin
-            && !(issue.Body ?? "").Contains(Reconciliation.Truncated, StringComparison.Ordinal))
-            rows.Add($"- The repository activity read reaches back only to {Markers.Stamp(activity.Min(p => p.Timestamp))}, "
-                + "which is after this lock's window began, so merges older than that could not be checked. "
-                + Reconciliation.Truncated);
-        // Complete only once the whole window has been checked: a pass that stopped part-way is retried on the next run.
-        var complete = stopped is null && issue.State == "closed";
-        (string Name, string Value)[] fields = [
-            .. reached is { } mark && mark != cursor ? new[] { (Reconciliation.Cursor, Markers.Stamp(mark)) } : [],
-            .. complete ? new[] { (Reconciliation.Complete, Reconciliation.CompleteValue) } : []];
-        if (rows.Count > 0 || fields.Length > 0)
+        // A lock whose reports cannot be written — a locked conversation, an issue GitHub will not update — is exactly what
+        // ADR-015 point 7's alert exists for, and nothing else would notice: the writes that failed are the ones that would
+        // have said something. So the overdue check still runs, on a lock nothing advanced and nothing marked complete, and
+        // the failure is passed on afterwards so the cycle fails and a later one tries again.
+        // A missing alert sink is not a failure of this lock but of how the cycle was built, and it is the same for every
+        // lock, so it is left to travel as it is.
+        catch (Exception e) when (!ct.IsCancellationRequested && e is not InvalidOperationException)
         {
-            var body = Reconciliation.Append(issue.Body, rows);
-            await github.EditBody(repo, issue.Number, fields.Length > 0 ? Markers.Set(body, fields) : body, ct);
-            afterWrite?.Invoke("reconcile");
+            (failed, complete) = (e, false);
+            stopped ??= $"its reports could not be written ({e.Message})";
+            blocked ??= merges.FirstOrDefault()?.Timestamp;
         }
         await ReconcileFailing(target, issue, now, stopped, blocked, complete, ct);
+        if (failed is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failed).Throw();
         return $"Lock #{issue.Number}: reconciled {merges.Length} merge(s) up to {Markers.Stamp(until)}"
             + (rows.Count > 0 ? $", reporting {rows.Count}" : "")
             + (complete ? "; its window is complete." : stopped is null ? "." : $"; stopped because {stopped}.");

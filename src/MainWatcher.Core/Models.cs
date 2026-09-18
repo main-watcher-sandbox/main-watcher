@@ -44,12 +44,32 @@ public sealed record FailOpen(long RunId, string Sha, string Branch, DateTimeOff
 /// </summary>
 public sealed record MergedCommit(string Sha, string Subject, DateTimeOffset At, int? Pull);
 /// <summary>
+/// What one pass read of an activity entry's range. <see cref="Truncated"/> is true when commits remain beyond it, so the pull
+/// requests <see cref="Commits"/> names are not yet all of them: a pull request is named by its last commit, so what is left
+/// unread is exactly what would name the rest. The next pass continues from where this one stopped.
+/// </summary>
+public sealed record MergedRange(IReadOnlyList<MergedCommit> Commits, bool Truncated);
+/// <summary>
 /// One entry of a pull request's timeline, from the Issues events API: <c>labeled</c> and <c>unlabeled</c> carry a
 /// <see cref="Label"/>, and <c>merged</c> dates the merge itself (ADR-015).
 /// </summary>
 public sealed record PullEvent(string Name, string? Label, DateTimeOffset At);
 /// <summary>
 /// A merge group the gate failed while a lock was open (ADR-002, R-7): the gate run that failed it, and the pull request its
-/// merge-queue branch names, which is the entry the queue removed.
+/// merge-queue branch names, which is the entry the queue removed. <see cref="At"/> is when the failing attempt started, and
+/// <see cref="Attempt"/> is which attempt it was, so a group the queue sweep removed by re-running its gate is told apart from
+/// one the gate failed the first time (ADR-016).
 /// </summary>
-public sealed record GateBlock(long RunId, int Pull, string Branch, DateTimeOffset At);
+public sealed record GateBlock(long RunId, int Pull, string Branch, DateTimeOffset At, int Attempt = 1);
+/// <summary>
+/// A merge group still in the queue, from the <c>gh-readonly-queue/&lt;branch&gt;/pr-&lt;number&gt;-&lt;base sha&gt;</c> branch
+/// GitHub creates for it (A-7). <see cref="Sha"/> is the commit its gate runs on, and <see cref="Pull"/> the queue entry's own
+/// pull request, or null when the branch does not name one.
+/// </summary>
+public sealed record QueuedGroup(string Branch, string Sha, int? Pull);
+/// <summary>
+/// One run of a target's gate workflow on a merge group's commit. <see cref="StartedAt"/> is the <b>latest attempt's</b> start,
+/// which is what says whether this run could have decided before a lock existed: a re-run attempt reads the lock again
+/// (ADR-016).
+/// </summary>
+public sealed record GateRun(long Id, string Status, string? Conclusion, DateTimeOffset StartedAt);
