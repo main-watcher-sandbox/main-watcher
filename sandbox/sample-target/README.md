@@ -40,6 +40,7 @@ Microsoft Testing Platform exits with code 8 when a project runs no tests.
 | `fail_upload` | `false` | A failing step before the CTRF upload deletes the reports and `timings.json`, so no `main-watcher-ctrf` artifact is uploaded. Read by the sandbox build of the reusable test workflow, not by this repo's tests | TS-S16 |
 | `slow_check_minutes` | `0` | On merge groups, the required `sandbox-slow-check` job waits this many minutes before passing, like a target's own slow CI. Read from the merge group's commit | TS-S17, MainWatcher#6 |
 | `hang_upload` | `false` | A step before the CTRF upload hangs until its 5-minute timeout. Read by the sandbox build of the reusable test workflow, not by this repo's tests | TS-S16 (d) |
+| `hang_upload_forever` | `false` | A step before the CTRF upload hangs with no timeout of its own, so the job runs on after the tests have finished until GitHub's job timeout or Main Watcher's cancel ends it. Read by the sandbox build of the reusable test workflow, not by this repo's tests | TS-S16 (h) |
 
 An unknown key makes every test except `Baseline.Runs` fail, so a typo in `sandbox.json` shows up at once.
 
