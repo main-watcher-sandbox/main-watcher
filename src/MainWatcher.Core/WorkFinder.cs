@@ -11,10 +11,12 @@ namespace MainWatcher.Core;
 /// made an eligible head current (ADR-017), and the moment an open lock's lease wanted renewing (ADR-014). It is null when
 /// GitHub does not date the work — a
 /// deleted target run, or a head whose push the activity read does not name — so the hourly sweep never judges how long work
-/// has waited from a guess. A closed lock still owing reconciliation is dated by its closure (ADR-015). <see cref="Check"/> is set only when the work is a report already owed.
+/// has waited from a guess. A closed lock still owing reconciliation is dated by its closure (ADR-015), and an unfinished queue
+/// sweep by the generation it owes (ADR-016). <see cref="Check"/> is set only when the work is a report already owed, and
+/// <see cref="Sweep"/> only when it is a queue sweep: each is a debt the worker times, and says so when it is not paid.
 /// </para>
 /// </summary>
-public sealed record Work(string Reason, DateTimeOffset? Since = null, long? Check = null);
+public sealed record Work(string Reason, DateTimeOffset? Since = null, long? Check = null, int? Sweep = null);
 
 /// <summary>
 /// Decides whether a target has work for <c>watch.yml</c> (ADR-010, ADR-013, ADR-017). It reads through <c>mw-observer</c> only
@@ -76,6 +78,12 @@ public sealed class WorkFinder(Func<DateTimeOffset>? clock = null, TimeSpan? que
         foreach (var issue in (await github.OpenIssues(repo, Reporter.LockLabel, ct))
             .Where(i => i.Author == botLogin && i.AuthorType == "Bot").OrderBy(i => i.Number))
         {
+            // ADR-016: a sweep owed is a merge group that may still merge onto a red `main`, so it is asked for before the
+            // lease this same read was made for. Only an open lock owes one: a closed lock enforces nothing, and a debt nothing
+            // could discharge would ask for a cycle for ever.
+            if (QueueSweep.Owed(issue.Body) is { } required)
+                return new($"lock #{issue.Number}: its queue sweep for {Markers.Stamp(required)} is unfinished",
+                    required, Sweep: issue.Number);
             if (!Lease.RenewalDue(issue.Body, target.LockLease, now)) continue;
             var due = Lease.Due(issue.Body, target.LockLease, now);
             return new($"lock #{issue.Number}: its lease " + (due is null

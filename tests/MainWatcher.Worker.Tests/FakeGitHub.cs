@@ -78,6 +78,10 @@ sealed class FakeGitHub : IGitHubGateway
         IssueWritesFail ? throw new HttpRequestException("issues unavailable")
             : Task.FromResult<IReadOnlyList<Issue>>(IssueList.Where(i => i.UpdatedAt is null || i.UpdatedAt >= since).ToArray());
     public Task<IReadOnlyList<GateBlock>> GateBlocks(string repo, DateTimeOffset since, CancellationToken ct) => throw new NotSupportedException();
+    // The queue sweep is the watcher's; the worker only reads the obligation out of the lock issue (ADR-016).
+    public Task<IReadOnlyList<QueuedGroup>> QueuedGroups(string repo, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<GateRun>> GateRuns(string repo, string sha, CancellationToken ct) => throw new NotSupportedException();
+    public Task<string?> Rerun(string repo, long runId, CancellationToken ct) => throw new NotSupportedException();
     public Task<MergedRange?> MergedCommits(string repo, string before, string after, int skip, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<PullEvent>> PullEvents(string repo, int number, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<IssueComment>> Comments(string repo, int number, DateTimeOffset? since, CancellationToken ct) => throw new NotSupportedException();
