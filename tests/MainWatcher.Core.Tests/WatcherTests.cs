@@ -361,6 +361,294 @@ public class WatcherTests
         Assert.True(Lease.RenewalDue(Markers.Set("Locked.", (Lease.Until, "not a time")), lease, Now));
     }
 
+    static readonly Target Locked = new() { Repo = "owner/repo" };
+    /// <summary>The merge commit a pull request left on main, named the way GitHub names one.</summary>
+    static MergedCommit Pull(int number, int minutesAgo) =>
+        new(Sha('m'), $"Merge pull request #{number} from owner/branch", Now.AddMinutes(-minutesAgo), number);
+    static Planner Reconciler(FakeGitHub fake, FakeGitHub watcher, Func<DateTimeOffset>? clock = null) =>
+        new(fake, clock ?? (() => Now), alerts: new Alerts(watcher, "owner/watcher"));
+
+    /// <summary>A lock opened <paramref name="openedMinutesAgo"/> ago, with the body a real one carries.</summary>
+    static FakeIssue SeedWindow(FakeGitHub fake, int openedMinutesAgo) =>
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot", LockBody(1, 'a'),
+            Now.AddMinutes(-openedMinutesAgo));
+
+    // TS-U4 (ADR-008): every unlabelled merge during an open lock is reported, each exactly once across runs.
+    [Fact]
+    public async Task EachUnlabelledMergeDuringALockIsReportedExactlyOnce()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub
+        {
+            Activity =
+            {
+                PushAt('c', 'd', "push", "carol", 10),
+                PushAt('b', 'c', "merge_queue_merge", "bob", 20),
+                PushAt('a', 'b', "pr_merge", "alice", 30),
+                // Before the lock existed: outside its window.
+                PushAt('z', 'a', "pr_merge", "dave", 90),
+            }
+        };
+        fake.Merged[Sha('b')] = [Pull(7, 30)];
+        fake.Merged[Sha('c')] = [Pull(8, 20)];
+        fake.Merged[Sha('a')] = [Pull(6, 90)];
+        // #7 carried the label when it merged; #8 never did.
+        fake.Labels[7] = [new(Reconciliation.FixLabel, true, Now.AddMinutes(-40))];
+        SeedWindow(fake, 60);
+        var watcher = new FakeGitHub();
+
+        var lines = await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        // The open lock is amended in place; only a closed one is commented on.
+        Assert.Equal(["update:1"], fake.Order);
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Contains(Reconciliation.Heading, body);
+        Assert.Contains("[#8](https://github.com/owner/repo/pull/8)", body);
+        Assert.DoesNotContain("#7", body);
+        Assert.DoesNotContain("#6", body);
+        Assert.Equal(Now.AddMinutes(-20), Markers.Time(body, Reconciliation.Cursor));
+        Assert.Null(Markers.Field(body, Reconciliation.Complete));
+        Assert.Contains("reconciled 2 merge(s)", lines.Single());
+        var alert = Assert.Single(watcher.Issues["owner/watcher"]).Issue;
+        Assert.Equal("Merged while locked on owner/repo", alert.Title);
+        Assert.Contains(Reconciliation.Key(8), alert.Body);
+
+        // A second run finds nothing left: the cursor has passed both merges, and nothing is written or alerted again.
+        Assert.Equal(["Lock #1: reconciled 0 merge(s) up to " + Markers.Stamp(Now) + "."],
+            await Reconciler(fake, watcher).Reconcile(Locked, ct));
+        Assert.Equal(["update:1"], fake.Order);
+        Assert.Equal(["create:owner/watcher"], watcher.Order);
+    }
+
+    // TS-U10 (ADR-015): a closed lock is reconciled up to its closure, however it closed, and then marked complete.
+    [Theory]
+    [InlineData("main-watcher[bot]")]
+    [InlineData("alice")]
+    public async Task AClosedLockIsReconciledUpToItsClosureAndThenMarkedComplete(string closer)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub
+        {
+            Activity = { PushAt('b', 'c', "pr_merge", "bob", 20), PushAt('a', 'b', "merge_queue_merge", "alice", 30) }
+        };
+        fake.Merged[Sha('b')] = [Pull(7, 30)];
+        fake.Merged[Sha('c')] = [Pull(8, 20)];
+        // Labelled after it had merged, which must not hide the report (ADR-015 point 8, TS-S15 (b)).
+        fake.Labels[7] = [new(Reconciliation.FixLabel, true, Now.AddMinutes(-5))];
+        SeedWindow(fake, 60);
+        fake.CloseByHand("owner/repo", 1, closer, Now.AddMinutes(-25));
+        var watcher = new FakeGitHub();
+
+        var lines = await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        // The comment notifies the closed issue's participants; the row and the markers follow in one write.
+        Assert.Equal(["comment:1", "update:1"], fake.Order);
+        Assert.Contains("#7", fake.Comments.Single());
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Contains("[#7](https://github.com/owner/repo/pull/7)", body);
+        // The merge five minutes after the lock closed is outside its window.
+        Assert.DoesNotContain("#8", body);
+        Assert.Equal(Now.AddMinutes(-30), Markers.Time(body, Reconciliation.Cursor));
+        Assert.Equal(Reconciliation.CompleteValue, Markers.Field(body, Reconciliation.Complete));
+        Assert.Contains("its window is complete", lines.Single());
+        Assert.Contains("Merged while locked on owner/repo", watcher.Issues["owner/watcher"].Select(i => i.Issue.Title));
+
+        // A complete lock is never looked at again: no activity read, no write, no alert.
+        fake.Reads.Clear();
+        Assert.Empty(await Reconciler(fake, watcher).Reconcile(Locked, ct));
+        Assert.Equal(["comment:1", "update:1"], fake.Order);
+        Assert.Empty(fake.Reads);
+    }
+
+    // TS-U10: the label is judged as it was at merge time, not as it reads now.
+    [Theory]
+    [InlineData("", false)]
+    [InlineData("+:-600", true)]
+    // Added after the merge: the pull request still merged unlabelled, so it is still reported.
+    [InlineData("+:600", false)]
+    // Removed after the merge: it was a fix when it merged, so no false report.
+    [InlineData("+:-600,-:600", true)]
+    [InlineData("+:-600,-:-5", false)]
+    // An event in the same second as the merge counts as before it.
+    [InlineData("+:0", true)]
+    [InlineData("-:0", false)]
+    public void TheFixLabelIsJudgedFromTheEventsUpToTheMerge(string events, bool fix)
+    {
+        var history = events.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(e => new LabelEvent(Reconciliation.FixLabel, e[0] == '+',
+                Now.AddSeconds(int.Parse(e[2..], System.Globalization.CultureInfo.InvariantCulture)))).ToArray();
+        Assert.Equal(fix, Reconciliation.WasFix(history, Now));
+        // Another label's history says nothing about this one.
+        Assert.False(Reconciliation.WasFix(history.Select(e => e with { Label = "other" }), Now));
+    }
+
+    // The merge and squash subjects GitHub writes, which the gate matches too. A commit naming none belongs to a pull
+    // request, but does not name it.
+    [Theory]
+    [InlineData("Merge pull request #12 from owner/fix", 12)]
+    [InlineData("Add a feature (#8)", 8)]
+    [InlineData("Add a feature (#8) and more", null)]
+    [InlineData("Merge pull request #12", null)]
+    [InlineData("a commit of its own", null)]
+    [InlineData("#12", null)]
+    public void ACommitSubjectNamesItsPullRequestOrNothing(string subject, int? pull) =>
+        Assert.Equal(pull, Reconciliation.PullOf(subject));
+
+    // NFR-4 is about what landed, not about what could be named: a merge whose pull request cannot be identified is reported
+    // rather than passed over, since nothing shows it carried the label.
+    [Theory]
+    [InlineData(false, "None of its commit subjects names a pull request")]
+    [InlineData(true, "Its range can no longer be compared")]
+    public async Task AMergeWhosePullRequestCannotBeNamedIsStillReported(bool uncomparable, string says)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { Activity = { PushAt('a', 'b', "merge_queue_merge", "alice", 30) } };
+        if (uncomparable) fake.Uncomparable.Add(Sha('b'));
+        else fake.Merged[Sha('b')] = [new(Sha('c'), "a commit of its own", Now.AddMinutes(-30), null)];
+        SeedWindow(fake, 60);
+        var watcher = new FakeGitHub();
+
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Contains("A merge-queue merge left", body);
+        Assert.Contains(says, body);
+        Assert.Contains(Reconciliation.Key(Sha('b')), body);
+        // The label history is never asked for: there is no pull request to ask about.
+        Assert.DoesNotContain(fake.Reads, r => r.StartsWith("labels:"));
+        Assert.Single(watcher.Issues["owner/watcher"]);
+        // The cursor still moves past it, so the same merge is not reported again.
+        Assert.Equal(Now.AddMinutes(-30), Markers.Time(body, Reconciliation.Cursor));
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        Assert.Equal(["update:1"], fake.Order);
+    }
+
+    // TS-U10: a label history that cannot be read stops the pass there; the cursor stays behind the merge it could not judge.
+    [Fact]
+    public async Task AnUnreadableLabelHistoryStopsWithoutAdvancingTheCursor()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub
+        {
+            Activity = { PushAt('b', 'c', "pr_merge", "bob", 20), PushAt('a', 'b', "pr_merge", "alice", 30) }
+        };
+        fake.Merged[Sha('b')] = [Pull(7, 30)];
+        fake.Merged[Sha('c')] = [Pull(8, 20)];
+        fake.LabelsError.Add(8);
+        SeedWindow(fake, 60);
+        fake.CloseByHand("owner/repo", 1, "alice", Now.AddMinutes(-5));
+        var watcher = new FakeGitHub();
+
+        var lines = await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Equal(Now.AddMinutes(-30), Markers.Time(body, Reconciliation.Cursor));
+        // Never complete while a merge inside the window is unjudged, so the next run looks again.
+        Assert.Null(Markers.Field(body, Reconciliation.Complete));
+        Assert.Contains("the label history of #8 could not be read", lines.Single());
+
+        fake.LabelsError.Clear();
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        body = fake.Find("owner/repo", 1).Body;
+        Assert.Equal(Now.AddMinutes(-20), Markers.Time(body, Reconciliation.Cursor));
+        Assert.Equal(Reconciliation.CompleteValue, Markers.Field(body, Reconciliation.Complete));
+        Assert.Contains("#8", body);
+        // Each merge reported once: #7 on the first pass, #8 on the second.
+        Assert.Equal(2, watcher.Comments.Count + watcher.Issues["owner/watcher"].Count);
+    }
+
+    // TS-U10: complete is written only after every report succeeded, and a replay repeats none of them.
+    [Fact]
+    public async Task CompleteIsWrittenOnlyAfterEveryReportSucceeds()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { Activity = { PushAt('a', 'b', "pr_merge", "alice", 30) } };
+        fake.Merged[Sha('b')] = [Pull(7, 30)];
+        SeedWindow(fake, 60);
+        fake.CloseByHand("owner/repo", 1, "alice", Now.AddMinutes(-5));
+        var watcher = new FakeGitHub();
+
+        // Stopped, as a crash would, immediately after the comment: nothing says the window is complete.
+        fake.StopAfterWrites = 1;
+        await Assert.ThrowsAsync<HttpRequestException>(() => Reconciler(fake, watcher).Reconcile(Locked, ct));
+        Assert.Null(Markers.Field(fake.Find("owner/repo", 1).Body, Reconciliation.Complete));
+
+        fake.StopAfterWrites = null;
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        // One comment, one alert and one row, although the report ran twice.
+        Assert.Single(fake.Find("owner/repo", 1).Comments);
+        Assert.Single(watcher.Issues["owner/watcher"]);
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Equal(1, body.Split(Reconciliation.Key(7)).Length - 1);
+        Assert.Equal(Reconciliation.CompleteValue, Markers.Field(body, Reconciliation.Complete));
+    }
+
+    [Fact]
+    public async Task AMergeMadeWhileLockedCannotBeReportedWithoutAnAlertSink()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { Activity = { PushAt('a', 'b', "pr_merge", "alice", 30) } };
+        fake.Merged[Sha('b')] = [Pull(7, 30)];
+        SeedWindow(fake, 60);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => new Planner(fake, () => Now).Reconcile(Locked, ct));
+        Assert.Empty(fake.Order);
+    }
+
+    // ADR-015 point 7: reconciliation that does not finish becomes visible, whichever clause is the one that is overdue.
+    [Theory]
+    // The merge itself has been unjudged for more than a day, although the lock closed only an hour ago.
+    [InlineData(60, 1500, true, "is still unjudged")]
+    // The lock closed more than a day ago and its window has still not been checked.
+    [InlineData(1500, 1530, true, "has still not been checked")]
+    [InlineData(60, 90, false, null)]
+    public async Task ReconciliationThatKeepsFailingIsAlerted(int closedMinutesAgo, int mergedMinutesAgo, bool alerted, string? says)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { Activity = { PushAt('a', 'b', "pr_merge", "alice", mergedMinutesAgo) } };
+        fake.MergedError.Add(Sha('b'));
+        SeedWindow(fake, Math.Max(closedMinutesAgo, mergedMinutesAgo) + 30);
+        fake.CloseByHand("owner/repo", 1, "alice", Now.AddMinutes(-closedMinutesAgo));
+        var watcher = new FakeGitHub();
+
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        var alerts = watcher.Issues.GetValueOrDefault("owner/watcher", []);
+        Assert.Equal(alerted, alerts.Count == 1);
+        if (says is not null) Assert.Contains(says, alerts.Single().Body);
+        if (!alerted) return;
+        // One comment a day, not one a cycle: the key carries the date.
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        Assert.Equal(["create:owner/watcher"], watcher.Order);
+        await Reconciler(fake, watcher, () => Now.AddDays(1)).Reconcile(Locked, ct);
+        Assert.Equal(["create:owner/watcher", "comment:1"], watcher.Order);
+    }
+
+    // R-7 and §17: unlocking forgets the pull requests the gate removed unless the comment names them.
+    [Fact]
+    public async Task TheUnlockCommentListsThePullRequestsTheGateRemoved()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { JobConclusion = "success", ReportResult = new(true, []) };
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot", "", Now.AddHours(-2));
+        fake.Blocked.Add(new(9001, 12, $"gh-readonly-queue/main/pr-12-{Sha('a')}", Now.AddHours(-1)));
+        // The same pull request removed twice is named once; one removed before the lock opened is not this lock's doing.
+        fake.Blocked.Add(new(9002, 12, $"gh-readonly-queue/main/pr-12-{Sha('b')}", Now.AddMinutes(-30)));
+        fake.Blocked.Add(new(9003, 5, $"gh-readonly-queue/main/pr-5-{Sha('c')}", Now.AddHours(-3)));
+
+        await new Reporter(fake, clock: () => Now).Report(Locked, Pending(), ct);
+        var comment = fake.Comments.Single();
+        Assert.Equal(new[] { "comment:1", "close:1", "complete:success" }, fake.Order);
+        Assert.Contains("re-queue the ones you still want merged", comment);
+        Assert.Equal(1, comment.Split("- #12").Length - 1);
+        Assert.DoesNotContain("- #5", comment);
+    }
+
+    [Fact]
+    public async Task AnUnreadableGateRunListStillClosesTheLock()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { JobConclusion = "success", ReportResult = new(true, []), BlockedError = true };
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot", "", Now.AddHours(-2));
+        await new Reporter(fake, clock: () => Now).Report(Locked, Pending(), ct);
+        Assert.Contains("could not be read", fake.Comments.Single());
+        Assert.Equal(new[] { "comment:1", "close:1", "complete:success" }, fake.Order);
+    }
+
     // TS-U11. Steps are "name=conclusion" in job order; "-" is a step with no conclusion.
     [Theory]
     [InlineData(OutcomeKind.Passed, "Restore=success", "main-watcher-test=success", "main-watcher-tests-finished=success")]
@@ -1691,20 +1979,22 @@ public class WatcherTests
             if (++writes == StopAfterWrites) throw new HttpRequestException("stopped after a write");
         }
 
-        public FakeIssue Seed(string repo, string label, string title, string author, string type, string body = "")
+        public FakeIssue Seed(string repo, string label, string title, string author, string type, string body = "",
+            DateTimeOffset? createdAt = null)
         {
             if (!Issues.TryGetValue(repo, out var list)) Issues[repo] = list = [];
             next++;
-            list.Add(new(new(next, title, body, author, type, $"https://github.com/{repo}/issues/{next}", Id: 1000 + next), label));
+            list.Add(new(new(next, title, body, author, type, $"https://github.com/{repo}/issues/{next}", Id: 1000 + next,
+                CreatedAt: createdAt), label));
             return list[^1];
         }
 
         public FakeIssue Find(string repo, int number) => Issues[repo].Single(i => i.Issue.Number == number);
 
-        public void CloseByHand(string repo, int number, string? login = "alice")
+        public void CloseByHand(string repo, int number, string? login = "alice", DateTimeOffset? at = null)
         {
             var issue = Find(repo, number);
-            issue.Issue = issue.Issue with { State = "closed", StateReason = "completed" };
+            issue.Issue = issue.Issue with { State = "closed", StateReason = "completed", ClosedAt = at };
             issue.ClosedBy = login is null ? null : new(login, "User");
         }
 
@@ -1825,6 +2115,38 @@ public class WatcherTests
         }
         public string? Title { get; private set; }
         public Task Complete(string repo, long checkId, string conclusion, string title, string summary, CancellationToken ct) { Order.Add($"complete:{conclusion}"); Conclusion = conclusion; Title = title; Summary = summary; return Task.CompletedTask; }
+
+        /// <summary>The commits one activity entry added, keyed by its <c>after</c> commit (ADR-015).</summary>
+        public Dictionary<string, List<MergedCommit>> Merged { get; } = [];
+        /// <summary><c>after</c> commits whose comparison cannot be read at all.</summary>
+        public HashSet<string> MergedError { get; } = [];
+        /// <summary><c>after</c> commits GitHub can no longer compare, as a force push leaves behind.</summary>
+        public HashSet<string> Uncomparable { get; } = [];
+        /// <summary>Label events by pull request, oldest first, as GitHub returns them.</summary>
+        public Dictionary<int, List<LabelEvent>> Labels { get; } = [];
+        /// <summary>Pull requests whose label history cannot be read (ADR-015 point 8).</summary>
+        public HashSet<int> LabelsError { get; } = [];
+        /// <summary>Merge groups the gate failed, for the unlock comment (R-7).</summary>
+        public List<GateBlock> Blocked { get; } = [];
+        public bool BlockedError { get; init; }
+        public Task<IReadOnlyList<MergedCommit>?> MergedCommits(string repo, string before, string after, CancellationToken ct)
+        {
+            Reads.Add($"merged:{after}");
+            if (MergedError.Contains(after)) throw new HttpRequestException("comparison unavailable");
+            return Task.FromResult(Uncomparable.Contains(after) ? null
+                : (IReadOnlyList<MergedCommit>?)Merged.GetValueOrDefault(after, []).ToArray());
+        }
+        public Task<IReadOnlyList<LabelEvent>> LabelEvents(string repo, int number, CancellationToken ct)
+        {
+            Reads.Add($"labels:{number}");
+            return LabelsError.Contains(number) ? throw new HttpRequestException("label events unavailable")
+                : Task.FromResult<IReadOnlyList<LabelEvent>>(Labels.GetValueOrDefault(number, []).ToArray());
+        }
+        public Task<IReadOnlyList<GateBlock>> GateBlocks(string repo, DateTimeOffset since, CancellationToken ct) =>
+            BlockedError ? throw new HttpRequestException("gate runs unavailable")
+                : Task.FromResult<IReadOnlyList<GateBlock>>(Blocked.Where(b => b.At >= since).ToArray());
+        /// <summary>Every read reconciliation makes, in order, so a pass that stopped can be shown to have stopped.</summary>
+        public List<string> Reads { get; } = [];
     }
 }
 

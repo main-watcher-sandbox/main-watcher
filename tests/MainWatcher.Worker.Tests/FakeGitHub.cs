@@ -73,7 +73,13 @@ sealed class FakeGitHub : IGitHubGateway
     public Task<string?> CancelRun(string repo, long runId, bool force, CancellationToken ct) => throw new NotSupportedException();
     public Task Output(string repo, long checkId, string title, string summary, CancellationToken ct) => throw new NotSupportedException();
     public Task Complete(string repo, long checkId, string conclusion, string title, string summary, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IReadOnlyList<Issue>> Issues(string repo, string label, DateTimeOffset since, CancellationToken ct) => throw new NotSupportedException();
+    /// <summary>Locks in any state, updated within the window: the closed-lock reconciliation rule reads these (ADR-015).</summary>
+    public Task<IReadOnlyList<Issue>> Issues(string repo, string label, DateTimeOffset since, CancellationToken ct) =>
+        IssueWritesFail ? throw new HttpRequestException("issues unavailable")
+            : Task.FromResult<IReadOnlyList<Issue>>(IssueList.Where(i => i.UpdatedAt is null || i.UpdatedAt >= since).ToArray());
+    public Task<IReadOnlyList<GateBlock>> GateBlocks(string repo, DateTimeOffset since, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<MergedCommit>?> MergedCommits(string repo, string before, string after, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<LabelEvent>> LabelEvents(string repo, int number, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<IssueComment>> Comments(string repo, int number, DateTimeOffset? since, CancellationToken ct) => throw new NotSupportedException();
     public Task<Account?> ClosedBy(string repo, int number, CancellationToken ct) => throw new NotSupportedException();
     public Task EditBody(string repo, int number, string body, CancellationToken ct) => throw new NotSupportedException();

@@ -180,6 +180,188 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
     }
 
     /// <summary>
+    /// ADR-008 and ADR-015: reports every pull request that merged into <c>main</c> during a lock's window without
+    /// <c>fixes-main</c>. The window is the issue's creation to its closure, or to now while it is open, and reconciliation
+    /// follows a lock past its closure: a human can close one before the watcher has looked at a merge made during it, and
+    /// nothing would ever look again. So every App lock that is open, or closed within <see cref="Reporter.ReconcileLookback"/>
+    /// and not yet <c>reconciled=complete</c>, is processed, and the cursor lives in the issue either way.
+    /// <para>
+    /// Each merge's label history is read up to its <c>merged_at</c>, because the label a pull request carries now is not the
+    /// one it merged with: a label added afterwards would hide a real report, and one removed afterwards would raise a false
+    /// one. A history that cannot be read stops the pass at that merge, with the cursor left behind it, so the merge is judged
+    /// on a later run rather than waved through.
+    /// </para>
+    /// </summary>
+    /// <returns>A line per lock examined, for the log.</returns>
+    public async Task<IReadOnlyList<string>> Reconcile(Target target, CancellationToken ct)
+    {
+        var repo = target.Repo;
+        var now = Now;
+        // An open lock counts even when nothing has updated it within the lookback. The later read wins on state.
+        var locks = (await github.OpenIssues(repo, Reporter.LockLabel, ct))
+            .Concat(await github.Issues(repo, Reporter.LockLabel, now - Reporter.ReconcileLookback, ct))
+            .Where(IsApp).GroupBy(i => i.Number).Select(g => g.Last())
+            .Where(i => !Reconciliation.IsComplete(i.Body)).OrderBy(i => i.Number).ToArray();
+        if (locks.Length == 0) return [];
+        // One activity read serves every lock: the windows all end at or before now, so they overlap in this one list.
+        var activity = await github.Pushes(repo, PushList.Limit, ct);
+        var lines = new List<string>();
+        foreach (var issue in locks) lines.Add(await ReconcileLock(target, issue, activity, now, ct));
+        return lines;
+    }
+
+    async Task<string> ReconcileLock(Target target, Issue issue, IReadOnlyList<Push> activity, DateTimeOffset now, CancellationToken ct)
+    {
+        var repo = target.Repo;
+        var cursor = Markers.Time(issue.Body, Reconciliation.Cursor);
+        // Without a cursor the window starts where the lock does, and a merge stamped in that same second is inside it; with
+        // one, it starts after what has already been read. An issue GitHub does not date bounds nothing, so the activity read
+        // is the whole window and no claim is made about anything older.
+        var from = cursor ?? issue.CreatedAt;
+        // ADR-015: a closed lock's window ends at its closure, and a merge in that same second counts as inside it.
+        var until = issue.State == "closed" ? issue.ClosedAt ?? issue.UpdatedAt ?? now : now;
+        var merges = activity.Where(p => Reconciliation.MergeActivity.Contains(p.Type) && p.Timestamp <= until
+            && (from is not { } start || (cursor is null ? p.Timestamp >= start : p.Timestamp > start)))
+            .OrderBy(p => p.Timestamp).ToArray();
+        var rows = new List<string>();
+        IReadOnlyList<IssueComment>? comments = null;
+        var reached = cursor;
+        string? stopped = null;
+        DateTimeOffset? blocked = null;
+        foreach (var merge in merges)
+        {
+            IReadOnlyList<MergedCommit>? commits;
+            try { commits = await github.MergedCommits(repo, merge.Before, merge.After, ct); }
+            catch (Exception e) when (Unreadable(e, ct))
+            {
+                (stopped, blocked) = ($"the commits of `{Markdown.Short(merge.After)}` could not be read ({e.Message})", merge.Timestamp);
+                break;
+            }
+            var pulls = commits is null ? [] : Reconciliation.Pulls(commits);
+            // A merge whose commits name no pull request, or whose range GitHub can no longer compare, is still a merge made
+            // while `main` was locked. Nothing shows it carried the label, so it is reported as what is known about it.
+            if (pulls.Count == 0)
+            {
+                comments = await ReportMerge(target, issue, Reconciliation.Key(merge.After),
+                    $"A {(merge.Type == "pr_merge" ? "pull request merge" : "merge-queue merge")} left "
+                    + $"{Markdown.Commit(repo, merge.After)} on `main` at {Markers.Stamp(merge.Timestamp)}. "
+                    + (commits is null
+                        ? "Its range can no longer be compared, so the pull request it merged cannot be named"
+                        : "None of its commit subjects names a pull request, so its `fixes-main` label cannot be judged"),
+                    rows, comments, ct);
+                reached = merge.Timestamp;
+                continue;
+            }
+            foreach (var (pull, mergedAt) in pulls)
+            {
+                IReadOnlyList<LabelEvent> events;
+                try { events = await github.LabelEvents(repo, pull, ct); }
+                catch (Exception e) when (Unreadable(e, ct))
+                {
+                    (stopped, blocked) = ($"the label history of #{pull} could not be read ({e.Message})", merge.Timestamp);
+                    break;
+                }
+                if (Reconciliation.WasFix(events, mergedAt)) continue;
+                comments = await ReportMerge(target, issue, Reconciliation.Key(pull),
+                    $"[#{pull}](https://github.com/{repo}/pull/{pull}) merged into `main` at {Markers.Stamp(mergedAt)} "
+                    + $"without the `{Reconciliation.FixLabel}` label", rows, comments, ct);
+            }
+            if (stopped is not null) break;
+            reached = merge.Timestamp;
+        }
+        // The activity read is bounded (ADR-003), so a window whose start it does not reach may hold merges nothing can see.
+        if (activity.Count >= PushList.Limit && from is { } begin && activity.Min(p => p.Timestamp) > begin
+            && !(issue.Body ?? "").Contains(Reconciliation.Truncated, StringComparison.Ordinal))
+            rows.Add($"- The repository activity read reaches back only to {Markers.Stamp(activity.Min(p => p.Timestamp))}, "
+                + "which is after this lock's window began, so merges older than that could not be checked. "
+                + Reconciliation.Truncated);
+        // Complete only once the whole window has been checked: a pass that stopped part-way is retried on the next run.
+        var complete = stopped is null && issue.State == "closed";
+        (string Name, string Value)[] fields = [
+            .. reached is { } mark && mark != cursor ? new[] { (Reconciliation.Cursor, Markers.Stamp(mark)) } : [],
+            .. complete ? new[] { (Reconciliation.Complete, Reconciliation.CompleteValue) } : []];
+        if (rows.Count > 0 || fields.Length > 0)
+        {
+            var body = Reconciliation.Append(issue.Body, rows);
+            await github.EditBody(repo, issue.Number, fields.Length > 0 ? Markers.Set(body, fields) : body, ct);
+            afterWrite?.Invoke("reconcile");
+        }
+        await ReconcileFailing(target, issue, now, stopped, blocked, complete, ct);
+        return $"Lock #{issue.Number}: reconciled {merges.Length} merge(s) up to {Markers.Stamp(until)}"
+            + (rows.Count > 0 ? $", reporting {rows.Count}" : "")
+            + (complete ? "; its window is complete." : stopped is null ? "." : $"; stopped because {stopped}.");
+    }
+
+    /// <summary>
+    /// Reports one unlabelled merge: a row under "Merged while locked" in the issue body, a comment when the issue has closed
+    /// so that its participants are notified, and a <c>watcher-infra</c> alert, which is the channel that does not depend on
+    /// anyone watching a closed issue. Each carries the same hidden key, so a pass that stopped between them repeats none of
+    /// them; the body row is collected and written once at the end, with the cursor.
+    /// </summary>
+    /// <returns>The issue's comments, read at most once per lock.</returns>
+    async Task<IReadOnlyList<IssueComment>?> ReportMerge(Target target, Issue issue, string key, string what, List<string> rows,
+        IReadOnlyList<IssueComment>? comments, CancellationToken ct)
+    {
+        if (alerts is null) throw new InvalidOperationException("A merge made during a lock cannot be reported without an alert sink.");
+        var repo = target.Repo;
+        if (issue.State == "closed")
+        {
+            comments ??= await github.Comments(repo, issue.Number, null, ct);
+            if (!comments.Any(c => c.Body.Contains(key, StringComparison.Ordinal)))
+            {
+                await github.Comment(repo, issue.Number, $"{what}, while this lock was open. "
+                    + "The lock has closed since, so this is a record rather than a block: the gate let the merge through, or "
+                    + "the lock closed before the merge had been checked (ADR-015).\n\n" + key, ct);
+                afterWrite?.Invoke("merged");
+            }
+        }
+        await alerts.Raise($"Merged while locked on {repo}",
+            $"{what}, while lock {issue.Url} on `{repo}` was open.\n\n"
+            + "The gate should have kept it out of the merge queue. It did not, because it failed open on a GitHub API error, "
+            + "because the lock's lease had expired, or because the merge group had passed its gate before the lock existed "
+            + "(ADR-008, ADR-014, ADR-016). `main` may now be more broken than the lock says.", ct, key);
+        if (!(issue.Body ?? "").Contains(key, StringComparison.Ordinal)) rows.Add($"- {what}. {key}");
+        return comments;
+    }
+
+    /// <summary>
+    /// ADR-015 point 7: a merge left unresolved, or a closed lock left unreconciled, for <see cref="Reconciliation.FailingAfter"/>
+    /// is raised as "reconciliation failing". The key carries the day, so a fault that lasts is one comment a day rather than
+    /// one per cycle, and a watcher that restarts cannot repeat it.
+    /// </summary>
+    async Task ReconcileFailing(Target target, Issue issue, DateTimeOffset now, string? stopped, DateTimeOffset? blocked,
+        bool complete, CancellationToken ct)
+    {
+        var repo = target.Repo;
+        var overdue = blocked is { } at && now - at >= Reconciliation.FailingAfter;
+        var stale = !complete && issue.State == "closed" && issue.ClosedAt is { } closed && now - closed >= Reconciliation.FailingAfter;
+        if (!overdue && !stale) return;
+        var title = $"Reconciliation failing on {repo}";
+        if (alerts is null) { AlertFailures.Add($"{title}: no alert sink configured"); return; }
+        try
+        {
+            await alerts.Raise(title,
+                $"Main Watcher has not finished reconciling lock {issue.Url} on `{repo}`.\n\n"
+                // The closure is named first where it is the older fact: a lock left behind for a day says more than the merge
+                // that blocked it, and every merge inside such a window is older than the closure anyway.
+                + (stale
+                    ? $"The lock closed at {Markers.Stamp(issue.ClosedAt!.Value)} and its window has still not been checked"
+                        + (stopped is null ? ".\n\n" : $", because {stopped}.\n\n")
+                    : $"A merge made at {Markers.Stamp(blocked!.Value)} is still unjudged: {stopped}.\n\n")
+                + "Until it finishes, a pull request that merged during this lock without the `fixes-main` label may be "
+                + $"unreported (NFR-4). Reconciliation is retried on every cycle for `{repo}`, and stops looking at this lock "
+                + $"{Reporter.ReconcileLookback.TotalDays:0} days after it closed (ADR-015).", ct,
+                $"<!-- main-watcher reconcile-failing issue={issue.Number} day={now.UtcDateTime:yyyy-MM-dd} -->");
+        }
+        catch (Exception e) when (!ct.IsCancellationRequested) { AlertFailures.Add($"{title}: {e.Message}"); }
+    }
+
+    /// <summary>A read that failed for a reason a later run may not see: the pass stops here rather than judging without it.</summary>
+    static bool Unreadable(Exception e, CancellationToken ct) =>
+        e is HttpRequestException or IOException or System.Text.Json.JsonException
+        || e is TaskCanceledException && !ct.IsCancellationRequested;
+
+    /// <summary>
     /// ADR-013 point 5: a target run that has passed a deadline is stopped before it is judged. One step is taken per cycle,
     /// and each is recorded in the check run's output before the request it describes, so a crash resumes from the recorded
     /// times instead of starting the wait again:

@@ -253,6 +253,71 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         return found;
     }
 
+    public async Task<IReadOnlyList<GateBlock>> GateBlocks(string repo, DateTimeOffset since, CancellationToken ct)
+    {
+        List<JsonElement> runs;
+        try
+        {
+            var created = Uri.EscapeDataString(">=" + since.ToString("O"));
+            runs = await Pages($"repos/{repo}/actions/workflows/{GateWorkflow}/runs?event=merge_group&status=failure&created={created}", "workflow_runs", ct);
+        }
+        // A target that has not copied the gate workflow, or has renamed it, has no such runs to report.
+        catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.NotFound) { return []; }
+        var blocked = new List<GateBlock>();
+        foreach (var run in runs)
+        {
+            // The queue branch names the entry's own pull request, which is the one the queue removes when the gate fails it.
+            if (QueueBranch.Match(Text(run, "head_branch") ?? "") is not { Success: true } match) continue;
+            blocked.Add(new(run.GetProperty("id").GetInt64(), int.Parse(match.Groups["number"].Value, System.Globalization.CultureInfo.InvariantCulture),
+                Text(run, "head_branch")!, Date(run, "run_started_at") ?? Date(run, "created_at") ?? since));
+        }
+        return blocked.OrderBy(b => b.At).ToArray();
+    }
+
+    /// <summary>
+    /// A merge-queue branch, <c>gh-readonly-queue/&lt;branch&gt;/pr-&lt;number&gt;-&lt;base sha&gt;</c> (A-7, confirmed in the
+    /// sandbox on 2026-09-16). The gate reads the same shape through its own copy, because it shares no code with the watcher.
+    /// </summary>
+    static readonly System.Text.RegularExpressions.Regex QueueBranch =
+        new(@"^gh-readonly-queue/.+/pr-(?<number>\d+)-[0-9a-f]{40}$");
+
+    /// <remarks>
+    /// The pull request is read from the commit subject, not from the commits-to-pull-requests API, because that endpoint
+    /// needs a Pull requests permission the <c>main-watcher</c> App does not hold (§8, ADR-008). The subjects are the ones the
+    /// gate already matches, and a merge group's own merge commit always carries one.
+    /// </remarks>
+    public async Task<IReadOnlyList<MergedCommit>?> MergedCommits(string repo, string before, string after, CancellationToken ct)
+    {
+        if (!IsSha(before) || !IsSha(after) || before.All(c => c == '0') || after.All(c => c == '0')) return null;
+        List<JsonElement> commits;
+        try
+        {
+            // A merge group holds one queue entry's own pull request and everything ahead of it, so the whole range is read,
+            // not only the head commit.
+            commits = (await Pages($"repos/{repo}/compare/{before}...{after}", "commits", ct)).Take(MaxMergedCommits).ToList();
+        }
+        // A force push can leave "before" unreachable, and GitHub cannot compare it any more.
+        catch (HttpRequestException e) when (e.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.UnprocessableEntity) { return null; }
+        return commits.Select(c =>
+        {
+            var commit = c.GetProperty("commit");
+            var subject = (Text(commit, "message") ?? "").Split('\n')[0].Trim();
+            return new MergedCommit(Text(c, "sha") ?? "", subject,
+                Date(commit.GetProperty("committer"), "date") ?? DateTimeOffset.MinValue, Reconciliation.PullOf(subject));
+        }).ToArray();
+    }
+
+    /// <summary>How many commits of one activity entry are read. A larger range is a batch nobody put through the queue.</summary>
+    public const int MaxMergedCommits = 100;
+
+    public async Task<IReadOnlyList<LabelEvent>> LabelEvents(string repo, int number, CancellationToken ct) =>
+        // Oldest first, as GitHub returns them: two events in the same second are told apart by their order, not their times.
+        (await Pages($"repos/{repo}/issues/{number}/events", null, ct))
+        .Where(e => Text(e, "event") is "labeled" or "unlabeled" && e.TryGetProperty("label", out var label)
+            && label.ValueKind == JsonValueKind.Object && Text(label, "name") is not null)
+        .Select(e => new LabelEvent(Text(e.GetProperty("label"), "name")!, Text(e, "event") == "labeled",
+            Date(e, "created_at") ?? DateTimeOffset.MinValue)).ToArray();
+
     public async Task Link(string repo, long checkId, long runId, CancellationToken ct) =>
         await Send(HttpMethod.Patch, $"repos/{repo}/check-runs/{checkId}", new { external_id = runId.ToString(System.Globalization.CultureInfo.InvariantCulture), details_url = $"https://github.com/{repo}/actions/runs/{runId}" }, ct);
 
@@ -345,7 +410,8 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     static Issue ToIssue(JsonElement json) => new(json.GetProperty("number").GetInt32(), Text(json, "title") ?? "", Text(json, "body"),
         Text(json.GetProperty("user"), "login") ?? "", Text(json.GetProperty("user"), "type") ?? "", Text(json, "html_url") ?? "",
         Text(json, "state") ?? "open", Text(json, "state_reason"), Date(json, "updated_at"),
-        json.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number ? id.GetInt64() : 0);
+        json.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number ? id.GetInt64() : 0,
+        Date(json, "created_at"), Date(json, "closed_at"));
 
     static string Since(DateTimeOffset since) => Uri.EscapeDataString(since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture));
 

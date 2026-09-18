@@ -35,6 +35,14 @@ The second row is the acceptance criterion: the replica is green on the list tha
 sandbox watcher. `GITHUB_REPOSITORY` is `main-watcher-sandbox/main-watcher` there, so the test
 parses the file and skips the sandbox-target clause.
 
+## The push recipe
+
+`sandbox/README.md` told readers to push the commit under test with `git push HEAD:main`, which
+GitHub rejects every time: the replica's `main` ends in a `targets.yml` commit that is never an
+ancestor of it. The README now carries the merge-commit recipe the replica's history is actually
+made of, and [`3b933375`][recipe] is that recipe run verbatim. Restoring the target list on top
+gave [`e71b4b11`][again], green again at 408 of 408.
+
 ## The clause still bites here
 
 Checked locally against a `targets.yml` holding the replica's sandbox entry:
@@ -52,3 +60,5 @@ a file the sweep could not read still fails the build in both repositories.
 [after]: https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35361608814
 [take]: https://github.com/main-watcher-sandbox/main-watcher/commit/a4ec0e8f
 [set]: https://github.com/main-watcher-sandbox/main-watcher/commit/9ff455e1
+[recipe]: https://github.com/main-watcher-sandbox/main-watcher/commit/3b933375
+[again]: https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35362354345
