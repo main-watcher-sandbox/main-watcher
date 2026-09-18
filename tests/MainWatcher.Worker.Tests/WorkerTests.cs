@@ -174,11 +174,11 @@ public class WorkerTests
     public async Task TheSandboxLockLeaseIsSharedWithThePlanner()
     {
         var target = new FakeGitHub { CheckList = [Done()] };
-        target.IssueList.Add(Lock(1, Now.AddMinutes(1)));
+        target.IssueList.Add(Lock(1, Now.AddMinutes(6)));
         var short10 = new Target { Repo = "owner/repo", PollInterval = 15, LockLease = TimeSpan.FromMinutes(10) };
-        // A lease shorter than the renewal interval expires before it is an hour old, and an expired lease always wants one.
+        // Half of a ten-minute lease, so the renewal is asked for while the gate is still enforcing the lock, not after.
         Assert.Null(await new WorkFinder(() => Now).Find(short10, target, Ct));
-        target.IssueList[0] = Lock(1, Now);
+        target.IssueList[0] = Lock(1, Now.AddMinutes(5));
         Assert.NotNull(await new WorkFinder(() => Now).Find(short10, target, Ct));
     }
 

@@ -34,8 +34,14 @@ public static class Lease
     public static readonly TimeSpan RenewAfter = TimeSpan.FromHours(1);
 
     /// <summary>
-    /// When this lock's lease next needs renewing: the earlier of its first <see cref="RenewAfter"/> running out and the
-    /// lease itself expiring, which is what a <c>lock_lease</c> shorter than <see cref="RenewAfter"/> reaches first.
+    /// When this lock's lease next needs renewing: <see cref="RenewAfter"/> after it was last renewed, or half of
+    /// <c>lock_lease</c> where that is sooner.
+    /// <para>
+    /// The half only bites below a two-hour <c>lock_lease</c>, which in practice means the sandbox's ten minutes. It exists
+    /// because asking for a renewal a fixed hour after the last one would, for a lease shorter than that hour, ask only once
+    /// the lease had already expired: every renewal would then follow a window in which the gate had stopped enforcing a lock
+    /// nobody had abandoned. Renewing halfway through leaves the same margin proportionally that four hours and one hour do.
+    /// </para>
     /// <para>
     /// Null when the marker is missing or unreadable, and when it is further ahead than a renewal could have set it, which a
     /// hand-edited or faulty marker is: each needs renewing now, and none of them dates the work.
@@ -43,7 +49,7 @@ public static class Lease
     /// </summary>
     public static DateTimeOffset? Due(string? body, TimeSpan lockLease, DateTimeOffset now) =>
         Markers.Time(body, Until) is { } until && until <= now + lockLease
-            ? until - lockLease + (RenewAfter < lockLease ? RenewAfter : lockLease) : null;
+            ? until - lockLease + (RenewAfter < lockLease / 2 ? RenewAfter : lockLease / 2) : null;
 
     /// <summary>Whether the lease wants renewing now. An unreadable one always does, and an expired one always has.</summary>
     public static bool RenewalDue(string? body, TimeSpan lockLease, DateTimeOffset now) =>

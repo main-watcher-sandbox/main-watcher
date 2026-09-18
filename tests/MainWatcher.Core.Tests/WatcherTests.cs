@@ -226,9 +226,10 @@ public class WatcherTests
     [InlineData(240, 181, false, 1)]
     [InlineData(240, 180, true, 0)]
     [InlineData(240, -1, true, -181)]
-    // A lease shorter than the renewal interval runs out first, so expiry is what the worker waits for.
-    [InlineData(10, 1, false, 1)]
-    [InlineData(10, 0, true, 0)]
+    // Below two hours, half the lease comes first, so a renewal is asked for before the gate could stop enforcing the lock.
+    [InlineData(10, 6, false, 1)]
+    [InlineData(10, 5, true, 0)]
+    [InlineData(120, 61, false, 1)]
     // Missing, unreadable, or further ahead than a renewal could have set it: renew now, and date nothing.
     [InlineData(240, null, true, null)]
     [InlineData(240, 241, true, null)]

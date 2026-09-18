@@ -31,7 +31,9 @@ A head that has spent its three neutral attempts now raises a "head untestable" 
 is tested again only after a push or a forced dispatch (MainWatcher#17); TS-S12 and TS-S18
 passed, with the trigger worker running throughout. A target run that passes its queue or run
 deadline is cancelled, force-cancelled and finally alerted about, and judged from its steps once
-it stops (MainWatcher#18); TS-S16 (g) and (h) passed.
+it stops (MainWatcher#18); TS-S16 (g) and (h) passed. Every cycle renews an open lock's lease, and
+renewing one that had run out records the lapse, comments and alerts (MainWatcher#19); TS-S7 passed
+with a 10-minute sandbox lease, except its last clause, which waits on reconciliation (#20).
 
 ## Where things are
 
@@ -68,8 +70,8 @@ it stops (MainWatcher#18); TS-S16 (g) and (h) passed.
   `sandbox/issue-10-validation.md`, `sandbox/issue-11-validation.md`,
   `sandbox/issue-12-validation.md`, `sandbox/issue-13-validation.md`,
   `sandbox/issue-14-validation.md`, `sandbox/issue-15-validation.md`,
-  `sandbox/issue-16-validation.md`, `sandbox/issue-17-validation.md` and
-  `sandbox/issue-18-validation.md`.
+  `sandbox/issue-16-validation.md`, `sandbox/issue-17-validation.md`,
+  `sandbox/issue-18-validation.md` and `sandbox/issue-19-validation.md`.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
@@ -155,11 +157,12 @@ metrics store (PostgreSQL + Grafana) is deferred.
       interrupted reports without undoing overrides (MainWatcher#12), gives
       infrastructure errors a neutral result with an alert (MainWatcher#13), and alerts when a
       head has spent its neutral retries (MainWatcher#17). Automated
-      triggers and stale-run cancellation (MainWatcher#18) are built; lease renewal remains in a
-      later ticket.
+      triggers, stale-run cancellation (MainWatcher#18) and lease renewal (MainWatcher#19) are
+      built.
    4. Trigger worker. Built (MainWatcher#14), with its health alerts (MainWatcher#15), the
       hourly backup sweep that watches it in turn (MainWatcher#16) and the stale-run deadlines
-      (MainWatcher#18); leases (#19), reconciliation (#20) and queue sweeps (#21) remain.
+      (MainWatcher#18) and the lock leases it asks to have renewed (MainWatcher#19);
+      reconciliation (#20) and queue sweeps (#21) remain.
    5. Onboarding docs.
 
 ## Validating the docs after edits
