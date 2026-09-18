@@ -1,8 +1,9 @@
 namespace MainWatcher.Core;
 
 /// <summary>
-/// Starts eligible heads, recovers unlinked dispatches (R-14, ADR-017), renews open locks' leases (ADR-014) and stops target
-/// runs that have passed a deadline (ADR-013 point 5).
+/// Starts eligible heads, recovers unlinked dispatches (R-14, ADR-017), renews open locks' leases (ADR-014), sweeps the merge
+/// queue for groups that passed the gate before a lock (ADR-016) and stops target runs that have passed a deadline
+/// (ADR-013 point 5).
 /// </summary>
 /// <param name="queueDeadline">The ADR-013 queue deadline; the sandbox shortens it (TS-S16 (g)).</param>
 /// <param name="cancelsRuns">
@@ -111,7 +112,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
             // followed by a second lapse, must leave both windows on the issue for this cycle or a later one to post.
             (string Name, string Value)[] fields = expired is null
                 ? [(Lease.Until, Markers.Stamp(until))]
-                : [(Lease.Until, Markers.Stamp(until)), (Lease.SweepRequired, Markers.Stamp(now)),
+                : [(Lease.Until, Markers.Stamp(until)), (QueueSweep.Required, Markers.Stamp(now)),
                     (Lease.Lapsed, Lease.Field([.. Lease.Unreported(issue.Body), new Lease.Lapse(expired.Value, now)]))];
             var body = Markers.Set(issue.Body, fields);
             await github.EditBody(repo, issue.Number, body, ct);
@@ -131,6 +132,84 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
             }
         return lines;
     }
+
+    /// <summary>
+    /// ADR-016: re-runs the gate for the merge groups still queued whose gate decided before this lock was visible. A group
+    /// whose gate passed while no lock existed, and which is still waiting for another required check, would otherwise merge
+    /// onto a red <c>main</c> with no outage involved.
+    /// <para>
+    /// The obligation is durable and is discharged here, not where it is written: a lock the Reporter opened earlier in this
+    /// cycle, a lease this cycle renewed after it had lapsed, and one either of those recorded before a crash are all the same
+    /// owed generation. <c>queue_swept</c> is written only once no queued group still has an unhandled gate run before the
+    /// cut-off, so a sweep interrupted anywhere is simply owed again.
+    /// </para>
+    /// <para>
+    /// A gate run still going, and one GitHub refuses to re-run, both leave the sweep owed rather than passing the group: the
+    /// worker keeps asking for cycles, and after <see cref="QueueSweep.UnfinishedAfter"/> says so. Only open locks are swept —
+    /// a closed one enforces nothing, so re-running a gate for it would block nothing and never finish.
+    /// </para>
+    /// </summary>
+    /// <param name="opened">
+    /// Locks the Reporter created earlier in this cycle. They are passed in because GitHub's issue list does not show a new
+    /// issue at once, so the lock whose groups are most urgently owed a sweep is exactly the one the list can miss; a copy the
+    /// list does hold wins, being at least as fresh.
+    /// </param>
+    /// <returns>A line per lock swept, for the log.</returns>
+    public async Task<IReadOnlyList<string>> SweepQueue(Target target, IEnumerable<Issue>? opened, CancellationToken ct)
+    {
+        var repo = target.Repo;
+        var owed = (opened ?? []).Concat(await github.OpenIssues(repo, Reporter.LockLabel, ct))
+            .Where(IsApp).GroupBy(i => i.Number).Select(g => g.Last()).OrderBy(i => i.Number)
+            .Select(issue => (Issue: issue, Required: QueueSweep.Owed(issue.Body)))
+            .Where(l => l.Required is not null).ToArray();
+        if (owed.Length == 0) return [];
+        // One queue read serves every owed lock, as does one gate-run read per group: the generations differ, but the queue
+        // they are swept against is the same.
+        var groups = await github.QueuedGroups(repo, ct);
+        var runs = new Dictionary<string, IReadOnlyList<GateRun>>(StringComparer.Ordinal);
+        var asked = new HashSet<long>();
+        var lines = new List<string>();
+        foreach (var (issue, required) in owed)
+        {
+            var cutoff = QueueSweep.Cutoff(required!.Value);
+            var reran = new List<string>();
+            var left = new List<string>();
+            foreach (var group in groups)
+            {
+                if (!runs.TryGetValue(group.Sha, out var gates)) runs[group.Sha] = gates = await github.GateRuns(repo, group.Sha, ct);
+                foreach (var run in gates)
+                    switch (QueueSweep.Handle(run, cutoff))
+                    {
+                        case GateRunHandling.Wait:
+                            left.Add($"gate run {run.Id} for {Name(group)} is still running");
+                            break;
+                        // A run another owed lock has already re-run in this pass is not asked for twice; GitHub would refuse
+                        // the second request anyway, and the new attempt reads the same lock state for both.
+                        case GateRunHandling.Rerun when asked.Add(run.Id):
+                            if (await github.Rerun(repo, run.Id, ct) is { } refusal)
+                            {
+                                asked.Remove(run.Id);
+                                left.Add($"gate run {run.Id} for {Name(group)} could not be re-run ({refusal})");
+                            }
+                            else reran.Add($"{Name(group)} (gate run {run.Id})");
+                            break;
+                    }
+            }
+            if (left.Count == 0)
+            {
+                await github.EditBody(repo, issue.Number,
+                    Markers.Set(issue.Body, (QueueSweep.Swept, Markers.Stamp(required.Value))), ct);
+                afterWrite?.Invoke("swept");
+            }
+            lines.Add($"Lock #{issue.Number}: queue sweep for {Markers.Stamp(required.Value)} over {groups.Count} queued "
+                + $"group(s): re-ran {reran.Count} gate run(s)" + (reran.Count > 0 ? $" — {string.Join(", ", reran)}" : "")
+                + (left.Count == 0 ? "; complete." : $"; still owed because {string.Join("; ", left)}."));
+        }
+        return lines;
+    }
+
+    /// <summary>A queued group, by the pull request its branch names where it names one.</summary>
+    static string Name(QueuedGroup group) => group.Pull is { } pull ? $"#{pull}" : $"`{Markdown.Escape(group.Branch)}`";
 
     /// <summary>
     /// Reports the lapses a renewal recorded, oldest first: a comment on the lock and a <c>watcher-infra</c> alert for each,

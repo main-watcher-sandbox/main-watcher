@@ -258,7 +258,11 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         List<JsonElement> runs;
         try
         {
-            var created = Uri.EscapeDataString(">=" + since.ToString("O"));
+            // Runs created before the window are read too, because the queue sweep re-runs gate runs from before the lock: such
+            // a run fails inside the window on an attempt started inside it, while GitHub still dates it by its first attempt
+            // (ADR-016). The window itself is judged on the latest attempt's own time, so the lag only widens what is looked
+            // at, never what is reported.
+            var created = Uri.EscapeDataString(">=" + (since - QueueLag).ToString("O"));
             runs = await Pages($"repos/{repo}/actions/workflows/{GateWorkflow}/runs?event=merge_group&status=failure&created={created}", "workflow_runs", ct);
         }
         // A target that has not copied the gate workflow, or has renamed it, has no such runs to report.
@@ -268,10 +272,74 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         {
             // The queue branch names the entry's own pull request, which is the one the queue removes when the gate fails it.
             if (QueueBranch.Match(Text(run, "head_branch") ?? "") is not { Success: true } match) continue;
+            var at = Date(run, "run_started_at") ?? Date(run, "created_at") ?? since;
+            if (at < since) continue;
             blocked.Add(new(run.GetProperty("id").GetInt64(), int.Parse(match.Groups["number"].Value, System.Globalization.CultureInfo.InvariantCulture),
-                Text(run, "head_branch")!, Date(run, "run_started_at") ?? Date(run, "created_at") ?? since));
+                Text(run, "head_branch")!, at, Attempt(run)));
         }
         return blocked.OrderBy(b => b.At).ToArray();
+    }
+
+    /// <summary>
+    /// How long before a lock opened a merge group's gate run may have been created and still be reported as removed by this
+    /// lock. It bounds what <see cref="GateBlocks"/> reads: a group waits in the queue for as long as its other required checks
+    /// take, and a day is well past any of them (ADR-016).
+    /// </summary>
+    public static readonly TimeSpan QueueLag = TimeSpan.FromHours(24);
+
+    static int Attempt(JsonElement run) =>
+        run.TryGetProperty("run_attempt", out var attempt) && attempt.ValueKind == JsonValueKind.Number ? attempt.GetInt32() : 1;
+
+    public async Task<IReadOnlyList<QueuedGroup>> QueuedGroups(string repo, CancellationToken ct)
+    {
+        JsonElement refs;
+        // Matching refs, not the branch list: the queue branches are a prefix, and a repository's other branches are none of
+        // this sweep's business.
+        try { refs = await Send(HttpMethod.Get, $"repos/{repo}/git/matching-refs/heads/{QueuePrefix}", null, ct); }
+        // An empty queue answers with an empty array, but a repository that has never had one can answer 404.
+        catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.NotFound) { return []; }
+        if (refs.ValueKind != JsonValueKind.Array) return [];
+        var groups = new List<QueuedGroup>();
+        foreach (var item in refs.EnumerateArray())
+        {
+            var branch = (Text(item, "ref") ?? "").StartsWith("refs/heads/", StringComparison.Ordinal)
+                ? Text(item, "ref")!["refs/heads/".Length..] : Text(item, "ref") ?? "";
+            if (!item.TryGetProperty("object", out var head) || Text(head, "sha") is not { } sha) continue;
+            var match = QueueBranch.Match(branch);
+            groups.Add(new(branch, sha, match.Success
+                ? int.Parse(match.Groups["number"].Value, System.Globalization.CultureInfo.InvariantCulture) : null));
+        }
+        return groups;
+    }
+
+    /// <summary>The ref prefix of the merge queue's temporary branches for <c>main</c> (A-7, R-22).</summary>
+    public const string QueuePrefix = "gh-readonly-queue/main/";
+
+    public async Task<IReadOnlyList<GateRun>> GateRuns(string repo, string sha, CancellationToken ct)
+    {
+        try
+        {
+            return (await Pages($"repos/{repo}/actions/workflows/{GateWorkflow}/runs?event=merge_group&head_sha={sha}", "workflow_runs", ct))
+                .Select(r => new GateRun(r.GetProperty("id").GetInt64(), Text(r, "status") ?? "", Text(r, "conclusion"),
+                    // The latest attempt's start, so a run this sweep has already re-run is not re-run again.
+                    Date(r, "run_started_at") ?? Date(r, "created_at") ?? DateTimeOffset.MinValue))
+                .OrderByDescending(r => r.Id).ToArray();
+        }
+        // A target that has not copied the gate workflow, or has renamed it, has no gate to re-run.
+        catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.NotFound) { return []; }
+    }
+
+    public async Task<string?> Rerun(string repo, long runId, CancellationToken ct)
+    {
+        try
+        {
+            await Send(HttpMethod.Post, $"repos/{repo}/actions/runs/{runId}/rerun", null, ct);
+            return null;
+        }
+        // 403 is GitHub refusing to re-run a run that is already running, which the next cycle sees as the new attempt it is.
+        // Nothing here is fatal: the sweep stays owed, so a refusal that lasts becomes the "queue sweep unfinished" alert.
+        catch (HttpRequestException e) { return e.StatusCode is { } status ? $"HTTP {(int)status}" : e.Message; }
+        catch (TaskCanceledException e) when (!ct.IsCancellationRequested) { return $"timed out ({e.Message})"; }
     }
 
     /// <summary>

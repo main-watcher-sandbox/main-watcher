@@ -30,6 +30,7 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
         var cycles = await ActiveCycles(ct);
         var problems = new List<string>();
         var pending = new List<PendingReport>();
+        var sweeps = new List<PendingSweep>();
         var examined = new List<string>();
         int dispatched = 0, errors = 0;
         foreach (var target in targets)
@@ -43,7 +44,12 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
                 }
                 var found = await finder.Find(target, observerFor(target.Repo), ct);
                 examined.Add(target.Repo);
-                if (found is not { } work) continue;
+                // A queue sweep is timed from the generation it owes, and is recorded whether or not it is the reason for this
+                // cycle: a report that keeps failing wins as the reason every time, and would hide the sweep for as long as it
+                // lasted (ADR-016, PR #56 review). Saying nothing here means the cycle looked and found the sweep finished.
+                if (found.Sweep is { Sweep: { } lockIssue } sweep)
+                    sweeps.Add(new(target.Repo, lockIssue, sweep.Reason, sweep.Since ?? default));
+                if (found.Work is not { } work) continue;
                 // A report the Reporter owes is timed from the test job, so a Reporter that keeps failing becomes visible (ADR-013).
                 if (work.Check is { } check) pending.Add(new(target.Repo, check, work.Reason, work.Since ?? default));
                 // Never retried: a lost response may still have started the run, and the next cycle looks again.
@@ -65,6 +71,7 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
         {
             Problems = problems,
             Pending = pending,
+            Sweeps = sweeps,
             Targets = targets.Select(t => t.Repo).ToArray(),
             Examined = examined,
             WatchRunStarted = dispatched > 0 || cycles.Active.Count > 0,

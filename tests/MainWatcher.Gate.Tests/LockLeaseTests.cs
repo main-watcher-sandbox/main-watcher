@@ -9,6 +9,10 @@ public class LockLeaseTests
     [InlineData("<!-- main-watcher lease_until=2026-09-16T16:00:00Z -->", "2026-09-16T16:00:00Z")]
     [InlineData("text\n<!-- main-watcher last_green=abc lease_until=2026-09-16T16:00:00.1234567Z sweep_required=2026-09-16T12:00:00Z -->\nmore", "2026-09-16T16:00:00.1234567Z")]
     [InlineData("<!--main-watcher\nlast_green=abc\nlease_until=2026-09-16T16:00:00Z\n-->", "2026-09-16T16:00:00Z")]
+    // A lock carries a marker per reported merge as well as its own state (ADR-015). Before TS-S17 found it, the gate read
+    // "no readable lease" from the first such report onwards, and so failed open for the rest of that lock's life.
+    [InlineData("**Merged while locked**\n\n- [#46](url) merged without the label. <!-- main-watcher merged_while_locked pr=46 -->"
+        + "\n\n<!-- main-watcher first_red=abc lease_until=2026-09-16T16:00:00Z queue_swept=2026-09-16T12:00:00Z -->", "2026-09-16T16:00:00Z")]
     public void Reads_the_lease_from_the_marker(string body, string expected) =>
         Assert.Equal(DateTimeOffset.Parse(expected), LockLease.ReadLeaseUntil(body));
 

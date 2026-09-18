@@ -21,9 +21,6 @@ public static class Lease
     /// <summary>The marker field recording that a lapse's comment and alert were posted, by the renewal time they name.</summary>
     public const string Reported = "lapse_reported";
 
-    /// <summary>The ADR-016 marker field: merge groups queued before this time still need their gate re-run (#21).</summary>
-    public const string SweepRequired = "sweep_required";
-
     /// <summary><c>lock_lease</c>, as the <c>targets.yml</c> default sets it for every target.</summary>
     public static readonly TimeSpan Default = TimeSpan.FromHours(4);
 

@@ -35,6 +35,21 @@ public interface IGitHubGateway
     /// </summary>
     Task<IReadOnlyList<GateBlock>> GateBlocks(string repo, DateTimeOffset since, CancellationToken ct);
     /// <summary>
+    /// The merge groups still in <paramref name="repo"/>'s queue for <c>main</c>, from the branches GitHub creates for them
+    /// (ADR-016, A-7); empty when the queue is empty.
+    /// </summary>
+    Task<IReadOnlyList<QueuedGroup>> QueuedGroups(string repo, CancellationToken ct);
+    /// <summary>
+    /// The gate runs on one merge group's commit, newest first; empty when the target has no gate workflow (ADR-016).
+    /// </summary>
+    Task<IReadOnlyList<GateRun>> GateRuns(string repo, string sha, CancellationToken ct);
+    /// <summary>
+    /// Asks GitHub to re-run a gate run, which makes its check pending for the merge group again (A-7). The request is
+    /// idempotent in effect: a run already re-running is refused, and the next cycle sees the new attempt.
+    /// </summary>
+    /// <returns>Null when GitHub accepted the request, else why it did not. Never throws: a refusal leaves the sweep owed.</returns>
+    Task<string?> Rerun(string repo, long runId, CancellationToken ct);
+    /// <summary>
     /// The commits <paramref name="after"/> added over <paramref name="before"/>, oldest first, each with the pull request its
     /// subject names, from the <paramref name="skip"/>th onwards, and whether more of the range remains (ADR-015). Null when
     /// GitHub cannot compare the two commits, which a force push can cause.

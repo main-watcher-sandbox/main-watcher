@@ -99,6 +99,16 @@ try
         renewFailed = true;
         Console.Error.WriteLine($"Lease renewal failed: {e.Message}");
     }
+    // ADR-016: the queue sweep discharges what this cycle's report or renewal recorded, and what an earlier one left owed. It
+    // comes before planning, because a group queued before the lock merges onto a red `main` while it waits, and a test that
+    // starts a minute later costs nothing. A failure leaves the obligation in the issue, so the next cycle sweeps again.
+    var queueSweepFailed = false;
+    try { foreach (var line in await planner.SweepQueue(target, reporter.Opened, timeout.Token)) Console.WriteLine(line); }
+    catch (Exception e) when (!timeout.IsCancellationRequested)
+    {
+        queueSweepFailed = true;
+        Console.Error.WriteLine($"Queue sweep failed: {e.Message}");
+    }
     foreach (var walk in reporter.WalkBacks)
     {
         // ADR-003: the walk-back length is logged in the job summary; revisit it if it regularly nears 50.
@@ -142,7 +152,9 @@ try
             Console.Error.WriteLine($"Sweep: the gate fail-open check failed: {e.Message}");
         }
     }
-    return sweepFailed || reconcileFailed || planner.AlertFailures.Count > 0 ? 1 : 0;
+    // A queue sweep that failed fails the run, but never held the test back: the obligation stays in the lock issue, so the
+    // worker asks for another cycle whether or not this one is reported as having failed (ADR-016).
+    return sweepFailed || queueSweepFailed || reconcileFailed || planner.AlertFailures.Count > 0 ? 1 : 0;
 }
 catch (Exception e)
 {

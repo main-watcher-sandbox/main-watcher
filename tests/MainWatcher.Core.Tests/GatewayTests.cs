@@ -543,6 +543,87 @@ public class GatewayTests
         Assert.Contains("event=merge_group&status=failure", query);
     }
 
+    // ADR-016: a group the queue sweep removed was blocked by a re-run of a gate run GitHub still dates by its first attempt,
+    // so the read reaches back past the lock and the window is judged on the attempt that failed.
+    [Fact]
+    public async Task GateBlocksCountsTheAttemptThatFailedAndNamesTheOnesTheSweepReran()
+    {
+        var query = "";
+        var handler = new Handler(request =>
+        {
+            query = request.RequestUri!.PathAndQuery;
+            return Task.FromResult(Response("{\"workflow_runs\":[" +
+                // Queued an hour before the lock, re-run by the sweep and failed inside its window.
+                $"{{\"id\":9,\"head_branch\":\"gh-readonly-queue/main/pr-12-{new string('a', 40)}\",\"run_attempt\":2," +
+                "\"created_at\":\"2026-09-17T08:00:00Z\",\"run_started_at\":\"2026-09-17T10:20:00Z\"}," +
+                // A group the gate failed before this lock existed: not this lock's doing, however recently it was read.
+                $"{{\"id\":7,\"head_branch\":\"gh-readonly-queue/main/pr-3-{new string('b', 40)}\"," +
+                "\"created_at\":\"2026-09-17T08:30:00Z\",\"run_started_at\":\"2026-09-17T08:30:00Z\"}]}"));
+        });
+        using var http = Client(handler);
+        var blocked = await new GitHubGateway(http, 1).GateBlocks("owner/repo", DateTimeOffset.Parse("2026-09-17T09:00:00Z"),
+            TestContext.Current.CancellationToken);
+        var group = Assert.Single(blocked);
+        Assert.Equal(12, group.Pull);
+        Assert.Equal(2, group.Attempt);
+        Assert.Contains("created=%3E%3D2026-09-16T09%3A00", query);
+    }
+
+    // ADR-016: the groups still in the queue, from the branches GitHub makes for them (A-7).
+    [Fact]
+    public async Task QueuedGroupsReadsTheMergeQueueBranchesAndNamesTheirPullRequests()
+    {
+        var path = "";
+        var handler = new Handler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return Task.FromResult(Response("[" +
+                $"{{\"ref\":\"refs/heads/gh-readonly-queue/main/pr-12-{new string('a', 40)}\",\"object\":{{\"sha\":\"{new string('c', 40)}\"}}}}," +
+                // A branch under the prefix that is not a queue entry still has a commit its gate ran on.
+                "{\"ref\":\"refs/heads/gh-readonly-queue/main/other\",\"object\":{\"sha\":\"" + new string('d', 40) + "\"}}]"));
+        });
+        using var http = Client(handler);
+        var groups = await new GitHubGateway(http, 1).QueuedGroups("owner/repo", TestContext.Current.CancellationToken);
+        Assert.Equal("/repos/owner/repo/git/matching-refs/heads/gh-readonly-queue/main/", path);
+        Assert.Equal([12, null], groups.Select(g => g.Pull));
+        Assert.Equal($"gh-readonly-queue/main/pr-12-{new string('a', 40)}", groups[0].Branch);
+        Assert.Equal(new string('c', 40), groups[0].Sha);
+    }
+
+    // The gate runs on one group's commit, dated by the latest attempt: a run this sweep re-ran is not re-run again.
+    [Fact]
+    public async Task GateRunsAreDatedByTheirLatestAttempt()
+    {
+        var query = "";
+        var handler = new Handler(request =>
+        {
+            query = request.RequestUri!.PathAndQuery;
+            return Task.FromResult(Response("{\"workflow_runs\":["
+                + "{\"id\":9,\"status\":\"in_progress\",\"conclusion\":null,\"created_at\":\"2026-09-17T08:00:00Z\","
+                + "\"run_started_at\":\"2026-09-17T10:20:00Z\"}]}"));
+        });
+        using var http = Client(handler);
+        var run = Assert.Single(await new GitHubGateway(http, 1).GateRuns("owner/repo", "abc", TestContext.Current.CancellationToken));
+        Assert.Equal((9L, "in_progress", (string?)null, DateTimeOffset.Parse("2026-09-17T10:20:00Z")), (run.Id, run.Status, run.Conclusion, run.StartedAt));
+        Assert.Contains("event=merge_group&head_sha=abc", query);
+    }
+
+    // A re-run GitHub will not accept is an answer, not an exception: the sweep stays owed and says why.
+    [Theory]
+    [InlineData(HttpStatusCode.OK, null)]
+    [InlineData(HttpStatusCode.Forbidden, "HTTP 403")]
+    public async Task ARefusedRerunIsReportedRatherThanThrown(HttpStatusCode status, string? refusal)
+    {
+        var path = "";
+        using var http = Client(new Handler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return Task.FromResult(status == HttpStatusCode.OK ? Response("") : new HttpResponseMessage(status));
+        }));
+        Assert.Equal(refusal, await new GitHubGateway(http, 1).Rerun("owner/repo", 42, TestContext.Current.CancellationToken));
+        Assert.Equal("/repos/owner/repo/actions/runs/42/rerun", path);
+    }
+
     [Fact]
     public async Task ATargetWithoutTheGateWorkflowBlocksNothing()
     {
