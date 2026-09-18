@@ -618,6 +618,10 @@ covers TS-S14 (a), (b) and (d) and the override part of TS-S3. The
 [issue #20 validation record](../sandbox/issue-20-validation.md) covers TS-S9 and TS-S15: a gate
 failing open on a 401 and on an expired lease, unlabelled merges, a human close before recovery, and
 what the next cycle reported. The
+[issue #21 validation record](../sandbox/issue-21-validation.md) covers TS-S17: a group whose gate
+had passed removed 40 s after the lock opened, a gate still running re-run once it completed,
+a crash right after a lease renewal that still swept, a merge nothing could have stopped, and the
+gate bug the scenario found. The
 [issue #16 validation record](../sandbox/issue-16-validation.md) covers TS-S11: with the worker
 scaled to zero, a sweep tested a push that had waited two hours and raised "trigger worker
 appears down", and a merge group whose gate met an expired lease was reported once. It also
