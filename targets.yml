@@ -5,5 +5,5 @@ targets:
     results_glob: '**/TestResults/*.ctrf.json'
     timeout: 30
     poll_interval: 1
-    notify: [main-watcher-sandbox/sandbox-owners]
+    notify: []
     enabled: true
