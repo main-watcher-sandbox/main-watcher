@@ -10,7 +10,8 @@ Issue #9 supplies one Planner/Reporter cycle in `.github/workflows/watch.yml`.
 It creates and completes `main-watcher` check runs. Issue #10 adds the lock issue:
 a red result opens it and a green result closes it. Issue #11 adds the push list and
 a comment for each later failure. Issue #12 replays interrupted reports and records human
-overrides. Issue #13 gives infrastructure errors a neutral result with an alert. #14 adds the trigger worker,
+overrides. Issue #13 gives infrastructure errors a neutral result with an alert, and #17 tests such a
+head again until it gives one. #14 adds the trigger worker,
 which dispatches this workflow whenever a target has work; see [worker.md](worker.md). #16 adds
 the hourly backup sweep, which processes every enabled target and watches the worker in turn.
 Lease renewal and stale-run cancellation are separate backlog items.
@@ -240,9 +241,12 @@ The check run is completed last, so a replay always ends with it completed.
 ### Sandbox fault injection
 
 `MW_SANDBOX_EXIT_AFTER`, from the watcher repo's variable of that name, makes the cycle exit
-with code 3 straight after the named Reporter write: `create`, `comment`, `update`, `close`
-or `override`, or a comma-separated list. A replay skips the write that was made, so it
-does not stop at the same point again. Set it only in the sandbox replica, and delete it
+with code 3 straight after the named Reporter write, or a comma-separated list of them. The
+issue writes are `create`, `comment`, `update`, `close` and `override`; a replay skips the write
+that was made, so it does not stop at the same point again. The check run's own completion is
+`check:success`, `check:failure` and `check:neutral`, which stop the cycle after the report is
+finished and before the Planner runs: `check:neutral` is ADR-017's boundary, where the retest
+must survive on the rule alone (TS-S18). Set it only in the sandbox replica, and delete it
 after the scenario.
 
 ## Neutral results
@@ -282,7 +286,28 @@ before the check run completes (ADR-013). If an alert or the check-run read for 
 fails, the check run stays `in_progress`, the cycle fails, and the next cycle replays the
 report. Each alert carries the check's hidden `<!-- main-watcher check=<id> -->` marker, and an
 open alert with the same title that already holds it is not repeated, so the replay raises only
-what is missing. A neutral head is tested again after `poll_interval`.
+what is missing.
+
+## Retesting a neutral head
+
+A `neutral` result means the head was not tested, so it stays eligible: once `poll_interval`
+has passed since that check run completed, the next cycle starts a new check run on the same
+commit (ADR-017). There is no separate retry step. Completing the check run as `neutral` is the
+whole of the failure handling, and the retest follows from the rule, so a crash anywhere after
+that write cannot lose it. Each attempt has its own check run, and a commit's result is its
+newest one; the Reporter's walk-back for the last green commit reads them the same way.
+
+The Planner reads the check runs itself, immediately before creating a new one and inside
+`watch.yml`'s per-target concurrency group, so two cycles cannot both start the same retest.
+
+After three `neutral` check runs on one head, with no result since, the head stops being
+eligible and the Planner raises "Head untestable on `owner/repo`", naming the commit and any
+open App lock, which can no longer close on its own (R-23). The alert carries a hidden
+`<!-- main-watcher untestable sha=<sha> -->` marker, so later cycles say nothing more about the
+same head; a head that runs out later comments on the same alert. Testing resumes when a push
+creates a new head, or when `watch.yml` is dispatched with `force: true`, which ignores only
+this cap: a forced dispatch still waits for an active check run and for `poll_interval`, and
+never retests a head whose newest result is `success` or `failure`.
 
 ## Alerts
 
@@ -290,9 +315,11 @@ what is missing. A neutral head is tested again after `poll_interval`.
 `GITHUB_TOKEN` (`issues: write`), since the App token is scoped to the target. An open
 alert with the same title gets a comment instead of a new issue (ADR-012). A lock that
 mentions nobody raises "Lock issues on `owner/repo` mention nobody". Neutral results raise the
-alerts [above](#neutral-results), and a sweep raises the two [above](#backup-sweep). A failed "mention nobody" alert never blocks the lock or the
-check run; the cycle logs it and exits non-zero. A failed neutral-result alert leaves the check
-run `in_progress` for a replay.
+alerts [above](#neutral-results), a head out of attempts raises the one
+[above](#retesting-a-neutral-head), and a sweep raises the two [above](#backup-sweep). A failed
+"mention nobody" or "head untestable" alert never blocks the lock, the check run or the testing
+the cycle does; the cycle logs it and exits non-zero. A failed neutral-result alert leaves the
+check run `in_progress` for a replay.
 
 ## Validation
 
@@ -311,4 +338,7 @@ covers TS-S14 (a), (b) and (d) and the override part of TS-S3. The
 scaled to zero, a sweep tested a push that had waited two hours and raised "trigger worker
 appears down", and a merge group whose gate met an expired lease was reported once. It also
 records what the schedule did: GitHub dropped two of the cron's first three slots and ran the
-third two minutes late, which is C-7 measured rather than assumed.
+third two minutes late, which is C-7 measured rather than assumed. The
+[issue #17 validation record](../sandbox/issue-17-validation.md) covers TS-S12 and TS-S18: a
+cancelled run retested on the same head, three neutral results reaching the cap, the "head
+untestable" alert, and a forced dispatch testing the head again.

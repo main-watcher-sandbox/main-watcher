@@ -48,18 +48,70 @@ public class WatcherTests
     {
         var c = EligibilityFixtures.Named(name);
         Assert.Equal(c.Eligible, Eligibility.CanStart(c.Head, c.Checks, c.PollInterval, c.Now, c.Force));
+        // The cap is a property of the head alone: a forced dispatch starts a capped head without lifting the cap.
+        Assert.Equal(c.Capped, Eligibility.Capped(c.Head, c.Checks));
     }
 
+    // TS-U13: the Planner starts exactly the heads the rule allows, and raises "head untestable" for exactly the capped ones.
     [Theory]
     [MemberData(nameof(EligibilityFixtures.Names), true, MemberType = typeof(EligibilityFixtures))]
     public async Task PlannerStartsOnlyEligibleHeads(string name)
     {
         var c = EligibilityFixtures.Named(name);
         var fake = new FakeGitHub { CheckList = c.Checks.ToList() };
-        var started = await new Planner(fake, () => c.Now).Plan(new() { Repo = "owner/repo", PollInterval = (int)c.PollInterval.TotalMinutes },
+        var watcher = new FakeGitHub();
+        var planner = new Planner(fake, () => c.Now, alerts: new Alerts(watcher, "owner/watcher"));
+        var started = await planner.Plan(new() { Repo = "owner/repo", PollInterval = (int)c.PollInterval.TotalMinutes },
             c.Force, TestContext.Current.CancellationToken);
         Assert.Equal(c.Eligible, started is not null);
         Assert.Equal(c.Eligible ? ["create", "dispatch", "link:42"] : [], fake.Writes);
+        Assert.Empty(planner.AlertFailures);
+        Assert.Equal(c.Capped && !c.Force ? ["create:owner/watcher"] : [], watcher.Order);
+    }
+
+    [Fact]
+    public async Task UntestableHeadNamesTheOpenLockAndIsRaisedOncePerHead()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var capped = EligibilityFixtures.Named("head neutral three times reaches the cap");
+        var fake = new FakeGitHub { CheckList = capped.Checks.ToList() };
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken: tests failed on head", "main-watcher[bot]", "Bot");
+        // Not a lock the gate enforces, so not a lock the alert should name.
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken: opened by hand", "alice", "User");
+        var watcher = new FakeGitHub();
+        var target = new Target { Repo = "owner/repo", PollInterval = (int)capped.PollInterval.TotalMinutes };
+        var planner = new Planner(fake, () => capped.Now, alerts: new Alerts(watcher, "owner/watcher"));
+        Assert.Null(await planner.Plan(target, false, ct));
+        var alert = watcher.Issues["owner/watcher"].Single();
+        Assert.Equal("Head untestable on owner/repo", alert.Issue.Title);
+        Assert.Contains("3 `neutral` check runs", alert.Issue.Body);
+        Assert.Contains("- #1 (https://github.com/owner/repo/issues/1)", alert.Issue.Body);
+        Assert.DoesNotContain("#2", alert.Issue.Body);
+        Assert.Contains("<!-- main-watcher untestable sha=head -->", alert.Issue.Body);
+
+        // A later cycle on the same head says nothing more; a head that runs out afterwards comments on the same alert.
+        Assert.Null(await new Planner(fake, () => capped.Now, alerts: new Alerts(watcher, "owner/watcher")).Plan(target, false, ct));
+        Assert.Equal(["create:owner/watcher"], watcher.Order);
+        var next = new FakeGitHub { CheckList = capped.Checks.Select(r => r with { Sha = "next" }).ToList(), Head = "next" };
+        Assert.Null(await new Planner(next, () => capped.Now, alerts: new Alerts(watcher, "owner/watcher")).Plan(target, false, ct));
+        Assert.Equal(["create:owner/watcher", "comment:1"], watcher.Order);
+        Assert.Contains("No lock is open", watcher.Comments.Single());
+    }
+
+    [Fact]
+    public async Task UntestableAlertFailureIsReportedAndNeverThrows()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var capped = EligibilityFixtures.Named("head neutral three times reaches the cap");
+        var fake = new FakeGitHub { CheckList = capped.Checks.ToList() };
+        var target = new Target { Repo = "owner/repo", PollInterval = (int)capped.PollInterval.TotalMinutes };
+        var planner = new Planner(fake, () => capped.Now, alerts: new Alerts(new FakeGitHub { IssueError = true }, "owner/watcher"));
+        Assert.Null(await planner.Plan(target, false, ct));
+        Assert.Equal(["Head untestable on owner/repo: issues unavailable"], planner.AlertFailures);
+
+        var sinkless = new Planner(fake, () => capped.Now);
+        Assert.Null(await sinkless.Plan(target, false, ct));
+        Assert.Equal(["Head untestable on owner/repo: no alert sink configured"], sinkless.AlertFailures);
     }
 
     // TS-U11. Steps are "name=conclusion" in job order; "-" is a step with no conclusion.
@@ -378,6 +430,19 @@ public class WatcherTests
 
     static readonly WorkflowJob RestoreFailed = new("tests / main-watcher", "completed",
         [new("Restore", "failure"), new("main-watcher-test", "skipped"), new("main-watcher-tests-finished", "skipped"), new("Upload CTRF reports", "success")]);
+
+    // TS-S18: the sandbox switch's boundary. The neutral write is the last thing the report does, so a cycle stopped right
+    // after it has done everything the retest needs; the rule alone brings the head back.
+    [Fact]
+    public async Task TheNeutralCheckRunWriteIsNamedForTheFaultSwitch()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { JobList = [RestoreFailed] };
+        var writes = new List<string>();
+        var reporter = new Reporter(fake, new Alerts(fake, "owner/watcher"), afterWrite: writes.Add);
+        Assert.True(await reporter.Report(Watched, Pending(Sha('b')) with { Id = 7 }, ct));
+        Assert.Equal(["check:neutral"], writes);
+    }
 
     [Fact]
     public async Task InfrastructureErrorAlertsThenCompletesNeutralWithoutALock()
@@ -828,7 +893,7 @@ public class WatcherTests
         // The canonical lock is named by its database ID.
         Assert.Equal(new[] { "comment:2", "close:2:duplicate:1001", "comment:1", "update:1", "complete:failure" }, fake.Order);
         // The hook the sandbox fault switch uses names each write.
-        if (stopAfter is null) Assert.Equal(new[] { "comment", "close", "comment", "update" }, writes);
+        if (stopAfter is null) Assert.Equal(new[] { "comment", "close", "comment", "update", "check:failure" }, writes);
         Assert.Contains("Closing as a duplicate of #1", Assert.Single(fake.Find("owner/repo", 2).Comments).Body);
         Assert.Equal("duplicate", fake.Find("owner/repo", 2).Issue.StateReason);
         var kept = fake.Find("owner/repo", 1);
@@ -1190,7 +1255,8 @@ public class WatcherTests
         public string? Conclusion { get; private set; }
         public string Summary { get; private set; } = "";
         public Task ValidateTarget(Target target, CancellationToken ct) => InvalidCaller ? throw new InvalidDataException("mismatch") : Task.CompletedTask;
-        public Task<string> MainHead(string repo, CancellationToken ct) => Task.FromResult("head");
+        public string Head { get; init; } = "head";
+        public Task<string> MainHead(string repo, CancellationToken ct) => Task.FromResult(Head);
         public List<CheckRun> CheckList { get; init; } = [];
         public bool ChecksError { get; set; }
         public Task<IReadOnlyList<CheckRun>> Checks(string repo, CancellationToken ct) =>
