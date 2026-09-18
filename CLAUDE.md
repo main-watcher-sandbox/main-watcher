@@ -33,7 +33,9 @@ passed, with the trigger worker running throughout. A target run that passes its
 deadline is cancelled, force-cancelled and finally alerted about, and judged from its steps once
 it stops (MainWatcher#18); TS-S16 (g) and (h) passed. Every cycle renews an open lock's lease, and
 renewing one that had run out records the lapse, comments and alerts (MainWatcher#19); TS-S7 passed
-with a 10-minute sandbox lease, except its last clause, which waits on reconciliation (#20).
+with a 10-minute sandbox lease, except its last clause, which waits on reconciliation (#20). That
+run also showed a fixed one-hour renewal interval asking only after so short a lease had expired,
+so the worker now asks at half the lease where that is sooner.
 
 ## Where things are
 

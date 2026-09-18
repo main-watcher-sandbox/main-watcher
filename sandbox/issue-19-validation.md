@@ -146,3 +146,70 @@ Enforcement came straight back:
 | --- | --- |
 | 13:55:45 | PR [sample-target#36](https://github.com/main-watcher-sandbox/sample-target/pull/36), unlabelled, added to the merge queue |
 | 13:56:14 | Merge-group gate [run 35353120272](https://github.com/main-watcher-sandbox/sample-target/actions/runs/35353120272): ``##[error]`main` is locked by #34 … Only PRs labelled `fixes-main` can merge.`` → `failure` |
+
+## The worker asking for a renewal on its own (TS-U5 (d) in the open)
+
+Everything above was driven by pushes and merges, which the worker already flagged before #19.
+The lease is its own kind of work, and with `main` red, reported and unchanged, it was the only
+work left — so the dispatch below was caused by nothing but the lease:
+
+| Time (UTC) | Event |
+| --- | --- |
+| 13:56:36 | The second failing result's cycle renewed the lease to `2026-09-18T14:06:36Z` |
+| 14:00:26 → 14:06:26 | Seven worker cycles, `0 dispatched`: a valid lease is not work |
+| 14:07:27 | `started watch.yml because lock #34: its lease has wanted renewing since 2026-09-18T14:06:36Z.` |
+| 14:08:34 | That cycle: `Lock #34: lease renewed until 2026-09-18T14:18:30Z; it had lapsed at 2026-09-18T14:06:36Z.` |
+
+## What the sandbox found: a fixed hour is wrong for a short lease
+
+Read that last pair again. The worker asked for the renewal at 14:07:27 because the lease had
+expired at 14:06:36, and the cycle renewed it at 14:08:30 — so for about two minutes the gate
+would have let an unlabelled PR through, with the watcher healthy and nobody having abandoned
+anything. The renewal was right to record it as a lapse: the window was real. Every renewal
+would have done the same, because ADR-014's "more than 1 hour" is longer than the sandbox's
+whole ten-minute `lock_lease`, so the first moment the worker could ask was after expiry.
+
+The rule now asks once a lease is an hour old **or halfway through `lock_lease`**, whichever
+comes first. The half only bites below a two-hour lease, so the four-hour default and anything a
+real target would use keep ADR-014's hour exactly; it is what stops a short lease from being
+renewed only after it has already gone. Re-run against the same open lock, with the worker
+rebuilt at [`c1dd9ec`](https://github.com/Actium-Group-Corporation/MainWatcher/commit/c1dd9ec):
+
+| Time (UTC) | Event |
+| --- | --- |
+| 14:14:5x | Lease standing at `2026-09-18T14:18:30Z`, so renewal now wanted from 14:13:30 |
+| 14:15:17 | `started watch.yml because lock #34: its lease has wanted renewing since 2026-09-18T14:13:30Z.` |
+| 14:16:23 | Renewed to `2026-09-18T14:26:23Z` — **two minutes before the old lease would have run out** |
+| — | `lapsed` still reads `14:06:36Z..14:08:30Z`, `lapse_reported` is unchanged, the lock still has three comments and alert #21 no new comment: no lapse happened, so none was reported |
+
+## Cleaning up
+
+| Time (UTC) | Event |
+| --- | --- |
+| 14:17:27 | One commit [`adb96aa`](https://github.com/main-watcher-sandbox/sample-target/commit/adb96aa020ce7844c554db222c98223f6c228489): `failing_tests` back to `[]` and the two merged probe files removed |
+| 14:17:51 | Worker: `started watch.yml because head adb96aa is eligible for a test` |
+| 14:20:58 | The green result closed lock [#34](https://github.com/main-watcher-sandbox/sample-target/issues/34) with `state_reason: completed` and its closing comment |
+
+## State afterwards
+
+- `main` of `sample-target` is `adb96aa`, green, with no open issue and no pending check run.
+- PR #35 is merged (it is the merge made during the lapse, waiting on #20); PR #36 is closed and
+  every `ts-s7-*` branch is deleted.
+- Alert [main-watcher#21](https://github.com/main-watcher-sandbox/main-watcher/issues/21) is left
+  open for reading, with its one comment from the second lapse. Like the earlier scenarios'
+  alerts it can be closed at any time: each cycle judges the condition afresh.
+- The trigger worker runs one replica on `main-watcher-worker:dev`, rebuilt from `c1dd9ec`.
+- The replica's `targets.yml` keeps `lock_lease: 10`, which is what makes this scenario
+  repeatable in minutes. Nothing else about the sandbox was changed, and no variable was set.
+
+## What this does and does not show
+
+Passed: TS-S7 (a); TS-S7 (b) including the "LOCK LEASE EXPIRED" warning, the `gate-fail-open`
+check run and the merge itself; the renewal, the lapse record, the lapse comment, the "lock
+lapsed" alert and the return to enforcement; and TS-U5 (d) as a dispatch the lease alone caused.
+
+Not shown, and not in #19: reporting the merge made during the lapse against the lock
+(reconciliation, ADR-015, #20) and re-running the gate for groups queued during it (ADR-016,
+#21). The lock carries `sweep_required=2026-09-18T13:53:56Z` from the first lapse, which is the
+obligation #21 will read, and TS-S17 (b) will exercise the crash between a renewal and its sweep
+with the `renew` fault-switch name this ticket added.
