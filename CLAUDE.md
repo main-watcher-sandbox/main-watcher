@@ -33,12 +33,14 @@ passed, with the trigger worker running throughout. A target run that passes its
 deadline is cancelled, force-cancelled and finally alerted about, and judged from its steps once
 it stops (MainWatcher#18); TS-S16 (g) and (h) passed. Every cycle renews an open lock's lease, and
 renewing one that had run out records the lapse, comments and alerts (MainWatcher#19); TS-S7 passed
-with a 10-minute sandbox lease, except its last clause, which waits on reconciliation (#20). That
+with a 10-minute sandbox lease, except its last clause, which waited on reconciliation. That
 run also showed a fixed one-hour renewal interval asking only after so short a lease had expired,
-so the worker now asks at half the lease where that is sooner. `CommittedTargetListParses`
-now scopes its "watch no sandbox target" clause to this repo, so the replica is green on the
-list that makes it the sandbox watcher while the clause still guards the file committed here
-(MainWatcher#53).
+so the worker now asks at half the lease where that is sooner. Merges made during a lock are
+reconciled through its closure, judging each pull request by the label it carried when it merged
+(MainWatcher#20); TS-S9 and TS-S15 passed, and the same pass discharged TS-S7's last clause.
+`CommittedTargetListParses` now scopes its "watch no sandbox target" clause to this repo, so the
+replica is green on the list that makes it the sandbox watcher while the clause still guards the
+file committed here (MainWatcher#53).
 
 ## Where things are
 
@@ -70,14 +72,16 @@ list that makes it the sandbox watcher while the clause still guards the file co
   cycle through `watch.yml`. `src/MainWatcher.Worker` is the trigger worker, with its
   Dockerfile and `smoke-test.sh` beside it and its manifests in `deploy/worker`; read
   `docs/worker.md` for its configuration, work rules, health alerts and deployment.
+- `src/MainWatcher.Core/Reconciliation.cs` holds the reconciliation rules; `Planner.Reconcile`
+  runs them.
 - `targets.yml` configures targets. For dispatch, recovery and caller validation, read
   `docs/watcher.md`. Sandbox evidence is in `sandbox/issue-9-validation.md`,
   `sandbox/issue-10-validation.md`, `sandbox/issue-11-validation.md`,
   `sandbox/issue-12-validation.md`, `sandbox/issue-13-validation.md`,
   `sandbox/issue-14-validation.md`, `sandbox/issue-15-validation.md`,
   `sandbox/issue-16-validation.md`, `sandbox/issue-17-validation.md`,
-  `sandbox/issue-18-validation.md`, `sandbox/issue-19-validation.md` and
-  `sandbox/issue-53-validation.md`.
+  `sandbox/issue-18-validation.md`, `sandbox/issue-19-validation.md`,
+  `sandbox/issue-20-validation.md` and `sandbox/issue-53-validation.md`.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
@@ -144,7 +148,8 @@ metrics store (PostgreSQL + Grafana) is deferred.
    2026-09-17 (MainWatcher#12), TS-S16 (a) to (f) the same day (MainWatcher#13), TS-S14 (c)
    with the worker's alerts (MainWatcher#15), TS-S12 and TS-S18 with the neutral retry cap
    (MainWatcher#17), TS-S16 (g) and (h) with the stale-run lifecycle (MainWatcher#18), and
-   TS-S7 with the lock lease (MainWatcher#19), bar its reconciliation clause.
+   TS-S7 with the lock lease (MainWatcher#19), whose reconciliation clause passed with TS-S9 and
+   TS-S15 (MainWatcher#20).
 2. Verify team @-mentions from an App notify the team (TS-S10, R-10).
 3. TS-S13, check-run half: suite time, 5 slowest tests and retry flag, once the Reporter
    exists. The job-summary half passed on 2026-09-16 (MainWatcher#8): reporter v1.3.0 shows
@@ -164,12 +169,12 @@ metrics store (PostgreSQL + Grafana) is deferred.
       interrupted reports without undoing overrides (MainWatcher#12), gives
       infrastructure errors a neutral result with an alert (MainWatcher#13), and alerts when a
       head has spent its neutral retries (MainWatcher#17). Automated
-      triggers, stale-run cancellation (MainWatcher#18) and lease renewal (MainWatcher#19) are
-      built.
+      triggers, stale-run cancellation (MainWatcher#18), lease renewal (MainWatcher#19) and
+      reconciliation through a lock's closure (MainWatcher#20) are built.
    4. Trigger worker. Built (MainWatcher#14), with its health alerts (MainWatcher#15), the
       hourly backup sweep that watches it in turn (MainWatcher#16) and the stale-run deadlines
-      (MainWatcher#18) and the lock leases it asks to have renewed (MainWatcher#19);
-      reconciliation (#20) and queue sweeps (#21) remain.
+      (MainWatcher#18), the lock leases it asks to have renewed (MainWatcher#19) and the closed
+      locks that still owe reconciliation (MainWatcher#20); queue sweeps (#21) remain.
    5. Onboarding docs.
 
 ## Validating the docs after edits
