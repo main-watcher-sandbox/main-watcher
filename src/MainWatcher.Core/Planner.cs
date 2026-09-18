@@ -112,7 +112,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
             (string Name, string Value)[] fields = expired is null
                 ? [(Lease.Until, Markers.Stamp(until))]
                 : [(Lease.Until, Markers.Stamp(until)), (Lease.SweepRequired, Markers.Stamp(now)),
-                    (Lease.Lapsed, Lease.Field([.. Lease.Unreported(issue.Body), (expired.Value, now)]))];
+                    (Lease.Lapsed, Lease.Field([.. Lease.Unreported(issue.Body), new Lease.Lapse(expired.Value, now)]))];
             var body = Markers.Set(issue.Body, fields);
             await github.EditBody(repo, issue.Number, body, ct);
             afterWrite?.Invoke("renew");
@@ -138,8 +138,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
     /// a replay after a crash between them creates nothing new (ADR-012, ADR-014 point 4). Like the neutral result's alert,
     /// these are required writes: a failure is thrown and the marker stays behind, so a later cycle posts what is missing.
     /// </summary>
-    async Task ReportLapse(Target target, Issue issue, string body,
-        IReadOnlyList<(DateTimeOffset From, DateTimeOffset At)> lapses, CancellationToken ct)
+    async Task ReportLapse(Target target, Issue issue, string body, IReadOnlyList<Lease.Lapse> lapses, CancellationToken ct)
     {
         if (alerts is null) throw new InvalidOperationException("A lock lapse cannot be reported without an alert sink.");
         var repo = target.Repo;
@@ -148,10 +147,21 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         foreach (var lapse in lapses.OrderBy(l => l.At))
         {
             var key = $"<!-- main-watcher {Lease.Lapsed}={Markers.Stamp(lapse.From)}..{Markers.Stamp(lapse.At)} -->";
-            var what = $"This lock's lease ran out at {Markers.Stamp(lapse.From)} and was renewed at {Markers.Stamp(lapse.At)}, "
-                + $"{(lapse.At - lapse.From).TotalMinutes:0} minutes later. While a lease is expired the gate fails open, so the "
-                + "merge queue accepted pull requests without the `fixes-main` label during that window (ADR-014). The lock is "
-                + "enforced again now.";
+            // Three separate claims, because each can be false of the others' shape: what happened, what it allowed, and what
+            // is true now. A coalesced span stands for several lapses with enforced stretches between them, and a lock that
+            // has closed since is not enforced at all.
+            var what = lapse.Count > 1
+                ? $"This lock's lease ran out and was renewed {lapse.Count} times between {Markers.Stamp(lapse.From)} and "
+                    + $"{Markers.Stamp(lapse.At)}. Main Watcher could not report each lapse as it happened, so they are "
+                    + "recorded together and this window covers them all."
+                : $"This lock's lease ran out at {Markers.Stamp(lapse.From)} and was renewed at {Markers.Stamp(lapse.At)}, "
+                    + $"{(lapse.At - lapse.From).TotalMinutes:0} minutes later.";
+            what += " While a lease is expired the gate fails open, so the merge queue accepted pull requests without the "
+                + "`fixes-main` label during that window (ADR-014). "
+                + (issue.State == "open"
+                    ? "The lock is enforced again now."
+                    : "This lock has closed since, so nothing is enforcing it now; the window is recorded for the merges made "
+                        + "in it.");
             if (!comments.Any(c => c.Body.Contains(key, StringComparison.Ordinal)))
             {
                 await github.Comment(repo, issue.Number, what + "\n\n" + key, ct);

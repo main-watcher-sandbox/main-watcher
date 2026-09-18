@@ -230,7 +230,7 @@ public class WatcherTests
         await new Planner(fake, () => later, alerts: new Alerts(watcher, "owner/watcher")).Renew(target, ct);
 
         var body = fake.Find("owner/repo", 1).Body;
-        Assert.Equal([(first, died), (died + Lease.Default, later)], Lease.Windows(body));
+        Assert.Equal([new Lease.Lapse(first, died), new Lease.Lapse(died + Lease.Default, later)], Lease.Windows(body));
         Assert.Empty(Lease.Unreported(body));
         Assert.Equal(later, Markers.Time(body, Lease.Reported));
         // One comment per window, each keyed to its own, and the alert names both.
@@ -258,6 +258,10 @@ public class WatcherTests
 
         Assert.Contains("reported 1 lapse(s) it closed still owing", lines.Single());
         Assert.Contains("ran out at", fake.Comments.Single());
+        // The lock is closed, so saying it is enforced again would be false (PR #52 review).
+        Assert.DoesNotContain("enforced again", fake.Comments.Single());
+        Assert.Contains("closed since, so nothing is enforcing it now", fake.Comments.Single());
+        Assert.Contains("closed since, so nothing is enforcing it now", watcher.Issues["owner/watcher"].Single().Body);
         Assert.Single(watcher.Issues["owner/watcher"]);
         // A closed lock needs no lease, so the only body write is the one that marks the debt paid.
         Assert.Equal(["comment:1", "update:1"], fake.Order);
@@ -279,17 +283,46 @@ public class WatcherTests
         Assert.Empty(fake.Order);
     }
 
+    // The marker is bounded, but a bound that dropped an entry would lose a lapse nobody had reported (PR #52 review).
     [Fact]
-    public void TheLapseMarkerIsBoundedAndSkipsUnreadableWindows()
+    public void TheLapseMarkerCoalescesOverflowRatherThanDroppingIt()
     {
-        var windows = Enumerable.Range(0, Lease.MaxWindows + 5)
-            .Select(i => (From: Now.AddHours(i), At: Now.AddHours(i).AddMinutes(1))).ToArray();
-        var kept = Lease.Windows(Markers.Set("Locked.", (Lease.Lapsed, Lease.Field(windows))));
+        var lapses = Enumerable.Range(0, Lease.MaxWindows + 5)
+            .Select(i => new Lease.Lapse(Now.AddHours(i), Now.AddHours(i).AddMinutes(1))).ToArray();
+        var kept = Lease.Windows(Markers.Set("Locked.", (Lease.Lapsed, Lease.Field(lapses))));
+
         Assert.Equal(Lease.MaxWindows, kept.Count);
-        // The oldest are kept: they are the ones reconciliation has to look back at.
-        Assert.Equal(windows.Take(Lease.MaxWindows), kept);
-        Assert.Equal([(windows[0].From, windows[0].At)],
-            Lease.Windows(Markers.Set("Locked.", (Lease.Lapsed, $"{Lease.Field([windows[0]])},not..a-window,{Markers.Stamp(Now)}"))));
+        // Nothing is lost: the oldest six became one span that still covers every moment they recorded, and says so.
+        Assert.Equal(new Lease.Lapse(lapses[0].From, lapses[5].At, 6), kept[0]);
+        Assert.Equal(lapses.TakeLast(Lease.MaxWindows - 1), kept.Skip(1));
+        Assert.Equal(lapses[0].From, kept.Min(l => l.From));
+        Assert.Equal(lapses[^1].At, kept.Max(l => l.At));
+        Assert.Equal(lapses.Length, kept.Sum(l => l.Count));
+        // A coalesced span survives a round trip, and an unreadable entry is skipped rather than taking the rest with it.
+        Assert.Equal(kept, Lease.Windows(Markers.Set("Locked.", (Lease.Lapsed, Lease.Field(kept)))));
+        Assert.Equal([lapses[0]],
+            Lease.Windows(Markers.Set("Locked.", (Lease.Lapsed, $"{Lease.Field([lapses[0]])},not..a-window,{Markers.Stamp(Now)}"))));
+    }
+
+    // A span the marker coalesced stands for several lapses with enforced stretches between them, so it must not be
+    // described as one unbroken window (PR #52 review).
+    [Fact]
+    public async Task ACoalescedSpanSaysHowManyLapsesItStandsFor()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        var span = new Lease.Lapse(Now.AddHours(-9), Now.AddHours(-2), 4);
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+            Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddHours(3))), (Lease.Lapsed, Lease.Field([span]))));
+        var watcher = new FakeGitHub();
+
+        await new Planner(fake, () => Now, alerts: new Alerts(watcher, "owner/watcher")).Renew(new() { Repo = "owner/repo" }, ct);
+
+        var comment = fake.Comments.Single();
+        Assert.Contains($"ran out and was renewed 4 times between {Markers.Stamp(span.From)} and {Markers.Stamp(span.At)}", comment);
+        Assert.Contains("recorded together and this window covers them all", comment);
+        Assert.DoesNotContain("minutes later", comment);
+        Assert.Contains("The lock is enforced again now.", comment);
     }
 
     [Fact]

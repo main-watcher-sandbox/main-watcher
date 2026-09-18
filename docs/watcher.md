@@ -289,10 +289,17 @@ order, so that a cycle stopped at any point resumes where it left off:
    after the renewal cannot hide that the lock was unenforced. A renewal keeps every window that
    is still owed a report and appends its own, comma-separated, so a cycle that dies before
    reporting and a second lapse after it leave both windows on the issue rather than the later
-   one replacing the earlier. The marker holds at most 20, which needs 20 consecutive cycles that
-   each renewed a lapsed lease and then died;
+   one replacing the earlier. The marker holds at most 20 entries, so that an issue body GitHub
+   would reject cannot stop the lock being renewed; past that the two oldest are **coalesced**
+   into one span written `<from>..<to>*<lapses>`, never dropped, so every moment the lock went
+   unenforced stays inside some recorded window and no report is lost. Reaching it needs 20
+   consecutive cycles that each renewed a lapsed lease and then died;
 2. one comment per owed window gives it and says the merge queue accepted unlabelled pull
-   requests during it, carrying `<!-- main-watcher lapsed=<from>..<to> -->`;
+   requests during it, carrying `<!-- main-watcher lapsed=<from>..<to> -->`. It says three
+   separate things — what happened, what that allowed, and what is true now — because each can be
+   false of a shape the others fit: a coalesced span says how many lapses it stands for rather
+   than claiming one unbroken window, and a lock that has closed since is told as closed, not as
+   enforced again;
 3. a `watcher-infra` alert, "Lock lease lapsed on `owner/repo`", carries the same key per
    window, so ADR-012 de-duplication makes a repeat create nothing;
 4. `lapse_reported=<newest renewal time>` records how far the reporting got.

@@ -56,11 +56,18 @@ public static class Lease
         Due(body, lockLease, now) is not { } due || due <= now;
 
     /// <summary>
-    /// How many unreported windows <see cref="Lapsed"/> carries before the oldest crowd out the rest. Reaching it needs that
-    /// many consecutive cycles that each renewed a lapsed lease and then died before reporting it, so it exists only to bound
-    /// the marker. The oldest are kept, because they are the ones reconciliation has to look back at.
+    /// How many entries <see cref="Lapsed"/> carries before the oldest are coalesced. Reaching it needs that many consecutive
+    /// cycles that each renewed a lapsed lease and then died before reporting it, so it exists only to bound the marker
+    /// against an issue body GitHub would reject — which would itself stop the lock being renewed.
     /// </summary>
     public const int MaxWindows = 20;
+
+    /// <summary>
+    /// A stretch in which the lock was open but unenforced: from a lease running out until a renewal put it back.
+    /// <see cref="Count"/> is 1 for a single lapse, and more for a span the marker coalesced, which covers that many lapses
+    /// and the enforced intervals between them.
+    /// </summary>
+    public readonly record struct Lapse(DateTimeOffset From, DateTimeOffset At, int Count = 1);
 
     /// <summary>
     /// The lapses whose comment and alert are still owed, oldest first. They are written after the renewal, so a crash between
@@ -71,18 +78,42 @@ public static class Lease
     /// <see cref="Reported"/> reaches its renewal time.
     /// </para>
     /// </summary>
-    public static IReadOnlyList<(DateTimeOffset From, DateTimeOffset At)> Unreported(string? body) =>
+    public static IReadOnlyList<Lapse> Unreported(string? body) =>
         Markers.Time(body, Reported) is { } reported
             ? Windows(body).Where(w => w.At > reported).ToArray() : Windows(body);
 
-    /// <summary>The lapse windows <see cref="Lapsed"/> holds, oldest first; unreadable ones are skipped.</summary>
-    public static IReadOnlyList<(DateTimeOffset From, DateTimeOffset At)> Windows(string? body) =>
+    /// <summary>The lapses <see cref="Lapsed"/> holds, oldest first; unreadable entries are skipped.</summary>
+    public static IReadOnlyList<Lapse> Windows(string? body) =>
         (Markers.Field(body, Lapsed) ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)
-            .Select(w => w.Split("..") is [var from, var at] && Markers.Read(from) is { } start && Markers.Read(at) is { } end
-                ? (From: start, At: end) : default)
-            .Where(w => w != default).ToArray();
+            .Select(Read).OfType<Lapse>().OrderBy(w => w.At).ToArray();
 
-    /// <summary>The <see cref="Lapsed"/> value holding <paramref name="windows"/>, bounded by <see cref="MaxWindows"/>.</summary>
-    public static string Field(IEnumerable<(DateTimeOffset From, DateTimeOffset At)> windows) =>
-        string.Join(",", windows.Take(MaxWindows).Select(w => $"{Markers.Stamp(w.From)}..{Markers.Stamp(w.At)}"));
+    /// <summary><c>&lt;from&gt;..&lt;at&gt;</c>, or <c>&lt;from&gt;..&lt;at&gt;*&lt;count&gt;</c> for a coalesced span.</summary>
+    static Lapse? Read(string entry)
+    {
+        if (entry.Split("..") is not [var from, var rest] || Markers.Read(from) is not { } start) return null;
+        var (at, count) = rest.Split('*') is [var time, var repeats]
+            && int.TryParse(repeats, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n)
+            && n > 1 ? (time, n) : (rest, 1);
+        return Markers.Read(at) is { } end ? new Lapse(start, end, count) : null;
+    }
+
+    /// <summary>
+    /// The <see cref="Lapsed"/> value holding <paramref name="lapses"/>, bounded by <see cref="MaxWindows"/> entries.
+    /// <para>
+    /// Overflow is coalesced, never dropped: the two oldest entries become one span covering both, which keeps every moment
+    /// the lock went unenforced inside some recorded window, so no reporting obligation is lost and reconciliation still has
+    /// the whole range to look back at. The span says how many lapses it stands for, so what is reported about it stays true.
+    /// </para>
+    /// </summary>
+    public static string Field(IEnumerable<Lapse> lapses)
+    {
+        var all = lapses.OrderBy(l => l.At).ToList();
+        while (all.Count > MaxWindows)
+        {
+            all[0] = new(all[0].From, all[1].At > all[0].At ? all[1].At : all[0].At, all[0].Count + all[1].Count);
+            all.RemoveAt(1);
+        }
+        return string.Join(",", all.Select(l =>
+            $"{Markers.Stamp(l.From)}..{Markers.Stamp(l.At)}" + (l.Count > 1 ? $"*{l.Count}" : "")));
+    }
 }
