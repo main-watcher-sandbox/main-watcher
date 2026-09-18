@@ -13,6 +13,9 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
     Func<TimeSpan, CancellationToken, Task>? delay = null, Alerts? alerts = null, string botLogin = Reporter.DefaultBotLogin,
     TimeSpan? queueDeadline = null, bool cancelsRuns = true)
 {
+    /// <summary>The check run's output title while its target run is testing.</summary>
+    public const string TestingTitle = "Tests running";
+
     /// <summary>The check run's output title while its target run is being stopped.</summary>
     public const string StaleTitle = "Stopping a stale target run";
 
@@ -39,7 +42,12 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
             return null;
         }
         await github.ValidateTarget(target, ct);
-        var check = await github.CreateCheck(target.Repo, sha, now, ct);
+        // The target's timeout is recorded with the check run, because it is what the target run about to be dispatched will
+        // carry for its whole life. The deadlines are judged against this value, not against targets.yml as it reads later,
+        // so editing a target's timeout never moves the deadline of a job already running (ADR-013, StaleRun.TestTimeout).
+        var check = await github.CreateCheck(target.Repo, sha, now, TestingTitle,
+            Markers.Set($"Main Watcher is testing {Markdown.Commit(target.Repo, sha)}.",
+                (StaleRun.TimeoutMinutes, target.Timeout.ToString(System.Globalization.CultureInfo.InvariantCulture))), ct);
         // Never retry a dispatch POST: a lost response may still have started the workflow.
         long? runId;
         try { runId = await github.Dispatch(target.Repo, sha, check.Id, ct); }
@@ -99,6 +107,10 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         var stage = StaleRun.State(target, check, job, now, queueDeadline).Stage;
         if (stage == StaleStage.None) return null;
         var run = $"[target run {runId}](https://github.com/{repo}/actions/runs/{runId})";
+        // Every output this method writes replaces the last one, so the dispatched timeout is carried through each of them:
+        // it is the only record of what this run's deadline was counted from.
+        var kept = Markers.Field(check.Summary, StaleRun.TimeoutMinutes) is { } minutes
+            ? new[] { (StaleRun.TimeoutMinutes, minutes) } : [];
         var asked = Markers.Time(check.Summary, StaleRun.CancelRequested);
         if (asked is null)
         {
@@ -106,7 +118,8 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
                 ? $"did not get a runner within {(queueDeadline ?? StaleRun.DefaultQueueDeadline).TotalMinutes:0} minutes of this check run"
                 : $"has run {StaleRun.RunGrace.TotalMinutes:0} minutes past the deadline its `timeout-minutes` allows";
             await Record(repo, check, $"The {run} {why}, so Main Watcher cancelled it. This check run stays in progress, and no "
-                + $"test starts for `{repo}`, until the run has stopped (ADR-013).", ct, (StaleRun.CancelRequested, Markers.Stamp(now)));
+                + $"test starts for `{repo}`, until the run has stopped (ADR-013).", ct,
+                [.. kept, (StaleRun.CancelRequested, Markers.Stamp(now))]);
             return $"Check {check.Id}: target run {runId} passed its {(stage == StaleStage.Queue ? "queue" : "run")} deadline; "
                 + await AskFor(repo, runId, false, ct);
         }
@@ -118,7 +131,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         {
             await Record(repo, check, $"The {run} has not stopped in the {StaleRun.StopWait.TotalMinutes:0} minutes since it was "
                 + "cancelled, so Main Watcher force-cancelled it. This check run stays in progress until the run stops (ADR-013).",
-                ct, (StaleRun.CancelRequested, Markers.Stamp(asked.Value)), (StaleRun.ForceCancelRequested, Markers.Stamp(now)));
+                ct, [.. kept, (StaleRun.CancelRequested, Markers.Stamp(asked.Value)), (StaleRun.ForceCancelRequested, Markers.Stamp(now))]);
             return $"Check {check.Id}: target run {runId} outlived its cancel; " + await AskFor(repo, runId, true, ct);
         }
         // The alert comes before the request it escalates: a force-cancel that keeps failing is exactly what it exists for.

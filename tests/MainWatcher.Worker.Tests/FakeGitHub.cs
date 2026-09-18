@@ -66,7 +66,7 @@ sealed class FakeGitHub : IGitHubGateway
         Task.FromResult<IReadOnlyList<Push>>(Activity.Take(limit).ToArray());
     public Task<int?> CommitCount(string repo, string before, string after, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<FailOpen>> FailOpens(string repo, DateTimeOffset since, CancellationToken ct) => throw new NotSupportedException();
-    public Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct) => throw new NotSupportedException();
+    public Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, string title, string summary, CancellationToken ct) => throw new NotSupportedException();
     public Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct) => throw new NotSupportedException();
     public Task Link(string repo, long checkId, long runId, CancellationToken ct) => throw new NotSupportedException();
     public Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct) => throw new NotSupportedException();

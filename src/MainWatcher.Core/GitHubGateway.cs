@@ -190,8 +190,9 @@ public sealed class GitHubGateway(HttpClient http, long appId,
 
     static bool IsSha(string text) => text.Length == 40 && text.All(char.IsAsciiHexDigit);
 
-    public async Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct) =>
-        Check(await Send(HttpMethod.Post, $"repos/{repo}/check-runs", new { name = CheckName, head_sha = sha, status = "in_progress", started_at = now }, ct));
+    public async Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, string title, string summary, CancellationToken ct) =>
+        Check(await Send(HttpMethod.Post, $"repos/{repo}/check-runs",
+            new { name = CheckName, head_sha = sha, status = "in_progress", started_at = now, output = new { title, summary } }, ct));
 
     public async Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct)
     {

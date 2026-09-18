@@ -1193,6 +1193,53 @@ public class WatcherTests
         Assert.Empty(undated.Order);
     }
 
+    // TS-U15: the run deadline counts from the timeout the run was dispatched with, which the Planner records on the check
+    // run, never from targets.yml as it reads later. Editing a target's timeout must not move a running job's deadline.
+    [Theory]
+    // Dispatched at 120 minutes: the deadline is the job's start + 120 + 20 + 10, whatever the target says now.
+    [InlineData(120, 30, 149, false)]
+    [InlineData(120, 30, 150, true)]
+    [InlineData(120, 340, 150, true)]
+    // With nothing recorded — a check run from before the Planner wrote it — the current setting is all there is.
+    [InlineData(null, 30, 59, false)]
+    [InlineData(null, 30, 60, true)]
+    public async Task TheRunDeadlineUsesTheTimeoutTheRunWasDispatchedWith(int? recorded, int configured, int ran, bool stale)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var summary = recorded is { } minutes
+            ? Markers.Set("", (StaleRun.TimeoutMinutes, minutes.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+            : null;
+        var check = Testing(600, summary);
+        var target = new Target { Repo = "owner/repo", Timeout = configured, PollInterval = 15 };
+        var fake = new FakeGitHub { JobList = [Running(ran)] };
+        Assert.Equal(stale, await Stopper(fake).Stop(target, check, ct) is not null);
+        Assert.Equal(stale ? ["output:7", "cancel:41"] : [], fake.Order);
+        // The worker reads the same check run, so it flags exactly what the Planner would cancel (TS-U5 (c)).
+        var worker = new FakeGitHub { CheckList = [check], JobList = [Running(ran)] };
+        Assert.Equal(stale, await new WorkFinder(() => Now).Find(target, worker, ct) is not null);
+    }
+
+    [Fact]
+    public async Task ThePlannerRecordsTheDispatchedTimeoutAndCarriesItThroughEveryStopWrite()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        var target = new Target { Repo = "owner/repo", Timeout = 120, PollInterval = 15 };
+        var started = await new Planner(fake, () => Now).Plan(target, false, ct);
+        Assert.Equal("120", Markers.Field(started!.Summary, StaleRun.TimeoutMinutes));
+        Assert.Equal(Planner.TestingTitle, fake.Title);
+
+        // The cancel and force-cancel outputs replace that one, so each must carry the value forward: it is the only record
+        // of what the deadline was counted from.
+        var queued = new FakeGitHub { JobList = [Queued()] };
+        await Stopper(queued).Stop(target, Testing(30, fake.Summary), ct);
+        Assert.Equal("120", Markers.Field(queued.Summary, StaleRun.TimeoutMinutes));
+        var forcing = new FakeGitHub { JobList = [Queued()] };
+        await Stopper(forcing, minutes: 15).Stop(target, Testing(45, queued.Summary), ct);
+        Assert.Equal("120", Markers.Field(forcing.Summary, StaleRun.TimeoutMinutes));
+        Assert.NotNull(Markers.Time(forcing.Summary, StaleRun.ForceCancelRequested));
+    }
+
     [Fact]
     public async Task CancelIsRepeatedAndThenForcedFifteenMinutesLater()
     {
@@ -1461,7 +1508,14 @@ public class WatcherTests
         public Task<IReadOnlyList<FailOpen>> FailOpens(string repo, DateTimeOffset since, CancellationToken ct) =>
             FailOpenError ? throw new HttpRequestException("gate runs unavailable")
                 : Task.FromResult<IReadOnlyList<FailOpen>>(FailOpenRuns.Where(f => f.At >= since).ToArray());
-        public Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct) { Writes.Add("create"); return Task.FromResult(new CheckRun(1, sha, "in_progress", null, now, null, null)); }
+        public Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, string title, string summary, CancellationToken ct)
+        {
+            Writes.Add("create");
+            Title = title;
+            Summary = summary;
+            // GitHub returns the check run it created, output and all, which is how the Planner's caller sees the marker.
+            return Task.FromResult(new CheckRun(1, sha, "in_progress", null, now, null, null, title, summary));
+        }
         public Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct) { Writes.Add("dispatch"); if (DispatchError is not null) throw DispatchError; return Task.FromResult(DispatchId); }
         public Task DispatchWorkflow(string repo, string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct) => throw new NotSupportedException();
         public Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct) => RunsError ? throw new HttpRequestException("unavailable")
