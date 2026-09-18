@@ -25,7 +25,7 @@ public class WorkerTests
     {
         var c = EligibilityFixtures.Named(name);
         var target = new FakeGitHub { Head = c.Head, CheckList = c.Checks.ToList() };
-        var work = await new WorkFinder(() => c.Now).Find(new() { Repo = "owner/repo", PollInterval = (int)c.PollInterval.TotalMinutes }, target, Ct);
+        var work = await new WorkFinder(() => c.Now).Work(new() { Repo = "owner/repo", PollInterval = (int)c.PollInterval.TotalMinutes }, target, Ct);
         Assert.Equal(c.Eligible, work is not null);
     }
 
@@ -38,7 +38,7 @@ public class WorkerTests
     {
         var target = new FakeGitHub { CheckList = [Done(), Pending()] };
         target.JobsByRun[41] = [Job("tests / report", otherJob), Finished(), Job("tests / lint", otherJob)];
-        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        var work = await new WorkFinder(() => Now).Work(Watched(), target, Ct);
         Assert.Contains("main-watcher job of target run 41 has completed", work!.Reason);
     }
 
@@ -49,7 +49,7 @@ public class WorkerTests
     {
         var target = new FakeGitHub { CheckList = [Pending()] };
         target.JobsByRun[41] = [Job("tests / report", "completed"), Job("tests / main-watcher", status)];
-        Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+        Assert.Null(await new WorkFinder(() => Now).Work(Watched(), target, Ct));
     }
 
     // TS-U5 (c): a job that has not completed has two deadlines, and past either one the Planner must stop the run
@@ -61,7 +61,7 @@ public class WorkerTests
     {
         var target = new FakeGitHub { CheckList = [Pending(age: age)] };
         target.JobsByRun[41] = [Job("tests / report", "completed"), Job("tests / main-watcher", "queued")];
-        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        var work = await new WorkFinder(() => Now).Work(Watched(), target, Ct);
         Assert.Equal(expected, work is not null);
         if (!expected) return;
         Assert.Contains("did not start within 30 minutes", work!.Reason);
@@ -80,7 +80,7 @@ public class WorkerTests
         // The marker step has already succeeded, but the job itself has not completed, so no row of the outcome table applies.
         target.JobsByRun[41] = [new("tests / main-watcher", "in_progress",
             [new("main-watcher-test", "failure"), new("main-watcher-tests-finished", "success")], null, Now.AddMinutes(-started))];
-        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        var work = await new WorkFinder(() => Now).Work(Watched(), target, Ct);
         Assert.Equal(expected, work is not null);
         if (expected) Assert.Contains("has run past its deadline", work!.Reason);
     }
@@ -92,13 +92,13 @@ public class WorkerTests
         var target = new FakeGitHub { CheckList = [check] };
         // The job got a runner after its queue deadline passed, so neither deadline holds now; the run is still being stopped.
         target.JobsByRun[41] = [new("tests / main-watcher", "in_progress", [], null, Now.AddMinutes(-1))];
-        var stopping = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        var stopping = await new WorkFinder(() => Now).Work(Watched(), target, Ct);
         Assert.Contains("was asked to stop and has not stopped", stopping!.Reason);
         Assert.Equal(Now.AddMinutes(-5), stopping.Since);
 
         // Once it has stopped, it is a report the Reporter owes, not a stale run: the outcome table judges its steps.
         target.JobsByRun[41] = [Finished(completedAt: Now.AddMinutes(-1))];
-        var owed = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        var owed = await new WorkFinder(() => Now).Work(Watched(), target, Ct);
         Assert.Contains("has completed", owed!.Reason);
         Assert.Equal(7, owed.Check);
     }
@@ -108,8 +108,8 @@ public class WorkerTests
     {
         var target = new FakeGitHub { CheckList = [Pending(age: 10)] };
         target.JobsByRun[41] = [Job("tests / main-watcher", "queued")];
-        Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
-        Assert.NotNull(await new WorkFinder(() => Now, TimeSpan.FromMinutes(10)).Find(Watched(), target, Ct));
+        Assert.Null(await new WorkFinder(() => Now).Work(Watched(), target, Ct));
+        Assert.NotNull(await new WorkFinder(() => Now, TimeSpan.FromMinutes(10)).Work(Watched(), target, Ct));
     }
 
     [Fact]
@@ -117,10 +117,10 @@ public class WorkerTests
     {
         var target = new FakeGitHub { CheckList = [Pending()] };
         target.JobsByRun[41] = null;
-        Assert.Contains("was deleted", (await new WorkFinder(() => Now).Find(Watched(), target, Ct))!.Reason);
+        Assert.Contains("was deleted", (await new WorkFinder(() => Now).Work(Watched(), target, Ct))!.Reason);
         // A completed run with no main-watcher job: the Reporter records the broken contract.
         target.JobsByRun[41] = [];
-        Assert.NotNull(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+        Assert.NotNull(await new WorkFinder(() => Now).Work(Watched(), target, Ct));
     }
 
     [Theory]
@@ -137,7 +137,7 @@ public class WorkerTests
             RunList = [.. Enumerable.Range(0, matchingRuns).Select(i => new WorkflowRun(50 + i, "main-watcher-tests head", check.StartedAt, "queued")),
                 new WorkflowRun(60, "main-watcher-tests other", check.StartedAt, "queued")]
         };
-        Assert.Equal(expected, await new WorkFinder(() => Now).Find(Watched(), target, Ct) is not null);
+        Assert.Equal(expected, await new WorkFinder(() => Now).Work(Watched(), target, Ct) is not null);
         Assert.Equal(["runs:owner/repo:main-watcher-tests.yml"], target.Reads);
     }
 
@@ -145,7 +145,7 @@ public class WorkerTests
     public async Task NothingIsWorkForATestedIdleHead()
     {
         var target = new FakeGitHub { CheckList = [Done("failure"), Done("success", "old")] };
-        Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+        Assert.Null(await new WorkFinder(() => Now).Work(Watched(), target, Ct));
     }
 
     static Issue Lock(int number, DateTimeOffset? until, string author = "main-watcher[bot]", string type = "Bot") =>
@@ -161,7 +161,7 @@ public class WorkerTests
         // A head with a result of its own: the lease is then the only thing left that could need a cycle.
         var target = new FakeGitHub { CheckList = [Done()] };
         target.IssueList.Add(Lock(1, Now.AddMinutes(until)));
-        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        var work = await new WorkFinder(() => Now).Work(Watched(), target, Ct);
         Assert.Equal(expected, work is not null);
         if (!expected) return;
         Assert.Contains("lock #1: its lease has wanted renewing since 2026-09-16T19:00:00Z", work!.Reason);
@@ -177,9 +177,9 @@ public class WorkerTests
         target.IssueList.Add(Lock(1, Now.AddMinutes(6)));
         var short10 = new Target { Repo = "owner/repo", PollInterval = 15, LockLease = TimeSpan.FromMinutes(10) };
         // Half of a ten-minute lease, so the renewal is asked for while the gate is still enforcing the lock, not after.
-        Assert.Null(await new WorkFinder(() => Now).Find(short10, target, Ct));
+        Assert.Null(await new WorkFinder(() => Now).Work(short10, target, Ct));
         target.IssueList[0] = Lock(1, Now.AddMinutes(5));
-        Assert.NotNull(await new WorkFinder(() => Now).Find(short10, target, Ct));
+        Assert.NotNull(await new WorkFinder(() => Now).Work(short10, target, Ct));
     }
 
     [Theory]
@@ -189,7 +189,7 @@ public class WorkerTests
     {
         var target = new FakeGitHub { CheckList = [Done()] };
         target.IssueList.Add(Lock(1, until is null ? null : Now.AddMinutes(until.Value)));
-        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        var work = await new WorkFinder(() => Now).Work(Watched(), target, Ct);
         Assert.Equal(expected, work is not null);
         Assert.Null(work!.Since);
     }
@@ -200,9 +200,9 @@ public class WorkerTests
         var target = new FakeGitHub { CheckList = [Done()] };
         target.IssueList.Add(Lock(1, Now.AddMinutes(-1), "alice", "User"));
         target.IssueList.Add(Lock(2, Now.AddMinutes(-1), "other-app[bot]"));
-        Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+        Assert.Null(await new WorkFinder(() => Now).Work(Watched(), target, Ct));
         // A renamed App is still the App: MW_BOT_LOGIN names it, as watch.yml and the gate do.
-        Assert.NotNull(await new WorkFinder(() => Now, botLogin: "other-app[bot]").Find(Watched(), target, Ct));
+        Assert.NotNull(await new WorkFinder(() => Now, botLogin: "other-app[bot]").Work(Watched(), target, Ct));
     }
 
     static Issue ClosedLock(int number, DateTimeOffset closed, string? body = "Locked.", string author = "main-watcher[bot]") =>
@@ -216,7 +216,7 @@ public class WorkerTests
     {
         var target = new FakeGitHub { CheckList = [Done()] };
         target.IssueList.Add(ClosedLock(1, Now.AddMinutes(-30)));
-        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        var work = await new WorkFinder(() => Now).Work(Watched(), target, Ct);
         Assert.Equal("lock #1: it closed without being reconciled", work!.Reason);
         // Dated by the closure, so the sweep can say how long the reports have been owed.
         Assert.Equal(Now.AddMinutes(-30), work.Since);
@@ -234,7 +234,74 @@ public class WorkerTests
         target.IssueList.Add(ClosedLock(2, Now.AddMinutes(-30), "Locked.", "other-app[bot]"));
         // Closed longer ago than reconcile_lookback: not revisited (R-21). The Issues read bounds this by its own window.
         target.IssueList.Add(ClosedLock(3, Now - Reporter.ReconcileLookback - TimeSpan.FromDays(1)));
-        Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+        Assert.Null(await new WorkFinder(() => Now).Work(Watched(), target, Ct));
+    }
+
+    // TS-U12 (ADR-016): while a lock owes a queue sweep, the worker keeps asking for cycles, and times the debt so that the
+    // "queue sweep unfinished" alert can be raised.
+    [Fact]
+    public async Task AnOpenLockOwingAQueueSweepIsWork()
+    {
+        var target = new FakeGitHub { CheckList = [Done()] };
+        // A lease renewed 40 minutes ago, so nothing but the sweep is owed.
+        var owed = Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(200))),
+            (QueueSweep.Required, Markers.Stamp(Now.AddMinutes(-20))));
+        target.IssueList.Add(Lock(1, null) with { Body = owed });
+        var work = await new WorkFinder(() => Now).Work(Watched(), target, Ct);
+        Assert.Equal("lock #1: its queue sweep for 2026-09-16T18:40:00Z is unfinished", work!.Reason);
+        // Dated by the generation it owes, and named by the lock, which is how the alert times and titles it.
+        Assert.Equal(Now.AddMinutes(-20), work.Since);
+        Assert.Equal(1, work.Sweep);
+        Assert.Null(work.Check);
+
+        // Once the sweep has caught up with that generation, the lock is no longer work.
+        target.IssueList[0] = target.IssueList[0] with
+        {
+            Body = Markers.Set(owed, (QueueSweep.Swept, Markers.Stamp(Now.AddMinutes(-20))))
+        };
+        Assert.Null(await new WorkFinder(() => Now).Work(Watched(), target, Ct));
+    }
+
+    // PR #56 review: only one reason can be the reason, and a report owed is found first. The sweep debt must be seen all the
+    // same, or a Reporter that keeps failing would hide it for as long as it lasted — exactly when groups queued before the
+    // lock are still free to merge.
+    [Fact]
+    public async Task ASweepOwedIsSeenEvenWhenAnotherReasonWinsTheCycle()
+    {
+        var target = new FakeGitHub { CheckList = [Pending(runId: "41", id: 7)] };
+        target.JobsByRun[41] = [Finished(completedAt: Now.AddMinutes(-20))];
+        target.IssueList.Add(Lock(1, Now.AddMinutes(200)) with
+        {
+            Body = Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(200))),
+                (QueueSweep.Required, Markers.Stamp(Now.AddMinutes(-30))))
+        });
+
+        var found = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+
+        // The report is what the cycle is for, and the sweep is still reported, dated by its own generation.
+        Assert.Contains("the main-watcher job of target run 41 has completed", found.Work!.Reason);
+        Assert.Equal(7, found.Work.Check);
+        Assert.Equal("lock #1: its queue sweep for 2026-09-16T18:30:00Z is unfinished", found.Sweep!.Reason);
+        Assert.Equal(Now.AddMinutes(-30), found.Sweep.Since);
+        Assert.Equal(1, found.Sweep.Sweep);
+
+        // Saying nothing is what says the sweep has finished, so it is only ever silent once a cycle has looked and found so.
+        target.IssueList[0] = target.IssueList[0] with
+        {
+            Body = Markers.Set(target.IssueList[0].Body, (QueueSweep.Swept, Markers.Stamp(Now.AddMinutes(-30))))
+        };
+        Assert.Null((await new WorkFinder(() => Now).Find(Watched(), target, Ct)).Sweep);
+    }
+
+    // A closed lock enforces nothing, so re-running a gate for it would block nothing: its sweep debt asks for no cycle.
+    [Fact]
+    public async Task AClosedLockOwesNoQueueSweep()
+    {
+        var target = new FakeGitHub { CheckList = [Done()] };
+        target.IssueList.Add(ClosedLock(1, Now.AddMinutes(-30),
+            Markers.Set("Locked.", (QueueSweep.Required, Markers.Stamp(Now.AddMinutes(-20))),
+                (Reconciliation.Complete, Reconciliation.CompleteValue))));
+        Assert.Null(await new WorkFinder(() => Now).Work(Watched(), target, Ct));
     }
 
     [Fact]
@@ -243,7 +310,7 @@ public class WorkerTests
         var target = new FakeGitHub { CheckList = [Pending()] };
         target.JobsByRun[41] = [Finished()];
         target.IssueList.Add(Lock(1, Now.AddMinutes(-1)));
-        Assert.Contains("has completed", (await new WorkFinder(() => Now).Find(Watched(), target, Ct))!.Reason);
+        Assert.Contains("has completed", (await new WorkFinder(() => Now).Work(Watched(), target, Ct))!.Reason);
     }
 
     sealed class Setup
@@ -317,6 +384,34 @@ public class WorkerTests
             new PendingReport("owner/deleted", 8, "check 8: target run 42 was deleted", default)], seen.Pending);
         Assert.True(seen.WatchRunStarted);
         Assert.Null(seen.WatchRunCompleted);
+    }
+
+    // PR #56 review: the cycle must hand both debts to the alerts, not only the one it dispatched for. Nothing else produces
+    // this combination in production, which is why it is tested here and not only against WorkerAlerts.
+    [Fact]
+    public async Task ACycleReportsASweepOwedBesideTheReportItDispatchedFor()
+    {
+        var setup = new Setup("targets:\n  - repo: owner/stuck\n  - repo: owner/idle");
+        var stuck = new FakeGitHub { CheckList = [Pending(runId: "41", id: 7)] };
+        stuck.JobsByRun[41] = [Finished(completedAt: Now.AddMinutes(-20))];
+        stuck.IssueList.Add(new(1, "main is broken",
+            Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(200))),
+                (QueueSweep.Required, Markers.Stamp(Now.AddMinutes(-30)))),
+            "main-watcher[bot]", "Bot", "https://github.com/owner/stuck/issues/1"));
+        setup.Targets["owner/stuck"] = stuck;
+        // An idle target with a lock that owes nothing: it is examined, so its sweep clock would be cleared, not started.
+        var idle = new FakeGitHub { CheckList = [Done()] };
+        idle.IssueList.Add(new(2, "main is broken", Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(200)))),
+            "main-watcher[bot]", "Bot", "https://github.com/owner/idle/issues/2"));
+        setup.Targets["owner/idle"] = idle;
+
+        var seen = (await setup.Cycle.Run(Ct)).Observations;
+
+        Assert.Equal(["owner/stuck"], setup.Dispatched);
+        Assert.Equal([new PendingReport("owner/stuck", 7, "check 7: the main-watcher job of target run 41 has completed",
+            Now.AddMinutes(-20))], seen.Pending);
+        Assert.Equal([new PendingSweep("owner/stuck", 1, "lock #1: its queue sweep for 2026-09-16T18:30:00Z is unfinished",
+            Now.AddMinutes(-30))], seen.Sweeps);
     }
 
     // The newest completion's own time, not "a completed run was seen": the same run is read again on every cycle for two hours.
@@ -402,4 +497,14 @@ public class WorkerTests
         health.Finished(Now.AddMinutes(6), new(1, 0, 1));
         Assert.True(health.IsLive(Now.AddMinutes(13)));
     }
+}
+
+static class WorkFinderTestExtensions
+{
+    /// <summary>
+    /// The one reason a cycle would be dispatched for, which is what most of these cases are about. What the target owes
+    /// besides that reason is the subject of its own tests.
+    /// </summary>
+    public static async Task<Work?> Work(this WorkFinder finder, Target target, IGitHubGateway github, CancellationToken ct) =>
+        (await finder.Find(target, github, ct)).Work;
 }

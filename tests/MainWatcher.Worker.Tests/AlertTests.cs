@@ -256,6 +256,41 @@ public class AlertTests
         Assert.Single(setup.Comments("Reporting pending on owner/repo"));
     }
 
+    // ADR-016 point 2: a sweep still owed 15 minutes after the lock opened or its lapsed lease was renewed is made visible,
+    // because until it finishes a group queued before the lock can still merge onto a red `main`.
+    [Fact]
+    public async Task AQueueSweepOwedForMoreThanFifteenMinutesAlerts()
+    {
+        const string why = "lock #1: its queue sweep for 2026-09-16T19:00:00Z is unfinished";
+        CycleObservations Owing() => new()
+        {
+            Targets = ["owner/repo"],
+            Examined = ["owner/repo"],
+            Sweeps = [new("owner/repo", 1, why, Start)]
+        };
+        var setup = new Setup();
+        setup.Now = Start.Add(WorkerAlerts.SweepUnfinishedAfter).AddSeconds(-1);
+        await setup.Cycle(Owing());
+        Assert.Empty(setup.Titles);
+
+        setup.Now = Start.Add(WorkerAlerts.SweepUnfinishedAfter);
+        await setup.Cycle(Owing());
+        Assert.Equal(["Queue sweep unfinished on owner/repo"], setup.Titles);
+        Assert.Contains(why, setup.Doorbell.IssueList[0].Body);
+        Assert.Contains("(15 minutes)", setup.Doorbell.IssueList[0].Body);
+
+        // A report owed at the same time is its own condition, so neither alert hides the other.
+        setup.Now = Start.AddMinutes(20);
+        await setup.Cycle(Owing() with { Pending = [new("owner/repo", 7, Reason, Start)] });
+        Assert.Equal(["Queue sweep unfinished on owner/repo", "Reporting pending on owner/repo"], setup.Titles);
+
+        // Once a cycle finds the sweep finished, the condition clears without a second alert.
+        setup.Now = Start.AddHours(3);
+        await setup.Cycle(Reported);
+        await setup.Cycle(Reported);
+        Assert.Empty(setup.Comments("Queue sweep unfinished on owner/repo"));
+    }
+
     [Fact]
     public async Task ATargetThatLeavesTargetsYmlIsNoLongerOwedAnything()
     {

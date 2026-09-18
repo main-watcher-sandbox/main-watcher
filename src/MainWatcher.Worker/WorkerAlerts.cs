@@ -8,6 +8,12 @@ namespace MainWatcher.Worker;
 public sealed record PendingReport(string Repo, long Check, string Reason, DateTimeOffset Since);
 
 /// <summary>
+/// A queue sweep a lock still owes: merge groups queued before it may yet merge onto a red <c>main</c> (ADR-016).
+/// </summary>
+/// <param name="Since">The generation owed, which is when the lock opened or its lapsed lease was renewed.</param>
+public sealed record PendingSweep(string Repo, int Issue, string Reason, DateTimeOffset Since);
+
+/// <summary>
 /// What one cycle saw, beyond its counts. <see cref="WatchRunStarted"/> stays false and <see cref="WatchRunCompleted"/> null
 /// when the run list could not be read, so an unreadable list never moves the "no run completed" clock either way.
 /// </summary>
@@ -16,6 +22,8 @@ public sealed record CycleObservations
     /// <summary>What went wrong, one line each, for the alert body.</summary>
     public IReadOnlyList<string> Problems { get; init; } = [];
     public IReadOnlyList<PendingReport> Pending { get; init; } = [];
+    /// <summary>Locks whose queue sweep is unfinished (ADR-016).</summary>
+    public IReadOnlyList<PendingSweep> Sweeps { get; init; } = [];
     /// <summary>The enabled targets of this cycle. One that is gone from <c>targets.yml</c> is no longer owed anything.</summary>
     public IReadOnlyCollection<string> Targets { get; init; } = [];
     /// <summary>Targets whose work was looked at. A target skipped because its own cycle is running keeps its pending state.</summary>
@@ -34,7 +42,8 @@ public sealed record CycleObservations
 ///   <item>no <c>watch.yml</c> run completed in 2 h, while runs were being started;</item>
 ///   <item>a credential GitHub refuses;</item>
 ///   <item>less than 20% of a rate-limit budget left (R-13);</item>
-///   <item>a report pending for more than 15 minutes (ADR-013 point 6).</item>
+///   <item>a report pending for more than 15 minutes (ADR-013 point 6);</item>
+///   <item>a queue sweep owed for more than 15 minutes (ADR-016 point 2).</item>
 /// </list>
 /// A condition that still holds raises nothing again until <see cref="Repeat"/> has passed, and <see cref="Core.Alerts"/> then
 /// comments on the open issue rather than opening a second one (TS-U7). A condition that clears is forgotten, so its next
@@ -52,6 +61,9 @@ public sealed class WorkerAlerts(Alerts alerts, IAccessHealth access, ILogger lo
     /// <summary>How long a report may stay pending before it is made visible (ADR-013 point 6).</summary>
     public static readonly TimeSpan ReportPendingAfter = TimeSpan.FromMinutes(15);
 
+    /// <summary>How long a queue sweep may stay owed before it is made visible (ADR-016 point 2).</summary>
+    public static readonly TimeSpan SweepUnfinishedAfter = QueueSweep.UnfinishedAfter;
+
     /// <summary>A condition that still holds is repeated at most this often, so a lasting fault is one comment an hour.</summary>
     public static readonly TimeSpan Repeat = TimeSpan.FromHours(1);
 
@@ -59,7 +71,8 @@ public sealed class WorkerAlerts(Alerts alerts, IAccessHealth access, ILogger lo
     public const double RateLimitFloor = 0.2;
 
     readonly Dictionary<string, DateTimeOffset> firing = new(StringComparer.Ordinal);
-    readonly Dictionary<string, PendingReport> owed = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, OwedWork> reports = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, OwedWork> sweeps = new(StringComparer.OrdinalIgnoreCase);
     readonly List<string> streak = [];
     int consecutiveErrors;
     DateTimeOffset lastCompletedRun = started;
@@ -111,46 +124,60 @@ public sealed class WorkerAlerts(Alerts alerts, IAccessHealth access, ILogger lo
                 + $"({limit.Left * 100:0}%{(limit.Reset is { } reset ? $", resetting at {reset.UtcDateTime:yyyy-MM-dd HH:mm} UTC" : "")}). "
                 + "Reduce the number of targets or raise `check_period` (R-13).", now, ct);
 
-        await Pending(seen, observations is not null, now, ct);
+        var ran = observations is not null;
+        await Owed(seen.Pending.Select(p => new OwedWork(p.Repo, p.Reason, p.Since)).ToArray(), reports, seen, ran, now,
+            ReportPendingAfter, repo => $"Reporting pending on {repo}",
+            work => $"A report has been owed on `{work.Repo}` since {work.Since.UtcDateTime:yyyy-MM-dd HH:mm} UTC "
+                + $"({(now - work.Since).TotalMinutes:0} minutes): {work.Reason}.\n\n"
+                + "The Reporter writes the lock issue before it completes the check run, so an issue write that keeps failing "
+                + "leaves the report owed, and no newer head of this target is tested meanwhile (ADR-013, R-20).", ct);
+
+        await Owed(seen.Sweeps.Select(s => new OwedWork(s.Repo, s.Reason, s.Since)).ToArray(), sweeps, seen, ran, now,
+            SweepUnfinishedAfter, repo => $"Queue sweep unfinished on {repo}",
+            work => $"A queue sweep has been owed on `{work.Repo}` since {work.Since.UtcDateTime:yyyy-MM-dd HH:mm} UTC "
+                + $"({(now - work.Since).TotalMinutes:0} minutes): {work.Reason}.\n\n"
+                + "A merge group that passed the gate before the lock opened, or during a lease lapse, is re-checked by "
+                + "re-running its gate (ADR-016). Until the sweep finishes, such a group can still merge onto a red `main`, "
+                + "and it would be reported afterwards rather than blocked. The sweep stops for a gate run that is still "
+                + "going, and for one GitHub refuses to re-run: the watcher's own run log says which.", ct);
     }
 
+    /// <summary>One target's unpaid debt, as every one of these conditions is timed and worded.</summary>
+    sealed record OwedWork(string Repo, string Reason, DateTimeOffset Since);
+
     /// <summary>
-    /// Alerts for each report pending longer than <see cref="ReportPendingAfter"/>, one condition per target so a second stuck
-    /// target is not hidden by the first.
+    /// Alerts for each target whose debt has been owed longer than <paramref name="after"/>, one condition per target so a
+    /// second stuck target is not hidden by the first.
     /// <para>
-    /// Every target still owing a report is judged, whether or not this cycle looked at it. A target whose own
-    /// <c>watch.yml</c> run is queued or running is skipped by the cycle (ADR-010), so judging only what the cycle saw would
-    /// hold the alert back exactly when reporting is slowest: a Reporter that is itself waiting for a runner.
+    /// Every target still owing is judged, whether or not this cycle looked at it. A target whose own <c>watch.yml</c> run is
+    /// queued or running is skipped by the cycle (ADR-010), so judging only what the cycle saw would hold the alert back
+    /// exactly when the work is slowest: a watcher run that is itself waiting for a runner.
     /// </para>
     /// </summary>
+    /// <param name="tracked">What this condition has seen owed, by target, so a debt survives the cycles that do not name it.</param>
     /// <param name="ran">Whether the cycle got far enough to name its targets. A cycle that threw says nothing about them.</param>
-    async Task Pending(CycleObservations seen, bool ran, DateTimeOffset now, CancellationToken ct)
+    async Task Owed(IReadOnlyList<OwedWork> found, Dictionary<string, OwedWork> tracked, CycleObservations seen, bool ran,
+        DateTimeOffset now, TimeSpan after, Func<string, string> title, Func<OwedWork, string> body, CancellationToken ct)
     {
-        foreach (var report in seen.Pending)
-            // The job's own completion time survives a restart; without one, the first cycle that saw the report owed dates it.
-            owed[report.Repo] = report with
+        foreach (var work in found)
+            // The work's own time survives a restart; without one, the first cycle that saw it owed dates it.
+            tracked[work.Repo] = work with
             {
-                Since = report.Since != default ? report.Since
-                    : owed.TryGetValue(report.Repo, out var known) ? known.Since : now
+                Since = work.Since != default ? work.Since
+                    : tracked.TryGetValue(work.Repo, out var known) ? known.Since : now
             };
-        // A target the cycle looked at and found owing nothing has been reported, and one no longer configured owes nothing.
+        // A target the cycle looked at and found owing nothing has paid, and one no longer configured owes nothing.
         // A target merely skipped for its own running cycle is neither, and keeps its clock.
-        foreach (var gone in owed.Keys.Except(seen.Pending.Select(p => p.Repo), StringComparer.OrdinalIgnoreCase)
+        foreach (var gone in tracked.Keys.Except(found.Select(w => w.Repo), StringComparer.OrdinalIgnoreCase)
             .Where(repo => seen.Examined.Contains(repo, StringComparer.OrdinalIgnoreCase)
                 || ran && !seen.Targets.Contains(repo, StringComparer.OrdinalIgnoreCase)).ToArray())
         {
-            owed.Remove(gone);
-            await Judge(false, PendingTitle(gone), "", now, ct);
+            tracked.Remove(gone);
+            await Judge(false, title(gone), "", now, ct);
         }
-        foreach (var report in owed.Values.ToArray())
-            await Judge(now - report.Since >= ReportPendingAfter, PendingTitle(report.Repo),
-                $"A report has been owed on `{report.Repo}` since {report.Since.UtcDateTime:yyyy-MM-dd HH:mm} UTC "
-                + $"({(now - report.Since).TotalMinutes:0} minutes): {report.Reason}.\n\n"
-                + "The Reporter writes the lock issue before it completes the check run, so an issue write that keeps failing "
-                + "leaves the report owed, and no newer head of this target is tested meanwhile (ADR-013, R-20).", now, ct);
+        foreach (var work in tracked.Values.ToArray())
+            await Judge(now - work.Since >= after, title(work.Repo), body(work), now, ct);
     }
-
-    static string PendingTitle(string repo) => $"Reporting pending on {repo}";
 
     /// <summary>Raises <paramref name="title"/> while <paramref name="holds"/>, at most once per <see cref="Repeat"/>.</summary>
     async Task Judge(bool holds, string title, string body, DateTimeOffset now, CancellationToken ct)
