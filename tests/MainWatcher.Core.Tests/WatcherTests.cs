@@ -217,6 +217,21 @@ public class WatcherTests
         Assert.Throws<InvalidDataException>(() => TargetConfiguration.Parse("targets:\n  - repo: owner/repo\n  - repo: OWNER/REPO"));
         Assert.ThrowsAny<Exception>(() => TargetConfiguration.Parse("targets:\n  - repo: owner/repo\n    typo: true"));
         Assert.ThrowsAny<Exception>(() => TargetConfiguration.Parse("targets:\n  - repo: owner/repo\n    enabled: true\n    enabled: false"));
+        // No targets is a valid configuration: the sweep and the worker then have nothing to do.
+        Assert.Empty(TargetConfiguration.Parse("targets: []").Targets);
+    }
+
+    /// <summary>
+    /// The committed <c>targets.yml</c> parses. A file the sweep cannot read shows up only as a failing cycle an hour later,
+    /// so it is checked here, with the parser the cycle and the trigger worker both use.
+    /// </summary>
+    [Fact]
+    public void CommittedTargetListParses()
+    {
+        var targets = TargetConfiguration.Parse(Fixture("targets.yml")).Targets;
+        // The watcher repo watches no sandbox target: the private replica does, and two watchers would race for its
+        // check runs (sandbox/README.md).
+        Assert.DoesNotContain(targets, t => t.Repo.StartsWith("main-watcher-sandbox/", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
