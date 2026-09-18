@@ -286,29 +286,51 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     /// needs a Pull requests permission the <c>main-watcher</c> App does not hold (§8, ADR-008). The subjects are the ones the
     /// gate already matches, and a merge group's own merge commit always carries one.
     /// </remarks>
-    public async Task<IReadOnlyList<MergedCommit>?> MergedCommits(string repo, string before, string after, CancellationToken ct)
+    public async Task<MergedRange?> MergedCommits(string repo, string before, string after, CancellationToken ct)
     {
         if (!IsSha(before) || !IsSha(after) || before.All(c => c == '0') || after.All(c => c == '0')) return null;
-        List<JsonElement> commits;
+        var commits = new List<MergedCommit>();
+        var total = 0;
         try
         {
             // A merge group holds one queue entry's own pull request and everything ahead of it, so the whole range is read,
-            // not only the head commit.
-            commits = (await Pages($"repos/{repo}/compare/{before}...{after}", "commits", ct)).Take(MaxMergedCommits).ToList();
+            // not only the head commit. It is read to the end, because a pull request is named by its **last** commit, the
+            // merge or squash commit: stopping early would drop exactly the commits that name the later pull requests, and the
+            // earlier ones it did name would hide that anything was missing. `total_commits` counts the whole range however
+            // much of it one response carries, so it is what says whether the read reached the end.
+            for (var page = 1; ; page++)
+            {
+                var comparison = await Send(HttpMethod.Get,
+                    $"repos/{repo}/compare/{before}...{after}?per_page={ComparePageSize}&page={page}", null, ct);
+                total = comparison.TryGetProperty("total_commits", out var counted) && counted.ValueKind == JsonValueKind.Number
+                    ? counted.GetInt32() : 0;
+                var page1 = comparison.GetProperty("commits").EnumerateArray().Select(Merged).ToArray();
+                commits.AddRange(page1);
+                if (page1.Length < ComparePageSize || commits.Count >= total || commits.Count >= MaxMergedCommits) break;
+            }
         }
         // A force push can leave "before" unreachable, and GitHub cannot compare it any more.
         catch (HttpRequestException e) when (e.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.UnprocessableEntity) { return null; }
-        return commits.Select(c =>
-        {
-            var commit = c.GetProperty("commit");
-            var subject = (Text(commit, "message") ?? "").Split('\n')[0].Trim();
-            return new MergedCommit(Text(c, "sha") ?? "", subject,
-                Date(commit.GetProperty("committer"), "date") ?? DateTimeOffset.MinValue, Reconciliation.PullOf(subject));
-        }).ToArray();
+        return new(commits, commits.Count < total);
     }
 
-    /// <summary>How many commits of one activity entry are read. A larger range is a batch nobody put through the queue.</summary>
-    public const int MaxMergedCommits = 100;
+    static MergedCommit Merged(JsonElement json)
+    {
+        var commit = json.GetProperty("commit");
+        var subject = (Text(commit, "message") ?? "").Split('\n')[0].Trim();
+        return new(Text(json, "sha") ?? "", subject,
+            Date(commit.GetProperty("committer"), "date") ?? DateTimeOffset.MinValue, Reconciliation.PullOf(subject));
+    }
+
+    /// <summary>The compare API's largest page.</summary>
+    const int ComparePageSize = 100;
+
+    /// <summary>
+    /// How many commits of one activity entry are read before the range is called truncated. Reconciliation then reports the
+    /// merge as one it cannot fully name, rather than claiming the pull requests it happened to see were all of them; the
+    /// bound is what keeps a single enormous merge from costing a hundred requests (R-13).
+    /// </summary>
+    public const int MaxMergedCommits = 500;
 
     public async Task<IReadOnlyList<PullEvent>> PullEvents(string repo, int number, CancellationToken ct) =>
         // Oldest first, as GitHub returns them: two events in the same second are told apart by their order, not their times.

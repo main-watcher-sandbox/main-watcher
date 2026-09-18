@@ -606,6 +606,91 @@ public class WatcherTests
         Assert.Equal(Reconciliation.CompleteValue, Markers.Field(body, Reconciliation.Complete));
     }
 
+    // PR #55 review: the cursor is read back with a strict ">", so a second's worth of activity moves it all at once.
+    // Advancing between two entries stamped in the same second would put the one still unjudged behind it for good, and the
+    // next run would then find nothing left and mark the lock complete.
+    [Fact]
+    public async Task TwoMergesInTheSameSecondMoveTheCursorOnlyTogether()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub
+        {
+            Activity = { PushAt('a', 'b', "pr_merge", "alice", 30), PushAt('b', 'c', "pr_merge", "bob", 30) }
+        };
+        fake.Merged[Sha('b')] = [Pull(7, 30)];
+        fake.Merged[Sha('c')] = [Pull(8, 30)];
+        fake.Labels[7] = [Merge(30)];
+        fake.LabelsError.Add(8);
+        SeedWindow(fake, 60);
+        fake.CloseByHand("owner/repo", 1, "alice", Now.AddMinutes(-5));
+        var watcher = new FakeGitHub();
+
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Contains("#7", body);
+        // Neither the cursor nor the completion moves while #8, stamped in the same second, is unjudged.
+        Assert.Null(Markers.Field(body, Reconciliation.Cursor));
+        Assert.Null(Markers.Field(body, Reconciliation.Complete));
+
+        fake.LabelsError.Clear();
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        body = fake.Find("owner/repo", 1).Body;
+        Assert.Contains("#8", body);
+        Assert.Equal(Now.AddMinutes(-30), Markers.Time(body, Reconciliation.Cursor));
+        Assert.Equal(Reconciliation.CompleteValue, Markers.Field(body, Reconciliation.Complete));
+        // #7 was looked at twice and reported once.
+        Assert.Equal(1, body.Split(Reconciliation.Key(7)).Length - 1);
+        Assert.Single(fake.Find("owner/repo", 1).Comments, c => c.Body.Contains(Reconciliation.Key(7), StringComparison.Ordinal));
+    }
+
+    // PR #55 review: a pull request is named by its last commit, so a range read only to its first
+    // GitHubGateway.MaxMergedCommits loses exactly the commits that would name the later ones. The pull requests it did name
+    // must not be taken for all of them.
+    [Fact]
+    public async Task ATruncatedRangeIsReportedBesideThePullRequestsItDidName()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { Activity = { PushAt('a', 'b', "merge_queue_merge", "alice", 30) } };
+        fake.Merged[Sha('b')] = [Pull(7, 30)];
+        fake.Truncated.Add(Sha('b'));
+        fake.Labels[7] = [Merge(30)];
+        SeedWindow(fake, 60);
+        var watcher = new FakeGitHub();
+
+        await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Contains("[#7](https://github.com/owner/repo/pull/7)", body);
+        Assert.Contains($"more than the {GitHubGateway.MaxMergedCommits} commits", body);
+        Assert.Contains(Reconciliation.Key(Sha('b')), body);
+        // Two reports: the pull request the range named, and the range itself for the ones it could not.
+        Assert.Equal(2, watcher.Comments.Count + watcher.Issues["owner/watcher"].Count);
+    }
+
+    // PR #55 review: the writes that fail are the ones that would have said something, so nothing else would notice. The
+    // overdue alert goes to the watcher repo, which is writable when the target's issue is not.
+    [Fact]
+    public async Task AClosedLockWhoseReportsCannotBeWrittenStillRaisesReconciliationFailing()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { Activity = { PushAt('a', 'b', "pr_merge", "alice", 1500) }, IssueError = true };
+        fake.Merged[Sha('b')] = [Pull(7, 1500)];
+        fake.Labels[7] = [Merge(1500)];
+        SeedWindow(fake, 1600);
+        fake.CloseByHand("owner/repo", 1, "alice", Now.AddMinutes(-1490));
+        var watcher = new FakeGitHub();
+
+        // The cycle still fails, so the worker asks again.
+        await Assert.ThrowsAsync<HttpRequestException>(() => Reconciler(fake, watcher).Reconcile(Locked, ct));
+        var alert = Assert.Single(watcher.Issues["owner/watcher"]).Issue;
+        Assert.Equal("Reconciliation failing on owner/repo", alert.Title);
+        Assert.Contains("has still not been checked", alert.Body);
+        Assert.Contains("its reports could not be written", alert.Body);
+        // Nothing was written, so nothing advanced and nothing claims the window was checked.
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Null(Markers.Field(body, Reconciliation.Cursor));
+        Assert.Null(Markers.Field(body, Reconciliation.Complete));
+    }
+
     [Fact]
     public async Task AMergeMadeWhileLockedCannotBeReportedWithoutAnAlertSink()
     {
@@ -2149,6 +2234,8 @@ public class WatcherTests
         public HashSet<string> MergedError { get; } = [];
         /// <summary><c>after</c> commits GitHub can no longer compare, as a force push leaves behind.</summary>
         public HashSet<string> Uncomparable { get; } = [];
+        /// <summary><c>after</c> commits whose range holds more commits than the compare read.</summary>
+        public HashSet<string> Truncated { get; } = [];
         /// <summary>Timeline events by pull request, oldest first, as GitHub returns them.</summary>
         public Dictionary<int, List<PullEvent>> Labels { get; } = [];
         /// <summary>Pull requests whose label history cannot be read (ADR-015 point 8).</summary>
@@ -2156,12 +2243,12 @@ public class WatcherTests
         /// <summary>Merge groups the gate failed, for the unlock comment (R-7).</summary>
         public List<GateBlock> Blocked { get; } = [];
         public bool BlockedError { get; init; }
-        public Task<IReadOnlyList<MergedCommit>?> MergedCommits(string repo, string before, string after, CancellationToken ct)
+        public Task<MergedRange?> MergedCommits(string repo, string before, string after, CancellationToken ct)
         {
             Reads.Add($"merged:{after}");
             if (MergedError.Contains(after)) throw new HttpRequestException("comparison unavailable");
             return Task.FromResult(Uncomparable.Contains(after) ? null
-                : (IReadOnlyList<MergedCommit>?)Merged.GetValueOrDefault(after, []).ToArray());
+                : new MergedRange(Merged.GetValueOrDefault(after, []).ToArray(), Truncated.Contains(after)));
         }
         public Task<IReadOnlyList<PullEvent>> PullEvents(string repo, int number, CancellationToken ct)
         {

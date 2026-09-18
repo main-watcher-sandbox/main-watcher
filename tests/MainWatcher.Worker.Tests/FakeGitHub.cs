@@ -78,7 +78,7 @@ sealed class FakeGitHub : IGitHubGateway
         IssueWritesFail ? throw new HttpRequestException("issues unavailable")
             : Task.FromResult<IReadOnlyList<Issue>>(IssueList.Where(i => i.UpdatedAt is null || i.UpdatedAt >= since).ToArray());
     public Task<IReadOnlyList<GateBlock>> GateBlocks(string repo, DateTimeOffset since, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IReadOnlyList<MergedCommit>?> MergedCommits(string repo, string before, string after, CancellationToken ct) => throw new NotSupportedException();
+    public Task<MergedRange?> MergedCommits(string repo, string before, string after, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<PullEvent>> PullEvents(string repo, int number, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<IssueComment>> Comments(string repo, int number, DateTimeOffset? since, CancellationToken ct) => throw new NotSupportedException();
     public Task<Account?> ClosedBy(string repo, int number, CancellationToken ct) => throw new NotSupportedException();

@@ -162,3 +162,6 @@ listed.
 - A merge whose commit subject names no pull request — a rebase-merge target — is reported as the
   commit it left on `main`. The sandbox's merge queue is set to `MERGE`, so every merge here named
   its pull request; the path is covered by unit tests only.
+- The same goes for a merge whose range is longer than the 500 commits reconciliation reads, and for
+  two merges stamped in the same second with one of them unjudgeable. Both were found by the PR #55
+  review rather than by the sandbox, and both are covered by regression tests.

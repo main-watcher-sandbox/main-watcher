@@ -343,13 +343,16 @@ the first time — up to the issue's `closed_at`, or up to now while it is open.
 at one-second resolution, and a merge in the same second as the close is inside the window. Entries
 after the close are ignored.
 
-**Which pull requests.** The commits an entry added are read with the compare API, and the pull
-request is taken from each commit subject: `Merge pull request #N from …` or `… (#N)`, the two
-shapes the gate matches. The commits-to-pull-requests API would be exact, but it needs a Pull
-requests permission the `main-watcher` App does not hold, and ADR-008 promised reconciliation
-would need no new one. A merge whose subjects name no pull request, or whose range GitHub can no
-longer compare, is reported as itself — the commit it left on `main` — rather than passed over,
-because nothing shows it carried the label.
+**Which pull requests.** The commits an entry added are read with the compare API, to the end of
+the range, and the pull request is taken from each commit subject: `Merge pull request #N from …`
+or `… (#N)`, the two shapes the gate matches. The commits-to-pull-requests API would be exact, but
+it needs a Pull requests permission the `main-watcher` App does not hold, and ADR-008 promised
+reconciliation would need no new one. A merge is reported **as itself** — the commit it left on
+`main` — rather than passed over, when its subjects name no pull request, when GitHub can no longer
+compare its range, and when the range holds more than the 500 commits reconciliation reads. That
+last case matters because a pull request is named by its **last** commit, so a range read only
+part-way loses exactly the commits that would name the later pull requests, and the ones it did
+name must not be taken for all of them; such a merge is reported beside them, not instead of them.
 
 **Which label.** The one the pull request carried **at the moment it merged**, replayed from its
 `labeled` and `unlabeled` events (Issues: read) up to its `merged` event, which is in the same
@@ -373,8 +376,16 @@ made twice:
 `reconciled=complete` is therefore written only after every report of that window succeeded. A
 label history that cannot be read **stops the pass at that merge**: `last_reconciled` does not move
 past it, nothing is marked complete, and the merge is judged on a later cycle rather than waved
-through. The activity read is bounded at 100 entries; if it does not reach back to the window's
-start, the issue says so once.
+through. The cursor moves **a whole second at a time**, because the next cycle reads strictly after
+it: advancing between two entries stamped in the same second would put whichever was left unjudged
+behind the cursor for good. The activity read is bounded at 100 entries; if it does not reach back
+to the window's start, the issue says so once.
+
+A lock whose reports cannot be **written** — a locked conversation, an issue GitHub will not update
+— is the case nothing else would notice, because the writes that failed are the ones that would have
+said something. So the overdue check below runs on such a lock too, before the failure is passed on;
+the cycle then fails, the other locks are still reconciled, and nothing was written, so nothing
+advanced.
 
 The trigger worker asks for a cycle for a lock that has closed without being reconciled, which is
 the only thing that would ask for one at all (ADR-015 point 6). A lock left unreconciled for 24

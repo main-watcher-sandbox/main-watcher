@@ -423,15 +423,17 @@ public class GatewayTests
         var handler = new Handler(request =>
         {
             path = request.RequestUri!.AbsolutePath;
-            return Task.FromResult(Response("{\"commits\":["
+            return Task.FromResult(Response("{\"total_commits\":3,\"commits\":["
                 + "{\"sha\":\"c1\",\"commit\":{\"message\":\"Add a feature (#8)\\n\\nbody\",\"committer\":{\"date\":\"2026-09-17T09:00:00Z\"}}},"
                 + "{\"sha\":\"c2\",\"commit\":{\"message\":\"a commit of its own\",\"committer\":{\"date\":\"2026-09-17T09:30:00Z\"}}},"
                 + "{\"sha\":\"c3\",\"commit\":{\"message\":\"Merge pull request #7 from owner/fix\",\"committer\":{\"date\":\"2026-09-17T10:00:00Z\"}}}]}"));
         });
         using var http = Client(handler);
-        var commits = await new GitHubGateway(http, 1).MergedCommits("owner/repo", new('a', 40), new('b', 40),
+        var range = await new GitHubGateway(http, 1).MergedCommits("owner/repo", new('a', 40), new('b', 40),
             TestContext.Current.CancellationToken);
-        Assert.NotNull(commits);
+        Assert.NotNull(range);
+        Assert.False(range.Truncated);
+        var commits = range.Commits;
         Assert.Equal([8, null, 7], commits.Select(c => c.Pull));
         Assert.Equal("a commit of its own", commits[1].Subject);
         Assert.Equal(DateTimeOffset.Parse("2026-09-17T10:00:00Z"), commits[2].At);
