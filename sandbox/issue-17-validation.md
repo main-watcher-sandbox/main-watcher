@@ -102,7 +102,9 @@ and carried `<!-- main-watcher untestable sha=4afc411… -->`.
 | 01:33:38 | `Started check 105447979670, target run 35295811452` — the fourth test of the same head |
 | ~01:36 | It failed restore too and completed `neutral`. Alert #15 still had no comment: the head was already named, so the cap was not announced twice |
 
-## TS-S18: a cycle killed right after the neutral write still leads to a retest
+## TS-S18: a cycle stopped at the neutral write still leads to a retest
+
+### First attempt: cancelled a moment too late
 
 Head [`4a0f6a5`](https://github.com/main-watcher-sandbox/sample-target/commit/4a0f6a590069352bb0ee659aae20970d5ab6d01d),
 pushed 01:35:47Z with the feed still unreachable.
@@ -116,8 +118,31 @@ pushed 01:35:47Z with the feed still unreachable.
 | 01:41:22 | A later cycle starts check 105449529041 on the **same commit** |
 | 01:43:17 | It completes `neutral` as well — the feed was still down, but the retest happened |
 
+The retest happened, but this does not verify what TS-S18 asks for. The cancel landed five
+seconds after the neutral write, and by then the cycle had already planned: `No eligible head.`
+is the Planner running and declining. The crash between reporting and planning was not
+exercised, which the PR #48 review called out. The run below does exercise it.
+
+### Second attempt: the fault switch, at the boundary itself
+
+`MW_SANDBOX_EXIT_AFTER` now names the check run's own completion (`check:neutral`), so the cycle
+can be killed with the neutral written and nothing else run. Watcher replica at
+[`f545883`](https://github.com/main-watcher-sandbox/main-watcher/commit/f545883), whose tree is
+MainWatcher `8bcc6e0`; `MW_SANDBOX_EXIT_AFTER=check:neutral` set at 02:18:59Z. Head
+[`761651b`](https://github.com/main-watcher-sandbox/sample-target/commit/761651b43ea44060b17ba36ef23ec3f9ab2aea6b),
+pushed 02:19:11Z with `fail_restore: true`.
+
+| Time (UTC) | Event |
+| --- | --- |
+| 02:20:29 | Check 105457305332 created, target run 35298958853 |
+| 02:24:26 | Worker cycle [35299118941](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35299118941) completes the check run `neutral`, after its "Infrastructure error" alert |
+| 02:24:27 | `MW_SANDBOX_EXIT_AFTER: exiting after the Reporter's check:neutral write.` → `Process completed with exit code 3`. The `Plan and report` step is `failure` and the job fails |
+| — | The log has **no** `Reported check` line and **no** `No eligible head.` line: the process died inside `Report`, before it returned and before the Planner was reached |
+| 02:27:19 | A later cycle starts check 105458610152 on the **same commit** |
+
 Nothing was carried between the two cycles. The neutral write is the whole of the failure
-handling, so there was no retry step for the kill to lose (ADR-017 point 2).
+handling, so there was no retry step for the kill to lose (ADR-017 point 2). The variable was
+deleted at 02:25Z; only that one cycle failed, well under the worker's three-in-a-row threshold.
 
 ## TS-S18: with the feed back, the head gives a real result
 
@@ -136,6 +161,10 @@ which is the other way out of the cap.
 
 ## Restoring the sandbox
 
-`sandbox.json` is back at its template values. The scratch files `ts-s12.md` and `ts-s18.md`
-were removed afterwards, and the head that removed them tested green. Alerts #12 to #15 were
-closed by hand; they are linked above and stay readable.
+`sandbox.json` is back at its template values and the `MW_SANDBOX_EXIT_AFTER` variable is
+deleted. The scratch files `ts-s12.md` and `ts-s18.md` were removed, and both the head that
+removed them and
+[`bcd550f`](https://github.com/main-watcher-sandbox/sample-target/commit/bcd550f756232d526c532f444f99d47d734404e9),
+the head that put the feed back after the second TS-S18 attempt, tested green (check
+105459041776, "Tests passed", 02:33Z). Alerts #12 to #17 were closed by hand; they are linked
+above and stay readable.
