@@ -431,6 +431,19 @@ public class WatcherTests
     static readonly WorkflowJob RestoreFailed = new("tests / main-watcher", "completed",
         [new("Restore", "failure"), new("main-watcher-test", "skipped"), new("main-watcher-tests-finished", "skipped"), new("Upload CTRF reports", "success")]);
 
+    // TS-S18: the sandbox switch's boundary. The neutral write is the last thing the report does, so a cycle stopped right
+    // after it has done everything the retest needs; the rule alone brings the head back.
+    [Fact]
+    public async Task TheNeutralCheckRunWriteIsNamedForTheFaultSwitch()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { JobList = [RestoreFailed] };
+        var writes = new List<string>();
+        var reporter = new Reporter(fake, new Alerts(fake, "owner/watcher"), afterWrite: writes.Add);
+        Assert.True(await reporter.Report(Watched, Pending(Sha('b')) with { Id = 7 }, ct));
+        Assert.Equal(["check:neutral"], writes);
+    }
+
     [Fact]
     public async Task InfrastructureErrorAlertsThenCompletesNeutralWithoutALock()
     {
@@ -880,7 +893,7 @@ public class WatcherTests
         // The canonical lock is named by its database ID.
         Assert.Equal(new[] { "comment:2", "close:2:duplicate:1001", "comment:1", "update:1", "complete:failure" }, fake.Order);
         // The hook the sandbox fault switch uses names each write.
-        if (stopAfter is null) Assert.Equal(new[] { "comment", "close", "comment", "update" }, writes);
+        if (stopAfter is null) Assert.Equal(new[] { "comment", "close", "comment", "update", "check:failure" }, writes);
         Assert.Contains("Closing as a duplicate of #1", Assert.Single(fake.Find("owner/repo", 2).Comments).Body);
         Assert.Equal("duplicate", fake.Find("owner/repo", 2).Issue.StateReason);
         var kept = fake.Find("owner/repo", 1);

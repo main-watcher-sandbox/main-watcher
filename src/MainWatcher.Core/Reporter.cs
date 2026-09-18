@@ -71,7 +71,9 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         }
         // GitHub caps check output at 65535 bytes. Conservatively bound UTF-16 length.
         if (summary.Length > 15000) summary = summary[..15000] + "\n\nOutput truncated; see target run.";
-        await github.Complete(repo, check.Id, outcome.Conclusion, outcome.Title, summary, ct);
+        // Named by what it writes, so the sandbox switch can stop a cycle at the boundary ADR-017 turns on: the moment a
+        // neutral result is written, with nothing left for the retest but the rule itself (TS-S18).
+        await Write($"check:{outcome.Conclusion}", github.Complete(repo, check.Id, outcome.Conclusion, outcome.Title, summary, ct));
         return true;
     }
 
@@ -171,6 +173,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         return posted;
     }
 
+    /// <summary>A write the sandbox fault switch can stop the cycle after, by name (TS-S14, TS-S18).</summary>
     async Task Write(string name, Task write)
     {
         await write;

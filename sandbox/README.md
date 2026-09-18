@@ -105,7 +105,14 @@ update these branches; re-create them from `main` if the published workflow chan
 For TS-S14, set the replica's `MW_SANDBOX_EXIT_AFTER` variable to the Reporter writes to
 stop after (`create`, `comment`, `update`, `close`, `override`, comma-separated). The cycle
 exits right after that write, leaving the check run `in_progress`; the next cycle replays
-the report. Delete the variable afterwards:
+the report.
+
+The check run's own completion has names too: `check:success`, `check:failure` and
+`check:neutral`. These stop the cycle after the report is finished, not part-way through it, so
+`check:neutral` kills a cycle at the exact moment ADR-017 relies on — the neutral is written and
+nothing else has run (TS-S18).
+
+Delete the variable afterwards:
 
 ```
 gh variable set MW_SANDBOX_EXIT_AFTER -R main-watcher-sandbox/main-watcher --body create
