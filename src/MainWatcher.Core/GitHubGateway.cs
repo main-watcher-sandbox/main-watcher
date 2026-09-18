@@ -110,7 +110,8 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     static CheckRun Check(JsonElement json) => new(json.GetProperty("id").GetInt64(), Text(json, "head_sha")!,
         Text(json, "status")!, Text(json, "conclusion"), Date(json, "started_at") ?? DateTimeOffset.MinValue,
         Date(json, "completed_at"), Text(json, "external_id"),
-        json.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.Object ? Text(output, "title") : null);
+        json.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.Object ? Text(output, "title") : null,
+        json.TryGetProperty("output", out var body) && body.ValueKind == JsonValueKind.Object ? Text(body, "summary") : null);
 
     public async Task<string> MainHead(string repo, CancellationToken ct) =>
         (await Send(HttpMethod.Get, $"repos/{repo}/commits/main", null, ct)).GetProperty("sha").GetString()!;
@@ -189,8 +190,9 @@ public sealed class GitHubGateway(HttpClient http, long appId,
 
     static bool IsSha(string text) => text.Length == 40 && text.All(char.IsAsciiHexDigit);
 
-    public async Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct) =>
-        Check(await Send(HttpMethod.Post, $"repos/{repo}/check-runs", new { name = CheckName, head_sha = sha, status = "in_progress", started_at = now }, ct));
+    public async Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, string title, string summary, CancellationToken ct) =>
+        Check(await Send(HttpMethod.Post, $"repos/{repo}/check-runs",
+            new { name = CheckName, head_sha = sha, status = "in_progress", started_at = now, output = new { title, summary } }, ct));
 
     public async Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct)
     {
@@ -261,7 +263,7 @@ public sealed class GitHubGateway(HttpClient http, long appId,
             var jobs = await Pages($"repos/{repo}/actions/runs/{runId}/jobs?filter=latest", "jobs", ct);
             var parsed = jobs.Select(j => new WorkflowJob(Text(j, "name")!, Text(j, "status")!,
                 j.TryGetProperty("steps", out var steps) ? steps.EnumerateArray().Select(s => new JobStep(Text(s, "name")!, Text(s, "conclusion"))).ToArray() : [],
-                Date(j, "completed_at"))).ToArray();
+                Date(j, "completed_at"), Date(j, "started_at"))).ToArray();
             if (!parsed.Any(j => Outcomes.IsTestJob(j.Name)))
             {
                 var run = await Send(HttpMethod.Get, $"repos/{repo}/actions/runs/{runId}", null, ct);
@@ -300,6 +302,23 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         catch (Exception e) when (e is HttpRequestException or IOException or JsonException) { return CtrfResult.Unknown; }
         catch (TaskCanceledException) when (!ct.IsCancellationRequested) { return CtrfResult.Unknown; }
     }
+
+    public async Task<string?> CancelRun(string repo, long runId, bool force, CancellationToken ct)
+    {
+        try
+        {
+            await Send(HttpMethod.Post, $"repos/{repo}/actions/runs/{runId}/{(force ? "force-cancel" : "cancel")}", null, ct);
+            return null;
+        }
+        // 409 means the run has already finished or cannot be cancelled, and 403 that a force-cancel came too early. Nothing
+        // here is fatal: the check run stays in_progress, the next cycle asks again, and the 15-minute steps escalate.
+        catch (HttpRequestException e) { return e.StatusCode is { } status ? $"HTTP {(int)status}" : e.Message; }
+        catch (TaskCanceledException e) when (!ct.IsCancellationRequested) { return $"timed out ({e.Message})"; }
+    }
+
+    public async Task Output(string repo, long checkId, string title, string summary, CancellationToken ct) =>
+        // No status: the check run stays in_progress while the run is being stopped (ADR-013 point 5).
+        await Send(HttpMethod.Patch, $"repos/{repo}/check-runs/{checkId}", new { output = new { title, summary } }, ct);
 
     public async Task Complete(string repo, long checkId, string conclusion, string title, string summary, CancellationToken ct) =>
         await Send(HttpMethod.Patch, $"repos/{repo}/check-runs/{checkId}", new

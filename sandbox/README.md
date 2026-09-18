@@ -13,10 +13,11 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-15-validation.md` | TS-S14 (c): the worker's "reporting pending" alert with the Reporter's issue writes failing for 20 minutes, for #15 |
 | `issue-16-validation.md` | TS-S11: a push tested by a sweep with the worker scaled to zero, the "worker appears down" and gate fail-open alerts, and what GitHub's scheduler actually did, for #16 |
 | `issue-17-validation.md` | TS-S12 and TS-S18: a cancelled run retested on the same head, three neutral results reaching the cap, the "head untestable" alert and a forced dispatch, for #17 |
+| `issue-18-validation.md` | TS-S16 (g) and (h): the queue and run deadlines, the cancel and force-cancel lifecycle and the "could not be stopped" alert, for #18 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
-| `upload-switches.yml` | The `fail_upload` and `hang_upload` step that `publish-public.sh` inserts into the sandbox build of the test workflow |
+| `upload-switches.yml` | The `fail_upload`, `hang_upload` and `hang_upload_forever` steps that `publish-public.sh` inserts into the sandbox build of the test workflow |
 | `seed-target.sh` | Pushes the template and the gate and test workflows to a sandbox repo, creates the `main-broken` and `fixes-main` labels, and applies the ruleset. Re-run it to reset a repo |
 
 Seed or reset both targets (needs `gh` logged in as a sandbox org admin):
@@ -122,6 +123,34 @@ pointing its caller's `uses:` at that branch (and back to `@main` afterwards):
 
 A run on `ts-s16-report-stuck` stays queued until it is cancelled. `publish-public.sh` does not
 update these branches; re-create them from `main` if the published workflow changes.
+
+## Stale-run switches
+
+For TS-S16 (g) and (h), two replica variables steer the ADR-013 stale-run lifecycle. Set both
+only for the scenario and delete them afterwards; `MW_QUEUE_DEADLINE_MINUTES` must also be set on
+the trigger worker, or it starts cycles for runs the Planner does not judge stale.
+
+```
+gh variable set MW_QUEUE_DEADLINE_MINUTES -R main-watcher-sandbox/main-watcher --body 5
+kubectl -n main-watcher-sandbox set env deploy/trigger-worker MW_QUEUE_DEADLINE_MINUTES=5
+gh variable set MW_SANDBOX_REFUSE_CANCEL -R main-watcher-sandbox/main-watcher --body true
+```
+
+`MW_QUEUE_DEADLINE_MINUTES` shortens the 30-minute queue deadline to 1–30 minutes.
+`MW_SANDBOX_REFUSE_CANCEL=true` makes every cancel and force-cancel fail without asking GitHub,
+so the "target run could not be stopped" alert can be reached in 30 minutes rather than by
+finding a run GitHub genuinely cannot stop.
+
+The run deadline has no switch: it is the job's `started_at` plus the target's `timeout`, the
+workflow's 20-minute margin and a 10-minute grace, so the shortest one a scenario can arrange is
+31 minutes after the job starts. GitHub's own job timeout normally ends a job first, so to reach
+the run deadline the target's `timeout` in the replica's `targets.yml` is lowered **after** the
+run has started: the running job keeps the `timeout-minutes` it was created with, and the watcher
+then judges it against the smaller one, which is the lost-runner case the grace exists for.
+
+A job that never gets a runner is arranged by adding `runs-on: sandbox-no-such-runner` to the
+target caller's `with:` block. The caller validator checks only `test-command`, `results-glob`
+and `timeout-minutes`, so the extra input is accepted.
 
 ## Reporter fault switch
 

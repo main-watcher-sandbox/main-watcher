@@ -7,5 +7,6 @@
   "fail_restore": false,
   "fail_upload": false,
   "hang_upload": false,
+  "hang_upload_forever": false,
   "slow_check_minutes": 0
 }

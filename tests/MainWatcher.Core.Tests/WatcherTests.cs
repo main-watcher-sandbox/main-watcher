@@ -1164,6 +1164,235 @@ public class WatcherTests
         Assert.Empty(watcher.Issues);
     }
 
+    // TS-U15: the stale-run lifecycle (ADR-013 point 5). The target's timeout is 30 minutes, so its job's run deadline is
+    // its start plus 30 + 20 (the reusable workflow's margin) + 10 (the grace) = 60 minutes.
+    static readonly Target Stale = new() { Repo = "owner/repo", Timeout = 30, PollInterval = 15 };
+    static CheckRun Testing(int age, string? summary = null) =>
+        new(7, "head", "in_progress", null, Now.AddMinutes(-age), null, "41", null, summary);
+    static WorkflowJob Queued() => new("tests / main-watcher", "queued", []);
+    static WorkflowJob Running(int started, params JobStep[] steps) =>
+        new("tests / main-watcher", "in_progress", steps, null, Now.AddMinutes(-started));
+    static string Recorded(params (string Name, int MinutesAgo)[] fields) =>
+        Markers.Set("", [.. fields.Select(f => (f.Name, Markers.Stamp(Now.AddMinutes(-f.MinutesAgo))))]);
+    static Planner Stopper(FakeGitHub fake, FakeGitHub? watcher = null, int minutes = 0,
+        TimeSpan? queueDeadline = null, bool cancels = true) =>
+        new(fake, () => Now.AddMinutes(minutes), alerts: watcher is null ? null : new Alerts(watcher, AlertRepo),
+            queueDeadline: queueDeadline, cancelsRuns: cancels);
+
+    [Fact]
+    public async Task QueueDeadlineRunsFromTheCheckRunAndTheRunDeadlineFromTheJobsStart()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var waiting = new FakeGitHub { JobList = [Queued()] };
+        Assert.Null(await Stopper(waiting).Stop(Stale, Testing(29), ct));
+        Assert.Empty(waiting.Order);
+
+        var late = new FakeGitHub { JobList = [Queued()] };
+        Assert.Contains("passed its queue deadline", await Stopper(late).Stop(Stale, Testing(30), ct));
+        // The time is recorded before the cancel, and the check run is not completed: it stays in progress until the run stops.
+        Assert.Equal(["output:7", "cancel:41"], late.Order);
+        Assert.Equal(Planner.StaleTitle, late.Title);
+        Assert.Equal(Markers.Stamp(Now), Markers.Field(late.Summary, StaleRun.CancelRequested));
+
+        // Waiting for a runner is not running: a job that started late is judged from its own start, not the check run's age.
+        var started = new FakeGitHub { JobList = [Running(59)] };
+        Assert.Null(await Stopper(started).Stop(Stale, Testing(180), ct));
+        Assert.Empty(started.Order);
+        var overrun = new FakeGitHub { JobList = [Running(60)] };
+        Assert.Contains("passed its run deadline", await Stopper(overrun).Stop(Stale, Testing(180), ct));
+        Assert.Equal(["output:7", "cancel:41"], overrun.Order);
+
+        // A started job GitHub gives no start time for is never cancelled: it may still be testing.
+        var undated = new FakeGitHub { JobList = [new("tests / main-watcher", "in_progress", [])] };
+        Assert.Null(await Stopper(undated).Stop(Stale, Testing(600), ct));
+        Assert.Empty(undated.Order);
+    }
+
+    // TS-U15: the run deadline counts from the timeout the run was dispatched with, which the Planner records on the check
+    // run, never from targets.yml as it reads later. Editing a target's timeout must not move a running job's deadline.
+    [Theory]
+    // Dispatched at 120 minutes: the deadline is the job's start + 120 + 20 + 10, whatever the target says now.
+    [InlineData(120, 30, 149, false)]
+    [InlineData(120, 30, 150, true)]
+    [InlineData(120, 340, 150, true)]
+    // With nothing recorded — a check run from before the Planner wrote it — the current setting is all there is.
+    [InlineData(null, 30, 59, false)]
+    [InlineData(null, 30, 60, true)]
+    public async Task TheRunDeadlineUsesTheTimeoutTheRunWasDispatchedWith(int? recorded, int configured, int ran, bool stale)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var summary = recorded is { } minutes
+            ? Markers.Set("", (StaleRun.TimeoutMinutes, minutes.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+            : null;
+        var check = Testing(600, summary);
+        var target = new Target { Repo = "owner/repo", Timeout = configured, PollInterval = 15 };
+        var fake = new FakeGitHub { JobList = [Running(ran)] };
+        Assert.Equal(stale, await Stopper(fake).Stop(target, check, ct) is not null);
+        Assert.Equal(stale ? ["output:7", "cancel:41"] : [], fake.Order);
+        // The worker reads the same check run, so it flags exactly what the Planner would cancel (TS-U5 (c)).
+        var worker = new FakeGitHub { CheckList = [check], JobList = [Running(ran)] };
+        Assert.Equal(stale, await new WorkFinder(() => Now).Find(target, worker, ct) is not null);
+    }
+
+    [Fact]
+    public async Task ThePlannerRecordsTheDispatchedTimeoutAndCarriesItThroughEveryStopWrite()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        var target = new Target { Repo = "owner/repo", Timeout = 120, PollInterval = 15 };
+        var started = await new Planner(fake, () => Now).Plan(target, false, ct);
+        Assert.Equal("120", Markers.Field(started!.Summary, StaleRun.TimeoutMinutes));
+        Assert.Equal(Planner.TestingTitle, fake.Title);
+
+        // The cancel and force-cancel outputs replace that one, so each must carry the value forward: it is the only record
+        // of what the deadline was counted from.
+        var queued = new FakeGitHub { JobList = [Queued()] };
+        await Stopper(queued).Stop(target, Testing(30, fake.Summary), ct);
+        Assert.Equal("120", Markers.Field(queued.Summary, StaleRun.TimeoutMinutes));
+        var forcing = new FakeGitHub { JobList = [Queued()] };
+        await Stopper(forcing, minutes: 15).Stop(target, Testing(45, queued.Summary), ct);
+        Assert.Equal("120", Markers.Field(forcing.Summary, StaleRun.TimeoutMinutes));
+        Assert.NotNull(Markers.Time(forcing.Summary, StaleRun.ForceCancelRequested));
+    }
+
+    [Fact]
+    public async Task CancelIsRepeatedAndThenForcedFifteenMinutesLater()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var waiting = new FakeGitHub { JobList = [Queued()] };
+        Assert.Contains("has not stopped", await Stopper(waiting).Stop(Stale, Testing(44, Recorded((StaleRun.CancelRequested, 14))), ct));
+        // Nothing is recorded again: the wait runs from the time already written, not from this cycle.
+        Assert.Equal(["cancel:41"], waiting.Order);
+
+        var forced = new FakeGitHub { JobList = [Queued()] };
+        Assert.Contains("outlived its cancel", await Stopper(forced).Stop(Stale, Testing(45, Recorded((StaleRun.CancelRequested, 15))), ct));
+        Assert.Equal(["output:7", "force-cancel:41"], forced.Order);
+        Assert.Equal(Markers.Stamp(Now.AddMinutes(-15)), Markers.Field(forced.Summary, StaleRun.CancelRequested));
+        Assert.Equal(Markers.Stamp(Now), Markers.Field(forced.Summary, StaleRun.ForceCancelRequested));
+    }
+
+    [Fact]
+    public async Task AnUnstoppableRunAlertsOnceAndKeepsForceCancelling()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var watcher = new FakeGitHub();
+        var early = new FakeGitHub { JobList = [Queued()] };
+        var pending = Recorded((StaleRun.CancelRequested, 45), (StaleRun.ForceCancelRequested, 14));
+        Assert.Contains("has not stopped", await Stopper(early, watcher).Stop(Stale, Testing(80, pending), ct));
+        Assert.Equal(["force-cancel:41"], early.Order);
+        Assert.Empty(watcher.Issues);
+
+        var check = Testing(80, Recorded((StaleRun.CancelRequested, 45), (StaleRun.ForceCancelRequested, 15)));
+        var late = new FakeGitHub { JobList = [Queued()] };
+        Assert.NotNull(await Stopper(late, watcher).Stop(Stale, check, ct));
+        var alert = Alert(watcher, "Target run could not be stopped on owner/repo");
+        Assert.NotNull(alert);
+        Assert.Contains("no test starts for `owner/repo`", alert.Body);
+        Assert.Contains("<!-- main-watcher unstoppable check=7 -->", alert.Body);
+        // Every later cycle asks again but says nothing more, and the check run is never completed.
+        Assert.NotNull(await Stopper(late, watcher).Stop(Stale, check, ct));
+        Assert.Equal(["force-cancel:41", "force-cancel:41"], late.Order);
+        Assert.Empty(watcher.Find(AlertRepo, alert.Number).Comments);
+        Assert.Null(late.Conclusion);
+    }
+
+    [Fact]
+    public async Task AStoppedRunIsJudgedByTheOutcomeTableAndADeletedOneIsUnknown()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var check = Testing(80, Recorded((StaleRun.CancelRequested, 20), (StaleRun.ForceCancelRequested, 5)));
+        async Task<FakeGitHub> Reported(FakeGitHub fake)
+        {
+            // Stopping is over once the job has completed, whatever the markers still say; the table decides from here.
+            Assert.Null(await Stopper(fake).Stop(Stale, check, ct));
+            Assert.True(await new Reporter(fake, new Alerts(new FakeGitHub(), AlertRepo), clock: () => Now).Report(Stale, check, ct));
+            return fake;
+        }
+        // The cancellation cut the tests short, so there is no marker step: an infrastructure error, never a lock.
+        var cut = await Reported(new() { JobList = [new("tests / main-watcher", "completed",
+            [new("main-watcher-test", "cancelled"), new("main-watcher-tests-finished", "cancelled")])] });
+        Assert.Equal("neutral", cut.Conclusion);
+        Assert.Equal(Outcomes.Title(OutcomeKind.InfrastructureError), cut.Title);
+        // The step conclusions alone would not say the watcher stopped this run.
+        Assert.Contains($"cancelled this run at {Markers.Stamp(Now.AddMinutes(-20))}", cut.Summary);
+
+        // The tests had finished before the run was stopped, so the failure still stands.
+        Assert.Equal("failure", (await Reported(new())).Conclusion);
+
+        // Deleting the run releases the target at once.
+        var deleted = await Reported(new() { RunDeleted = true });
+        Assert.Equal("neutral", deleted.Conclusion);
+        Assert.Equal(Outcomes.Title(OutcomeKind.Unknown), deleted.Title);
+    }
+
+    [Fact]
+    public async Task AJobsApiErrorChangesNothingAndACrashResumesFromTheRecordedTimes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var error = new FakeGitHub { JobsError = true };
+        await Assert.ThrowsAsync<HttpRequestException>(() => Stopper(error).Stop(Stale, Testing(60), ct));
+        Assert.Empty(error.Order);
+
+        // The cancel POST was refused, but the time was recorded before it, so the next cycle continues from there.
+        var first = new FakeGitHub { JobList = [Queued()], CancelRefusal = "HTTP 500" };
+        Assert.Contains("cancel refused: HTTP 500.", await Stopper(first).Stop(Stale, Testing(30), ct));
+        var second = new FakeGitHub { JobList = [Queued()] };
+        Assert.Contains("has not stopped", await Stopper(second, minutes: 14).Stop(Stale, Testing(44, first.Summary), ct));
+        Assert.Equal(["cancel:41"], second.Order);
+        // Fifteen minutes after the recorded time, not after the cycle that found it.
+        var third = new FakeGitHub { JobList = [Queued()] };
+        Assert.Contains("outlived its cancel", await Stopper(third, minutes: 15).Stop(Stale, Testing(45, first.Summary), ct));
+        Assert.Equal(["output:7", "force-cancel:41"], third.Order);
+    }
+
+    [Fact]
+    public async Task NoTestStartsForATargetWhoseRunIsBeingStopped()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var check = Testing(60, Recorded((StaleRun.CancelRequested, 30)));
+        // A newer head, and a forced dispatch, which lifts only the neutral cap: neither starts a second test (ADR-013).
+        var fake = new FakeGitHub { CheckList = [check], Head = "newer" };
+        Assert.Null(await Stopper(fake).Plan(Stale, false, ct));
+        Assert.Null(await Stopper(fake).Plan(Stale, true, ct));
+        Assert.Empty(fake.Writes);
+    }
+
+    [Fact]
+    public async Task TheSandboxSwitchesShortenTheQueueDeadlineAndRefuseEveryCancel()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { JobList = [Queued()] };
+        Assert.Null(await Stopper(fake).Stop(Stale, Testing(10), ct));
+        Assert.Contains("passed its queue deadline",
+            await Stopper(fake, queueDeadline: TimeSpan.FromMinutes(10), cancels: false).Stop(Stale, Testing(10), ct));
+        // The switch makes the cancel fail without asking GitHub, so TS-S16 (h) can reach the alert.
+        Assert.Equal(["output:7"], fake.Order);
+    }
+
+    [Theory]
+    [InlineData(null, 30)]
+    [InlineData("", 30)]
+    [InlineData("0", 30)]
+    [InlineData("31", 30)]
+    [InlineData("ten", 30)]
+    [InlineData("10", 10)]
+    public void TheQueueDeadlineSettingTakesOneToThirtyMinutes(string? value, int minutes) =>
+        Assert.Equal(TimeSpan.FromMinutes(minutes), StaleRun.ConfiguredQueueDeadline(value));
+
+    [Fact]
+    public void MarkersKeepTheOtherFieldsOfTheLastMarker()
+    {
+        const string body = "text\n\n<!-- main-watcher first_red=abc lease_until=2026-09-17T00:00:00Z reported_check=1 -->";
+        var set = Markers.Set(body, ("reported_check", "2"), ("reported_sha", "def"));
+        Assert.Equal("abc", Markers.Field(set, "first_red"));
+        Assert.Equal("2", Markers.Field(set, "reported_check"));
+        Assert.Equal("def", Markers.Field(set, "reported_sha"));
+        Assert.Equal(DateTimeOffset.Parse("2026-09-17T00:00:00Z"), Markers.Time(set, "lease_until"));
+        Assert.Null(Markers.Time(set, "first_red"));
+        Assert.Null(Markers.Time(null, "lease_until"));
+        Assert.Equal("b", Markers.Field(Markers.Set(null, ("a", "b")), "a"));
+    }
+
     sealed class FakeIssue(Issue issue, string label)
     {
         public Issue Issue { get; set; } = issue;
@@ -1294,7 +1523,14 @@ public class WatcherTests
         public Task<IReadOnlyList<FailOpen>> FailOpens(string repo, DateTimeOffset since, CancellationToken ct) =>
             FailOpenError ? throw new HttpRequestException("gate runs unavailable")
                 : Task.FromResult<IReadOnlyList<FailOpen>>(FailOpenRuns.Where(f => f.At >= since).ToArray());
-        public Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct) { Writes.Add("create"); return Task.FromResult(new CheckRun(1, sha, "in_progress", null, now, null, null)); }
+        public Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, string title, string summary, CancellationToken ct)
+        {
+            Writes.Add("create");
+            Title = title;
+            Summary = summary;
+            // GitHub returns the check run it created, output and all, which is how the Planner's caller sees the marker.
+            return Task.FromResult(new CheckRun(1, sha, "in_progress", null, now, null, null, title, summary));
+        }
         public Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct) { Writes.Add("dispatch"); if (DispatchError is not null) throw DispatchError; return Task.FromResult(DispatchId); }
         public Task DispatchWorkflow(string repo, string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct) => throw new NotSupportedException();
         public Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct) => RunsError ? throw new HttpRequestException("unavailable")
@@ -1306,6 +1542,20 @@ public class WatcherTests
         public Task<IReadOnlyList<WorkflowJob>?> Jobs(string repo, long runId, CancellationToken ct) => JobsError ? throw new HttpRequestException("unavailable")
             : Task.FromResult(RunDeleted ? null : JobList ?? [new("tests / main-watcher", "completed", [new("main-watcher-test", JobConclusion), new("main-watcher-tests-finished", "success")])]);
         public Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct) => Task.FromResult(ReportResult);
+        /// <summary>What GitHub says to a stop request; null means it accepted it.</summary>
+        public string? CancelRefusal { get; init; }
+        public Task<string?> CancelRun(string repo, long runId, bool force, CancellationToken ct)
+        {
+            Order.Add($"{(force ? "force-cancel" : "cancel")}:{runId}");
+            return Task.FromResult(CancelRefusal);
+        }
+        public Task Output(string repo, long checkId, string title, string summary, CancellationToken ct)
+        {
+            Order.Add($"output:{checkId}");
+            Title = title;
+            Summary = summary;
+            return Task.CompletedTask;
+        }
         public string? Title { get; private set; }
         public Task Complete(string repo, long checkId, string conclusion, string title, string summary, CancellationToken ct) { Order.Add($"complete:{conclusion}"); Conclusion = conclusion; Title = title; Summary = summary; return Task.CompletedTask; }
     }

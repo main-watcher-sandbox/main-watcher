@@ -47,9 +47,69 @@ public class WorkerTests
     [InlineData("queued")]
     public async Task RunningMainWatcherJobIsNotWorkEvenWhenOtherJobsFinished(string status)
     {
-        var target = new FakeGitHub { CheckList = [Pending(age: 200)] };
+        var target = new FakeGitHub { CheckList = [Pending()] };
         target.JobsByRun[41] = [Job("tests / report", "completed"), Job("tests / main-watcher", status)];
         Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+    }
+
+    // TS-U5 (c): a job that has not completed has two deadlines, and past either one the Planner must stop the run
+    // (ADR-013 point 5). The worker flags it so a cycle runs at all.
+    [Theory]
+    [InlineData(29, false)]
+    [InlineData(30, true)]
+    public async Task JobsThatNeverGetARunnerAreWorkAfterTheQueueDeadline(int age, bool expected)
+    {
+        var target = new FakeGitHub { CheckList = [Pending(age: age)] };
+        target.JobsByRun[41] = [Job("tests / report", "completed"), Job("tests / main-watcher", "queued")];
+        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        Assert.Equal(expected, work is not null);
+        if (!expected) return;
+        Assert.Contains("did not start within 30 minutes", work!.Reason);
+        // Dated by the deadline it passed, and not a report owed: only the Reporter's own work carries a check ID.
+        Assert.Equal(Now, work.Since);
+        Assert.Null(work.Check);
+    }
+
+    // The target's 30-minute timeout, the workflow's 20-minute margin and the 10-minute grace: 60 minutes from the job's start.
+    [Theory]
+    [InlineData(59, false)]
+    [InlineData(60, true)]
+    public async Task OverrunningJobsAreWorkWhateverTheirMarkerStepShows(int started, bool expected)
+    {
+        var target = new FakeGitHub { CheckList = [Pending(age: 200)] };
+        // The marker step has already succeeded, but the job itself has not completed, so no row of the outcome table applies.
+        target.JobsByRun[41] = [new("tests / main-watcher", "in_progress",
+            [new("main-watcher-test", "failure"), new("main-watcher-tests-finished", "success")], null, Now.AddMinutes(-started))];
+        var work = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        Assert.Equal(expected, work is not null);
+        if (expected) Assert.Contains("has run past its deadline", work!.Reason);
+    }
+
+    [Fact]
+    public async Task AStopAlreadyAskedForKeepsTheRunFlaggedUntilItHasStopped()
+    {
+        var check = Pending(age: 40) with { Summary = Markers.Set("", (StaleRun.CancelRequested, Markers.Stamp(Now.AddMinutes(-5)))) };
+        var target = new FakeGitHub { CheckList = [check] };
+        // The job got a runner after its queue deadline passed, so neither deadline holds now; the run is still being stopped.
+        target.JobsByRun[41] = [new("tests / main-watcher", "in_progress", [], null, Now.AddMinutes(-1))];
+        var stopping = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        Assert.Contains("was asked to stop and has not stopped", stopping!.Reason);
+        Assert.Equal(Now.AddMinutes(-5), stopping.Since);
+
+        // Once it has stopped, it is a report the Reporter owes, not a stale run: the outcome table judges its steps.
+        target.JobsByRun[41] = [Finished(completedAt: Now.AddMinutes(-1))];
+        var owed = await new WorkFinder(() => Now).Find(Watched(), target, Ct);
+        Assert.Contains("has completed", owed!.Reason);
+        Assert.Equal(7, owed.Check);
+    }
+
+    [Fact]
+    public async Task TheSandboxQueueDeadlineIsSharedWithThePlanner()
+    {
+        var target = new FakeGitHub { CheckList = [Pending(age: 10)] };
+        target.JobsByRun[41] = [Job("tests / main-watcher", "queued")];
+        Assert.Null(await new WorkFinder(() => Now).Find(Watched(), target, Ct));
+        Assert.NotNull(await new WorkFinder(() => Now, TimeSpan.FromMinutes(10)).Find(Watched(), target, Ct));
     }
 
     [Fact]

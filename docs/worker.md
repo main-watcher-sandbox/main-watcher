@@ -1,6 +1,6 @@
 ---
 owner: platform-team
-reviewed: 2026-09-17
+reviewed: 2026-09-18
 review_by: 2027-03-15
 ---
 
@@ -13,9 +13,9 @@ needs no inbound Service or Ingress.
 
 Issues #14 and #15 cover the cycle and the alerts described here, and #16 the hourly backup
 sweep, which does this work when the worker is not and says so; see
-[watcher.md](watcher.md#backup-sweep). Stale-run cancellation (#18), lease renewal (#19), merge
-reconciliation (#20) and the queue sweep (#21) are separate backlog items; a target whose only
-work is one of those is not flagged yet.
+[watcher.md](watcher.md#backup-sweep). #18 adds the stale-run deadlines below. Lease renewal
+(#19), merge reconciliation (#20) and the queue sweep (#21) are separate backlog items; a target
+whose only work is one of those is not flagged yet.
 
 ## A cycle
 
@@ -46,14 +46,33 @@ For each in-progress `main-watcher` check run on the target, oldest first:
 | A target run whose `main-watcher` job has completed | Yes | The Reporter can report it, whatever the run's other jobs are doing (ADR-013) |
 | A target run that no longer exists (404) | Yes | The Reporter records "outcome unknown" |
 | A completed target run with no `main-watcher` job | Yes | The Reporter records the broken contract |
-| A target run whose `main-watcher` job is still queued or running | No | Nothing to report yet |
+| A target run whose `main-watcher` job is still queued or running, within its deadlines | No | Nothing to report yet |
+| A job that has not started 30 minutes after the check run was created | Yes | `Planner.Stop` cancels the run (ADR-013 point 5) |
+| A started job past its `started_at` plus the `timeout` its run was dispatched with, the workflow's 20-minute margin and a 10-minute grace | Yes | The same |
+| A run already asked to stop, until its job has completed | Yes | The Planner asks again, force-cancels and finally alerts |
 | No `external_id`, and exactly one matching target run | Yes | `Planner.Recover` links it |
 | No `external_id`, and no matching run for 30 minutes | Yes | `Planner.Recover` completes it as neutral |
 | No `external_id`, and several matching runs | No | Recovery leaves it pending; a person decides |
 
+The deadlines are judged on the job's **status**, never on its `started_at`, which GitHub fills
+in for a queued job too, and they hold whatever the job's `main-watcher-tests-finished` step
+shows: the job has not completed, so no row of the outcome table applies yet. The run deadline
+uses the `timeout` recorded in the check run's own output when the run was dispatched, not
+`targets.yml` as the worker reads it this cycle, so the worker and the Planner agree about a
+running job even while a target's `timeout` is being edited. A completed job is
+never stale, with or without an artifact. The worker only flags these; `watch.yml` does the
+stopping, and [watcher.md](watcher.md#stale-target-runs) describes the lifecycle. A stale run is
+not a report owed, so it never feeds the "reporting pending" alert.
+
+`MW_QUEUE_DEADLINE_MINUTES` shortens the 30-minute queue deadline to 1–30 minutes for scenario
+tests (TS-S16 (g)); anything else falls back to 30. `watch.yml` reads the same variable, and the
+two **must** be given the same value, or the worker starts cycles for runs the Planner does not
+judge stale. Set it in the sandbox overlay's ConfigMap and in the sandbox watcher repo's
+variables together, and remove both afterwards.
+
 Each kind of work is also dated, which is what lets the hourly sweep say how long it waited for
-the worker. The worker itself uses that time for one thing only, the "reporting pending" alert
-below.
+the worker: a stale run by the deadline it passed, or by the time the stop was asked for. The
+worker itself uses that time for one thing only, the "reporting pending" alert below.
 
 Otherwise the head of `main` is work when `Eligibility.CanStart` says it is: no check run and
 the last test started more than `poll_interval` ago, or a newest `neutral` result older than
@@ -152,8 +171,8 @@ those readings as a completion would let the alert take nearly four hours.
 worker already flags that as work; it now also times it, from the job's own `completed_at`,
 so the clock survives a worker restart. A run that no longer exists has no job to date it,
 so the first cycle that saw the report owed starts the clock instead. Such a check run is
-pending, never stale: the deadlines of ADR-013 point 5 apply to a job that has **not**
-completed, and come with #18.
+pending, never stale: the deadlines of ADR-013 point 5 apply only to a job that has **not**
+completed.
 
 Every target still owing a report is judged on every cycle, whether or not that cycle looked
 at it. A target whose own `watch.yml` run is queued or running is skipped by the cycle, so
