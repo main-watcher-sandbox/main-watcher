@@ -48,7 +48,7 @@ For each in-progress `main-watcher` check run on the target, oldest first:
 | A completed target run with no `main-watcher` job | Yes | The Reporter records the broken contract |
 | A target run whose `main-watcher` job is still queued or running, within its deadlines | No | Nothing to report yet |
 | A job that has not started 30 minutes after the check run was created | Yes | `Planner.Stop` cancels the run (ADR-013 point 5) |
-| A started job past its `started_at` plus the target's `timeout`, the workflow's 20-minute margin and a 10-minute grace | Yes | The same |
+| A started job past its `started_at` plus the `timeout` its run was dispatched with, the workflow's 20-minute margin and a 10-minute grace | Yes | The same |
 | A run already asked to stop, until its job has completed | Yes | The Planner asks again, force-cancels and finally alerts |
 | No `external_id`, and exactly one matching target run | Yes | `Planner.Recover` links it |
 | No `external_id`, and no matching run for 30 minutes | Yes | `Planner.Recover` completes it as neutral |
@@ -56,7 +56,10 @@ For each in-progress `main-watcher` check run on the target, oldest first:
 
 The deadlines are judged on the job's **status**, never on its `started_at`, which GitHub fills
 in for a queued job too, and they hold whatever the job's `main-watcher-tests-finished` step
-shows: the job has not completed, so no row of the outcome table applies yet. A completed job is
+shows: the job has not completed, so no row of the outcome table applies yet. The run deadline
+uses the `timeout` recorded in the check run's own output when the run was dispatched, not
+`targets.yml` as the worker reads it this cycle, so the worker and the Planner agree about a
+running job even while a target's `timeout` is being edited. A completed job is
 never stale, with or without an artifact. The worker only flags these; `watch.yml` does the
 stopping, and [watcher.md](watcher.md#stale-target-runs) describes the lifecycle. A stale run is
 not a report owed, so it never feeds the "reporting pending" alert.

@@ -300,12 +300,17 @@ one of them applies at a time:
 | The `main-watcher` job | Deadline |
 | --- | --- |
 | Has not started (`queued`, or not yet created) | The check run's creation plus 30 minutes |
-| Has started (`in_progress`) | The job's `started_at` plus the target's `timeout`, plus the 20 minutes the reusable workflow adds for setup and upload, plus a 10-minute grace |
+| Has started (`in_progress`) | The job's `started_at` plus the `timeout` the run was **dispatched** with, plus the 20 minutes the reusable workflow adds for setup and upload, plus a 10-minute grace |
 
 The job's status decides which, never its `started_at`, which GitHub fills in for a queued job
-too. The jobs API does not report a job's `timeout-minutes`, so the run deadline is derived from
-the same two numbers `run-integration-tests.yml` uses; the grace covers a target pinned to a tag
-with a different margin. A started job GitHub gives no `started_at` for is never cancelled: it
+too. The jobs API does not report a job's `timeout-minutes`, so the Planner records the target's
+`timeout` in the check run's output when it creates it — `<!-- main-watcher timeout_minutes=30 -->`,
+written by the same call, and carried forward by every later output write — and the deadline is
+counted from that. It is deliberately not read from `targets.yml` each cycle: the running job
+keeps the `timeout-minutes` GitHub gave it, so lowering a target's `timeout` from 120 to 30 would
+otherwise cancel a healthy job at 60 minutes instead of its real 150, and raising it would delay
+detection. A check run with no recorded value, from before this was written, falls back to the
+current setting. The grace covers a target pinned to a workflow tag with a different margin. A started job GitHub gives no `started_at` for is never cancelled: it
 may still be testing. A completed job is judged by the [outcome table](#neutral-results) instead,
 whatever the deadlines say, and a deleted run gives "outcome unknown".
 

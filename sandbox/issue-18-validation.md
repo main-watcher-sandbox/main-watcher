@@ -33,8 +33,11 @@ TS-S16 (h) needs a job that outlives its own deadline. GitHub's job timeout is t
 `timeout` plus 20 minutes and normally ends a job first, which is exactly what ADR-013 says; a
 job that outlives it is the lost-runner case. That was arranged by lowering the target's
 `timeout` in the replica's `targets.yml` **after** the job had started: the running job keeps the
-`timeout-minutes` it was created with, while the watcher judges it against the smaller number,
-which is the same asymmetry a lost runner produces.
+`timeout-minutes` it was created with, while the watcher judged it against the smaller number.
+
+**That technique was itself the bug**, as the review of PR #49 found, and it no longer works. See
+[After the review](#after-the-review-the-deadline-no-longer-follows-the-configuration) below for
+what it does and does not leave standing.
 
 ## TS-S16 (g): the two deadlines, and no second test until a cancelled run has stopped
 
@@ -178,6 +181,7 @@ this point and needs an amending ADR; `docs/watcher.md` already describes the tw
 | Once stopped, the outcome table is applied to its steps | Half A: a marker `success` and a failed test step opened a lock after the cancel |
 | A 404 gives "outcome unknown" | The deleted run gave `neutral`, "Outcome unknown" |
 | A jobs API error changes nothing | Not reachable in the sandbox; covered by TS-U15 |
+| The run deadline is counted from the job's own timeout, not the configuration | Measured after the review: a job dispatched at `timeout: 340` was untouched past the deadline the lowered configuration implied (see [After the review](#after-the-review-the-deadline-no-longer-follows-the-configuration)) |
 | A crash between steps resumes from the recorded times | The refused cancels are that case: the marker was written before a request that never reached GitHub, and every later cycle continued from the recorded time. Also covered by TS-U15 |
 | 15 min after an unsuccessful force-cancel, "target run could not be stopped" is raised and no test starts for that target | Alert main-watcher#19 at 06:16:21; no test for a newer head for 78 minutes, including under a forced dispatch |
 | TS-U5 (c): the worker flags runs past either deadline whatever the marker step shows, until the run has stopped | The worker's own log lines drove every cycle above, including for a job whose `main-watcher-tests-finished` step had already succeeded |
@@ -187,4 +191,57 @@ this point and needs an amending ADR; `docs/watcher.md` already describes the tw
 `MW_QUEUE_DEADLINE_MINUTES` and `MW_SANDBOX_REFUSE_CANCEL` were deleted from the replica, the
 worker's ConfigMap entry was removed and the deployment re-applied, and the target's `timeout` is
 back to 30 in both `targets.yml` and the caller. The scenario's `watcher-infra` alerts
-(main-watcher #18, #19, #20) are left open as evidence.
+(main-watcher #18, #19, #20) are left open as evidence, as is lock sample-target#32 from the
+post-review run, which the next green head closes.
+
+## After the review: the deadline no longer follows the configuration
+
+The review of [PR #49](https://github.com/Actium-Group-Corporation/MainWatcher/pull/49) found
+that the run deadline was counted from the target's `timeout` **as `targets.yml` reads now**,
+while ADR-013 counts it from the job's **own** `timeout-minutes`, fixed when GitHub creates the
+run. Lowering a target's `timeout` from 120 to 30 would therefore have cancelled a healthy job at
+60 minutes instead of its real 150, and raising it would have delayed detection. The two halves
+of TS-S16 (h) above reached the run deadline by exactly that route, which is how the bug came to
+be exercised without being noticed.
+
+The Planner now records the dispatched `timeout` in the check run's own output, and
+`StaleRun.TestTimeout` reads it back; `TheRunDeadlineUsesTheTimeoutTheRunWasDispatchedWith`
+covers both directions and fails against the old code.
+
+### The regression, measured
+
+A run under the fixed code, with the old technique applied to it.
+
+| Time (UTC) | Event |
+| --- | --- |
+| 11:37:30 | Head [`f41dcad`](https://github.com/main-watcher-sandbox/sample-target/commit/f41dcadf430516a9e16109e69872f0ff28350a29) pushed with `failing_tests: ["Alpha"]` and `hang_upload_forever: true`, while `targets.yml` and the caller said `timeout: 340` |
+| 11:38:39 | Check run 105585520362 created; target run [35340649104](https://github.com/main-watcher-sandbox/sample-target/actions/runs/35340649104). Its output carries `<!-- main-watcher timeout_minutes=340 -->`, written by the same call that created it |
+| 11:38:50 | The job starts; by 11:39 `main-watcher-test: failure` and `main-watcher-tests-finished: success`, then the hang step |
+| 11:39:48 | `targets.yml` and the caller lowered to `timeout: 2` — **the old technique**. Under the old rule the deadline would now be 11:38:50 + 2 + 20 + 10 = **12:10:50** |
+| 12:10:50 | Nothing happens |
+| 12:12:15 | The check run is still `in_progress`, still titled "Tests running", still recording `timeout_minutes=340`, with no `cancel_requested`. The run is still `in_progress`. The worker has dispatched **no** cycle since 11:37:46: it never flagged the run, because it reads the same recorded value |
+
+Under the old code this healthy job would have been cancelled at 12:10:50 and its check run taken
+out of service. The recorded deadline is 11:38:50 + 340 + 30 = 18:08:50, which is what a job
+dispatched with `timeout: 340` is entitled to.
+
+The run was then cancelled by hand at 12:13:15 to release the target. Its steps still read
+`main-watcher-test: failure` and `main-watcher-tests-finished: success`, so the Reporter completed
+check 105585520362 as **`failure`** at 12:19:32 and opened lock
+[sample-target#32](https://github.com/main-watcher-sandbox/sample-target/issues/32) — the ADR-013
+table again preferring a finished test step over the cancellation that followed it.
+
+### What the earlier TS-S16 (h) evidence still shows
+
+- **Unaffected.** Everything from `cancel_requested` onwards: the cancel and its refusals, the
+  force-cancel 15 minutes later, the "target run could not be stopped" alert 15 minutes after
+  that, no test for a newer head across 78 minutes including under a forced dispatch, release by
+  deleting the run, and the outcome table judging a stopped job. None of it depends on how the
+  deadline was computed, only on its having fired.
+- **Superseded.** How the deadline was *reached*. Lowering `targets.yml` mid-flight was the bug,
+  not a test fixture, and the fix removes it. Reaching a run deadline in the sandbox now needs a
+  job whose real `timeout-minutes` exceeds the recorded one — a gate branch with a literal long
+  job timeout would do it — and that was not re-run, because the deadline arithmetic is covered
+  by TS-U15 and the regression above measures the property that changed.
+- **Unaffected.** All of TS-S16 (g): the queue deadline is counted from the check run's creation
+  either way, and no part of it reads the target's `timeout`.
