@@ -139,12 +139,17 @@ metrics store (PostgreSQL + Grafana) is deferred.
    itself was confirmed by a spike, MainWatcher#6). Passed since: TS-S14 (a), (b) and (d) on
    2026-09-17 (MainWatcher#12), TS-S16 (a) to (f) the same day (MainWatcher#13), TS-S14 (c)
    with the worker's alerts (MainWatcher#15), TS-S12 and TS-S18 with the neutral retry cap
-   (MainWatcher#17), and TS-S16 (g) and (h) with the stale-run lifecycle (MainWatcher#18).
+   (MainWatcher#17), TS-S16 (g) and (h) with the stale-run lifecycle (MainWatcher#18), and
+   TS-S7 with the lock lease (MainWatcher#19), bar its reconciliation clause.
 2. Verify team @-mentions from an App notify the team (TS-S10, R-10).
 3. TS-S13, check-run half: suite time, 5 slowest tests and retry flag, once the Reporter
    exists. The job-summary half passed on 2026-09-16 (MainWatcher#8): reporter v1.3.0 shows
    xUnit v3's millisecond durations in the right units (R-17).
 4. Remaining `[assumption]` tag: worker resource sizing.
+5. The sandbox replica's CI is red on its own working state (MainWatcher#53):
+   `CommittedTargetListParses` asserts the committed `targets.yml` watches no sandbox
+   target, which the replica must do. Until it is scoped, a real regression there looks
+   like the known failure, so read the run rather than the badge.
 
 ## Suggested next steps
 
