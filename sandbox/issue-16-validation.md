@@ -115,5 +115,6 @@ unchanged by them.
 - `main` of `sample-target` is [`a15eeb3`](https://github.com/main-watcher-sandbox/sample-target/commit/a15eeb35), green, with check 105423591210 `success` and nothing pending.
 - Lock #29 was closed by the App's own green report, with its closing comment; no target issue is open.
 - The probe branch `ts-s11-fail-open` is deleted and PR #28 is merged.
-- Alerts #10 and #11 are left open in the replica, as the evidence above.
-- The trigger worker is still scaled to zero, as it was found.
+- Alerts #10 and #11 hold the evidence above. They were left open for reading and have since been closed, like the alerts of the earlier scenarios; a closed alert changes nothing, since each sweep judges its conditions afresh.
+- The trigger worker was scaled back to one replica once the scenarios were done, still on the `main-watcher-worker:dev` image built for #14.
+- The replica was then moved on to the merged tree of PR #46, so its hourly sweeps run the code this record validates plus that PR's two review fixes.
