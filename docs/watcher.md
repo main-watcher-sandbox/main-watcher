@@ -21,8 +21,11 @@ the hourly backup sweep, which processes every enabled target and watches the wo
 
 Configure the `reporter` environment with `MAIN_WATCHER_APP_ID` (variable) and
 `MAIN_WATCHER_PRIVATE_KEY` (secret). Install that App on each target with
-Contents read, Actions write, Checks write and Issues write. The workflow obtains a token
-scoped to the selected repository after building the watcher.
+Contents read, Actions write, Checks write and Issues write. Where a target's `notify`
+list, or the CODEOWNERS `*` rule it falls back to, names a team, the App also needs
+organisation Members read: without it the team mention renders as a team link but notifies
+nobody (R-10, TS-S10). The workflow obtains a token scoped to the selected repository after
+building the watcher.
 Before requesting that token, `--validate-target` uses the same configuration parser
 as the cycle and writes the configured owner/repository to the step outputs. Unknown,
 malformed or disabled targets fail this step without requesting a token.
@@ -166,7 +169,8 @@ so a failed issue write leaves the check `in_progress` for the next cycle.
 
 - **Red.** If no open `main-broken` issue authored by the App exists, the Reporter
   opens one. Its body mentions the target's `notify` handles, else the owners of the
-  last `*` rule in the first CODEOWNERS file on `main` (`.github/`, root, `docs/`), then
+  last `*` rule in the first CODEOWNERS file on `main` (`.github/`, root, `docs/`) — a team
+  handle in either place needs the App's organisation Members read to notify anyone — then
   shows the failing commit, the failing tests (or "failing tests unknown") and the target
   run. The hidden marker holds `first_red`, `lease_until` (now + `lock_lease`, read by the gate
   and renewed on every later cycle), `reported_check` and `reported_sha`, plus `last_green` when
