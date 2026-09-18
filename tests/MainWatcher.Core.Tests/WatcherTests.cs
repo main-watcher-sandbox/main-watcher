@@ -484,9 +484,22 @@ public class WatcherTests
     {
         var targets = TargetConfiguration.Parse(Fixture("targets.yml")).Targets;
         // The watcher repo watches no sandbox target: the private replica does, and two watchers would race for its
-        // check runs (sandbox/README.md).
-        Assert.DoesNotContain(targets, t => t.Repo.StartsWith("main-watcher-sandbox/", StringComparison.OrdinalIgnoreCase));
+        // check runs (sandbox/README.md). The clause is the watcher repo's own invariant, not its tree's, so it is
+        // scoped by GITHUB_REPOSITORY: the replica runs this same test over a list that watches the sandbox target
+        // on purpose, and asserting there would leave it red on its own working state (#53). Do not unscope it.
+        // Away from Actions the variable is unset, which is a checkout of this repo, so the clause still applies.
+        if (RunningInTheSandboxReplica)
+        {
+            return;
+        }
+
+        Assert.DoesNotContain(targets, t => t.Repo.StartsWith(SandboxOwner, StringComparison.OrdinalIgnoreCase));
     }
+
+    const string SandboxOwner = "main-watcher-sandbox/";
+
+    static bool RunningInTheSandboxReplica =>
+        (Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") ?? "").StartsWith(SandboxOwner, StringComparison.OrdinalIgnoreCase);
 
     [Fact]
     public async Task RejectedDispatchDoesNotLeaveCheckInProgress()
