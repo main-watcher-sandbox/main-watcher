@@ -17,8 +17,11 @@ public static class Markers
         .Where(f => f.StartsWith(name + "=", StringComparison.Ordinal)).Select(f => f[(name.Length + 1)..]).LastOrDefault();
 
     /// <summary>The last value of <paramref name="name"/> read as a UTC time; null when it is missing or unreadable.</summary>
-    public static DateTimeOffset? Time(string? text, string name) =>
-        DateTimeOffset.TryParse(Field(text, name), CultureInfo.InvariantCulture,
+    public static DateTimeOffset? Time(string? text, string name) => Read(Field(text, name));
+
+    /// <summary>A marker value read as a UTC time; null when it is missing or unreadable. Compound fields hold several.</summary>
+    public static DateTimeOffset? Read(string? value) =>
+        DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
             DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var time) ? time : null;
 
     /// <summary>A time in the form <see cref="Time"/> reads back, whatever the writer's offset.</summary>

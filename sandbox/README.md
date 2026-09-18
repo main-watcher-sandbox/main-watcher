@@ -14,6 +14,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-16-validation.md` | TS-S11: a push tested by a sweep with the worker scaled to zero, the "worker appears down" and gate fail-open alerts, and what GitHub's scheduler actually did, for #16 |
 | `issue-17-validation.md` | TS-S12 and TS-S18: a cancelled run retested on the same head, three neutral results reaching the cap, the "head untestable" alert and a forced dispatch, for #17 |
 | `issue-18-validation.md` | TS-S16 (g) and (h): the queue and run deadlines, the cancel and force-cancel lifecycle and the "could not be stopped" alert, for #18 |
+| `issue-19-validation.md` | TS-S7: merges through a watcher outage with and without a lock, the "LOCK LEASE EXPIRED" gate, and the renewal, lapse record, comment and alert on recovery, for #19 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
@@ -55,6 +56,8 @@ gh api -X PUT repos/main-watcher-sandbox/main-watcher/contents/targets.yml \
   -f message='Sandbox: watch sample-target' \
   -f sha="$(gh api repos/main-watcher-sandbox/main-watcher/contents/targets.yml --jq .sha)" \
   -f content="$(base64 -w0 <<'YAML'
+# A 10-minute lock_lease, so a lapse takes minutes rather than four hours (TS-S7).
+lock_lease: 10
 targets:
   - repo: main-watcher-sandbox/sample-target
     test_command: dotnet test --no-restore
@@ -155,10 +158,11 @@ and `timeout-minutes`, so the extra input is accepted.
 
 ## Reporter fault switch
 
-For TS-S14, set the replica's `MW_SANDBOX_EXIT_AFTER` variable to the Reporter writes to
+For TS-S14, set the replica's `MW_SANDBOX_EXIT_AFTER` variable to the issue writes to
 stop after (`create`, `comment`, `update`, `close`, `override`, comma-separated). The cycle
 exits right after that write, leaving the check run `in_progress`; the next cycle replays
-the report.
+the report. The lease's writes have names too — `renew`, `lapse` and `lapse_reported` — which is
+how TS-S17 (b) stops a cycle between a renewal and its queue sweep.
 
 The check run's own completion has names too: `check:success`, `check:failure` and
 `check:neutral`. These stop the cycle after the report is finished, not part-way through it, so

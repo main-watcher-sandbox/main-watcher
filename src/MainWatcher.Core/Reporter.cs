@@ -13,8 +13,6 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
 {
     public const string DefaultBotLogin = "main-watcher[bot]";
     public const string LockLabel = "main-broken";
-    /// <summary><c>lock_lease</c> (ADR-014). Renewal and configuration come with the lease work (#19).</summary>
-    public static readonly TimeSpan LockLease = TimeSpan.FromHours(4);
     /// <summary><c>reconcile_lookback</c> (ADR-015): closed locks updated within it are read before any write.</summary>
     public static readonly TimeSpan ReconcileLookback = TimeSpan.FromDays(30);
     /// <summary>GitHub rejects issue bodies over 65536 characters, and a rejected body would leave <c>main</c> unlocked.</summary>
@@ -268,7 +266,8 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         var mentions = await MentionList(target, ct);
         var pushes = await PushList.Collect(github, target.Repo, check.Sha, ct);
         WalkBacks.Add(new(check.Id, pushes.CommitsChecked, pushes.Source));
-        var leaseUntil = Markers.Stamp(Now.Add(LockLease));
+        // The lease starts the moment the lock exists, and the Planner renews it on every later cycle (ADR-014).
+        var leaseUntil = Markers.Stamp(Now + target.LockLease);
         var body = (mentions.Count > 0 ? string.Join(" ", mentions) + "\n\n" : "")
             + $"Main Watcher tests failed on `main` at {Commit(target.Repo, check.Sha)}.\n\n"
             + "**Failing tests**\n\n" + FailureList(reports, FailureBudget) + "\n\n"
@@ -278,7 +277,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
             + "**Pushes since the last green run**\n\n" + PushTable(target.Repo, check.Sha, pushes, PushBudget) + "\n\n"
             + $"While this issue is open, the merge queue accepts only pull requests labelled `fixes-main`. "
             + "A green Main Watcher run on `main` closes it. Closing it by hand overrides the lock.\n\n"
-            + "<!-- main-watcher " + (pushes.Green is { } green ? $"last_green={green.Sha} " : "") + $"first_red={check.Sha} lease_until={leaseUntil} "
+            + "<!-- main-watcher " + (pushes.Green is { } green ? $"last_green={green.Sha} " : "") + $"first_red={check.Sha} {Lease.Until}={leaseUntil} "
             + $"reported_check={check.Id} reported_sha={check.Sha} -->";
         var issue = await github.CreateIssue(target.Repo, $"main is broken: tests failed on {Short(check.Sha)}", body, LockLabel, ct);
         afterWrite?.Invoke("create");

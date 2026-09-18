@@ -39,22 +39,22 @@ try
     // Sandbox fault injection (TS-S16 (g) and (h)): a shorter queue deadline, so a job that will never get a runner is
     // cancelled in minutes, and a switch that makes every cancel fail. The worker must be given the same deadline.
     var queueDeadline = StaleRun.ConfiguredQueueDeadline(Environment.GetEnvironmentVariable("MW_QUEUE_DEADLINE_MINUTES"));
-    var planner = new Planner(github, alerts: alerts, botLogin: botLogin, queueDeadline: queueDeadline,
-        cancelsRuns: Environment.GetEnvironmentVariable("MW_SANDBOX_REFUSE_CANCEL") != "true");
-    // Sandbox fault injection (TS-S14): exit right after the named Reporter write, so the next cycle replays the report.
+    // Sandbox fault injection (TS-S14, TS-S17 (b)): exit right after the named issue write, so the next cycle replays it.
     var exitAfter = Environment.GetEnvironmentVariable("MW_SANDBOX_EXIT_AFTER") ?? "";
-    var reporter = new Reporter(github, alerts, botLogin,
-        afterWrite: write =>
-        {
-            if (!exitAfter.Split(',', StringSplitOptions.TrimEntries).Contains(write)) return;
-            Console.WriteLine($"MW_SANDBOX_EXIT_AFTER: exiting after the Reporter's {write} write.");
-            Environment.Exit(3);
-        });
+    void ExitAfter(string write)
+    {
+        if (!exitAfter.Split(',', StringSplitOptions.TrimEntries).Contains(write)) return;
+        Console.WriteLine($"MW_SANDBOX_EXIT_AFTER: exiting after the {write} write.");
+        Environment.Exit(3);
+    }
+    var planner = new Planner(github, alerts: alerts, botLogin: botLogin, queueDeadline: queueDeadline,
+        cancelsRuns: Environment.GetEnvironmentVariable("MW_SANDBOX_REFUSE_CANCEL") != "true", afterWrite: ExitAfter);
+    var reporter = new Reporter(github, alerts, botLogin, afterWrite: ExitAfter);
     using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
     // The hourly backup sweep (C-7, ADR-010): every enabled target gets a cycle, and this one also reports what only the
     // sweep looks for. A dispatch with no target sweeps too, which is how the scenario is run by hand.
     var sweep = Environment.GetEnvironmentVariable("MW_SWEEP") == "true"
-        ? new Sweep(github, watcherGithub, alertRepo, alerts, new WorkFinder()) : null;
+        ? new Sweep(github, watcherGithub, alertRepo, alerts, new WorkFinder(queueDeadline: queueDeadline, botLogin: botLogin)) : null;
     var sweepFailed = false;
     if (sweep is not null)
     {
@@ -90,6 +90,15 @@ try
             Console.Error.WriteLine($"Check {pending.Id}: {e.Message}");
         }
     }
+    // ADR-014: renewal is what tells the gate this lock is still maintained, so it happens on every cycle that processes the
+    // target, before planning and whether or not anything else in the cycle worked.
+    var renewFailed = false;
+    try { foreach (var line in await planner.Renew(target, timeout.Token)) Console.WriteLine(line); }
+    catch (Exception e) when (!timeout.IsCancellationRequested)
+    {
+        renewFailed = true;
+        Console.Error.WriteLine($"Lease renewal failed: {e.Message}");
+    }
     foreach (var walk in reporter.WalkBacks)
     {
         // ADR-003: the walk-back length is logged in the job summary; revisit it if it regularly nears 50.
@@ -100,7 +109,7 @@ try
     foreach (var failure in reporter.AlertFailures) Console.Error.WriteLine($"Alert not raised: {failure}");
     // A sweep alert is never a required write (ADR-010): a failed one fails the run at the end, but the backup testing this
     // run exists to do still happens, since it is exactly when the worker is down that nothing else will.
-    if (recoveryFailed || reporter.AlertFailures.Count > 0) return 1;
+    if (recoveryFailed || renewFailed || reporter.AlertFailures.Count > 0) return 1;
     var planned = await planner.Plan(target, Environment.GetEnvironmentVariable("MW_FORCE") == "true", timeout.Token);
     Console.WriteLine(planned is null ? "No eligible head." : string.IsNullOrEmpty(planned.ExternalId)
         ? $"Check {planned.Id} awaits dispatch recovery." : $"Started check {planned.Id}, target run {planned.ExternalId}.");

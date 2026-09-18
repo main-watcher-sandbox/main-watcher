@@ -13,8 +13,8 @@ needs no inbound Service or Ingress.
 
 Issues #14 and #15 cover the cycle and the alerts described here, and #16 the hourly backup
 sweep, which does this work when the worker is not and says so; see
-[watcher.md](watcher.md#backup-sweep). #18 adds the stale-run deadlines below. Lease renewal
-(#19), merge reconciliation (#20) and the queue sweep (#21) are separate backlog items; a target
+[watcher.md](watcher.md#backup-sweep). #18 adds the stale-run deadlines below and #19 the lock
+lease. Merge reconciliation (#20) and the queue sweep (#21) are separate backlog items; a target
 whose only work is one of those is not flagged yet.
 
 ## A cycle
@@ -74,7 +74,7 @@ Each kind of work is also dated, which is what lets the hourly sweep say how lon
 the worker: a stale run by the deadline it passed, or by the time the stop was asked for. The
 worker itself uses that time for one thing only, the "reporting pending" alert below.
 
-Otherwise the head of `main` is work when `Eligibility.CanStart` says it is: no check run and
+Then the head of `main` is work when `Eligibility.CanStart` says it is: no check run and
 the last test started more than `poll_interval` ago, or a newest `neutral` result older than
 `poll_interval` while the head has fewer than 3 neutral results (ADR-017). The worker calls
 the shared rule in `MainWatcher.Core` and keeps no copy; it never forces, so the
@@ -82,10 +82,23 @@ three-neutral cap holds until someone dispatches `watch.yml` with `force: true`.
 fixtures, `tests/MainWatcher.Core.Tests/Fixtures/eligibility.json`, are read by the rule's
 own tests, the Planner's and the worker's (TS-U3, TS-U5, TS-U13).
 
-The worker therefore makes about three read calls per target per cycle while a target is
-idle, plus one for the watcher repo's `watch.yml` runs (R-13). A cycle that finds an eligible
-head reads that target's repository activity as well, to date the head's push; an idle target
-never pays for that read.
+Last, an open lock whose lease wants renewing is work (ADR-014). The gate enforces a lock only
+while its `lease_until` marker is in the future, so the worker asks for a cycle once a lease is an
+hour old, or halfway through `lock_lease` where that comes sooner, and again for a lease that is
+missing, unreadable or further ahead than a renewal could have set it. The half only bites below a
+two-hour `lock_lease`, which in practice means the sandbox's ten minutes: a fixed hour would there
+ask for the renewal only once the lease had expired, so every renewal would follow a window in
+which the gate had stopped enforcing a lock nobody had abandoned. Only locks
+authored by the App count, as they do for the gate and the Reporter; `MW_BOT_LOGIN` names that App
+where it is not `main-watcher[bot]`. The work is dated by the moment renewal became due, and it
+carries no check ID: it is not a report owed. `watch.yml` does the renewing, and
+[watcher.md](watcher.md#lock-lease) describes the lease and what a lapse records.
+
+The worker therefore makes about four read calls per target per cycle while a target is
+idle, plus one for the watcher repo's `watch.yml` runs (R-13). This is the Issues: read
+permission ADR-014 gave `mw-observer`. A cycle that finds an eligible head reads that target's
+repository activity as well, to date the head's push, and stops before the lock read; an idle
+target never pays for the activity read.
 
 ## Configuration
 
@@ -100,6 +113,7 @@ the worker exits with code 2 without starting a cycle.
 | `MW_DOORBELL_APP_ID`, `MW_DOORBELL_KEY_FILE` | `mw-doorbell`'s App ID and PEM private key file | Required |
 | `MW_CHECK_PERIOD_SECONDS` | Cycle interval, 10 to 3600 | 60 |
 | `MW_TARGETS_PATH` | Path of the target list in the watcher repo | `targets.yml` |
+| `MW_BOT_LOGIN` | The App that authors lock issues, whose leases the worker reads | `main-watcher[bot]` |
 | `MW_GITHUB_API_URL` | GitHub REST base URL | `https://api.github.com/` |
 | `ASPNETCORE_HTTP_PORTS` | The port `/healthz` listens on | 8080 in the image |
 

@@ -38,6 +38,12 @@ public sealed record WorkerSettings(
     /// </summary>
     public TimeSpan QueueDeadline { get; init; } = StaleRun.DefaultQueueDeadline;
 
+    /// <summary>
+    /// The App whose lock issues carry a lease, from <c>MW_BOT_LOGIN</c>: <c>watch.yml</c> resolves the same name from its
+    /// token's App slug, and a renamed App would otherwise leave the worker asking for no renewal at all (ADR-014).
+    /// </summary>
+    public string BotLogin { get; init; } = Reporter.DefaultBotLogin;
+
     public static WorkerSettings Load(Func<string, string?> env)
     {
         var errors = new List<string>();
@@ -87,7 +93,8 @@ public sealed record WorkerSettings(
         if (errors.Count > 0) throw new WorkerConfigurationException(string.Join(" ", errors));
         return new(watcherRepo, mainWatcher, observer, doorbell, period, targets, api!)
         {
-            QueueDeadline = StaleRun.ConfiguredQueueDeadline(env("MW_QUEUE_DEADLINE_MINUTES"))
+            QueueDeadline = StaleRun.ConfiguredQueueDeadline(env("MW_QUEUE_DEADLINE_MINUTES")),
+            BotLogin = env("MW_BOT_LOGIN")?.Trim() is { Length: > 0 } login ? login : Reporter.DefaultBotLogin
         };
     }
 

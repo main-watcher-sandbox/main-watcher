@@ -8,7 +8,8 @@ namespace MainWatcher.Core;
 /// <see cref="Since"/> is when the work became available: the <c>main-watcher</c> job's completion for a report the Reporter
 /// owes (ADR-013), the check run's creation for one awaiting linking, the end of the dispatch window for one that never got a
 /// target run, the deadline passed or the stop asked for by a run that must be cancelled (ADR-013 point 5), and the push that
-/// made an eligible head current (ADR-017). It is null when GitHub does not date the work — a
+/// made an eligible head current (ADR-017), and the moment an open lock's lease wanted renewing (ADR-014). It is null when
+/// GitHub does not date the work — a
 /// deleted target run, or a head whose push the activity read does not name — so the hourly sweep never judges how long work
 /// has waited from a guess. <see cref="Check"/> is set only when the work is a report already owed.
 /// </para>
@@ -21,7 +22,9 @@ public sealed record Work(string Reason, DateTimeOffset? Since = null, long? Che
 /// asks the same question to see how long work has been waiting for the worker.
 /// </summary>
 /// <param name="queueDeadline">The ADR-013 queue deadline, which the Planner must be given to the same value.</param>
-public sealed class WorkFinder(Func<DateTimeOffset>? clock = null, TimeSpan? queueDeadline = null)
+/// <param name="botLogin">The App whose lock issues carry a lease, as the Planner, the Reporter and the gate all read it.</param>
+public sealed class WorkFinder(Func<DateTimeOffset>? clock = null, TimeSpan? queueDeadline = null,
+    string botLogin = Reporter.DefaultBotLogin)
 {
     /// <summary>Why the target needs a <c>watch.yml</c> cycle, or null when it has no work.</summary>
     public async Task<Work?> Find(Target target, IGitHubGateway github, CancellationToken ct)
@@ -65,10 +68,20 @@ public sealed class WorkFinder(Func<DateTimeOffset>? clock = null, TimeSpan? que
         }
         var head = await github.MainHead(repo, ct);
         var interval = TimeSpan.FromMinutes(target.PollInterval);
-        return Eligibility.CanStart(head, checks, interval, now)
-            ? new($"head {head[..Math.Min(7, head.Length)]} is eligible for a test",
-                await EligibleSince(github, repo, head, checks, interval, ct))
-            : null;
+        if (Eligibility.CanStart(head, checks, interval, now))
+            return new($"head {head[..Math.Min(7, head.Length)]} is eligible for a test",
+                await EligibleSince(github, repo, head, checks, interval, ct));
+        // ADR-014: an open lock is enforced only while the watcher keeps renewing its lease, and renewal must not depend on
+        // the unreliable schedule (C-7). This read is the worker's one extra call per idle target per cycle (R-13).
+        foreach (var issue in (await github.OpenIssues(repo, Reporter.LockLabel, ct))
+            .Where(i => i.Author == botLogin && i.AuthorType == "Bot").OrderBy(i => i.Number))
+        {
+            if (!Lease.RenewalDue(issue.Body, target.LockLease, now)) continue;
+            var due = Lease.Due(issue.Body, target.LockLease, now);
+            return new($"lock #{issue.Number}: its lease " + (due is null
+                ? "is missing or unreadable" : $"has wanted renewing since {Markers.Stamp(due.Value)}"), due);
+        }
+        return null;
     }
 
     /// <summary>
