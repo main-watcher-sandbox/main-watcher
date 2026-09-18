@@ -275,9 +275,11 @@ stopped renews nothing and the gate lets ordinary merges through within `lock_le
 Renewal covers every open lock the App authored; a hand-made `main-broken` issue has no lease,
 because the gate does not enforce one either.
 
-The trigger worker asks for a cycle once a lease is an hour old, so renewal never depends on the
-unreliable schedule (C-7); the hourly sweep renews as a backup. A `lock_lease` shorter than that
-hour, as the sandbox uses, expires first, and an expired lease always wants renewing.
+The trigger worker asks for a cycle once a lease is an hour old, or halfway through `lock_lease`
+where that comes sooner, so renewal never depends on the unreliable schedule (C-7); the hourly
+sweep renews as a backup. The half only bites below a two-hour `lock_lease`, which in practice
+means the sandbox's ten minutes, and it is what keeps a short lease from being renewed only after
+it has already expired.
 
 A renewal of a lease that had already run out is a **lapse**, and the recovery is written in this
 order, so that a cycle stopped at any point resumes where it left off:

@@ -84,8 +84,11 @@ own tests, the Planner's and the worker's (TS-U3, TS-U5, TS-U13).
 
 Last, an open lock whose lease wants renewing is work (ADR-014). The gate enforces a lock only
 while its `lease_until` marker is in the future, so the worker asks for a cycle once a lease is an
-hour old — or, where `lock_lease` is shorter than that hour, once it has expired — and again for a
-lease that is missing, unreadable or further ahead than a renewal could have set it. Only locks
+hour old, or halfway through `lock_lease` where that comes sooner, and again for a lease that is
+missing, unreadable or further ahead than a renewal could have set it. The half only bites below a
+two-hour `lock_lease`, which in practice means the sandbox's ten minutes: a fixed hour would there
+ask for the renewal only once the lease had expired, so every renewal would follow a window in
+which the gate had stopped enforcing a lock nobody had abandoned. Only locks
 authored by the App count, as they do for the gate and the Reporter; `MW_BOT_LOGIN` names that App
 where it is not `main-watcher[bot]`. The work is dated by the moment renewal became due, and it
 carries no check ID: it is not a report owed. `watch.yml` does the renewing, and

@@ -82,3 +82,67 @@ own writes by a few seconds.
 | 13:41:2x | The group was dropped and PR #35 left the queue, still open |
 | 13:41:5x | `kubectl scale deploy/trigger-worker --replicas=0` |
 | 13:42:01 | `gh workflow disable watch.yml`: the watcher is down again, with a lock open and 7 minutes of lease left |
+
+## (b) Once `lock_lease` has passed, the gate fails open and the merge proceeds
+
+The lease ran out at 13:49:20Z with the watcher still down. Nothing had touched the lock since
+it opened: at 13:49 its `updated_at` was still `2026-09-18T13:39:21Z`, with no comments.
+
+| Time (UTC) | Event |
+| --- | --- |
+| 13:50:19 | The same PR [sample-target#35](https://github.com/main-watcher-sandbox/sample-target/pull/35), still unlabelled, added to the merge queue again |
+| 13:50:57 | Merge-group gate [run 35352599988](https://github.com/main-watcher-sandbox/sample-target/actions/runs/35352599988): ``##[warning]The lock is open but its lease is missing, unreadable, expired or more than 24 h ahead: #34 (lease_until=2026-09-18T13:49:20Z). The watcher has st…`` → `main-watcher-gate` `success` |
+| 13:51:02 | `main-watcher/gate-fail-open` ran and succeeded, rather than being skipped as it is on an enforced lock |
+| 13:51:10 | The group merged as [`5e191b1`](https://github.com/main-watcher-sandbox/sample-target/commit/5e191b1a1aa3b3b4b59b2a601044fdb5177aeab5) — an unlabelled PR onto a `main` that is still red |
+
+This is the NFR-3 trade ADR-014 chose, seen end to end: the lock stayed open and the issue was
+never touched, but ten minutes without a watcher was enough for the gate to stop enforcing it.
+The gate needed no new credential to decide that; it read the marker it already reads.
+
+## The watcher returns: renewal, lapse and enforcement again
+
+| Time (UTC) | Event |
+| --- | --- |
+| 13:52:18 | `watch.yml` enabled |
+| 13:52:2x | Worker scaled back to 1; `mw-observer` and `mw-doorbell` authenticated at 13:52:24 |
+| 13:52:54 | First cycle back, dispatched by the worker for the new head: `started watch.yml because head 5e191b1 is eligible for a test` → cycle [35352824473](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35352824473) |
+| 13:53:56 | That cycle's renewal, logged before it planned anything: `Lock #34: lease renewed until 2026-09-18T14:03:56Z; it had lapsed at 2026-09-18T13:49:20Z.` |
+| 13:53:57 | Lapse comment on lock #34 |
+| 13:53:58 | Alert [main-watcher#21](https://github.com/main-watcher-sandbox/main-watcher/issues/21) "Lock lease lapsed on main-watcher-sandbox/sample-target" |
+| 13:53:59 | `lapse_reported` written; the issue's `updated_at` settles here |
+| 13:54:0x | The same cycle went on to `Started check 105625173615, target run 35352935761.` for the new head |
+
+The marker after recovery, all of it written by that one cycle:
+
+```
+<!-- main-watcher last_green=2c51f4c… first_red=c0779d2… reported_check=105619657276
+     reported_sha=c0779d2… lease_until=2026-09-18T14:03:56Z
+     lapsed=2026-09-18T13:49:20Z..2026-09-18T13:53:56Z sweep_required=2026-09-18T13:53:56Z
+     lapse_reported=2026-09-18T13:53:56Z -->
+```
+
+`lease_until`, `lapsed` and `sweep_required` share one timestamp and one write, which is what
+ADR-014 point 4 asks for: a crash straight after the renewal cannot leave a lock that is
+enforced again with no record that it ever stopped being. `lapse_reported` is a second write,
+made only after the comment and the alert, and it carries the renewal time, so a cycle that dies
+between them leaves the pair owed and a later one posts what is missing.
+
+The comment, `main-watcher[bot]` on #34:
+
+> This lock's lease ran out at 2026-09-18T13:49:20Z and was renewed at 2026-09-18T13:53:56Z, 5
+> minutes later. While a lease is expired the gate fails open, so the merge queue accepted pull
+> requests without the `fixes-main` label during that window (ADR-014). The lock is enforced
+> again now.
+>
+> `<!-- main-watcher lapsed=2026-09-18T13:49:20Z..2026-09-18T13:53:56Z -->`
+
+The merge queue did exactly that: `5e191b1` is the unlabelled PR #35. Reporting it against the
+lock is reconciliation's job (#20); the alert says so, and both the comment and the alert carry
+the lapse window as their de-duplication key.
+
+Enforcement came straight back:
+
+| Time (UTC) | Event |
+| --- | --- |
+| 13:55:45 | PR [sample-target#36](https://github.com/main-watcher-sandbox/sample-target/pull/36), unlabelled, added to the merge queue |
+| 13:56:14 | Merge-group gate [run 35353120272](https://github.com/main-watcher-sandbox/sample-target/actions/runs/35353120272): ``##[error]`main` is locked by #34 … Only PRs labelled `fixes-main` can merge.`` → `failure` |
