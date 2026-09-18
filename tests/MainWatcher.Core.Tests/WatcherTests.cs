@@ -206,6 +206,92 @@ public class WatcherTests
         Assert.Equal(Now, Markers.Time(fake.Find("owner/repo", 1).Body, Lease.Reported));
     }
 
+    // A renewal that died before reporting, followed by a second lapse, must lose neither window (PR #52 review).
+    [Fact]
+    public async Task ASecondLapseKeepsTheWindowTheFirstOneNeverReported()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var first = Now.AddMinutes(-90);
+        var fake = new FakeGitHub { StopAfterWrites = 1 };
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+            Markers.Set("Locked.", (Lease.Until, Markers.Stamp(first))));
+        var watcher = new FakeGitHub();
+        var target = new Target { Repo = "owner/repo" };
+
+        // The renewal records the lapse and the cycle dies before its comment.
+        var died = Now;
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            new Planner(fake, () => died, alerts: new Alerts(watcher, "owner/watcher")).Renew(target, ct));
+        Assert.Empty(fake.Comments);
+        fake.StopAfterWrites = null;
+
+        // Nothing runs again until the lease that renewal wrote has itself run out.
+        var later = Now + Lease.Default + TimeSpan.FromMinutes(30);
+        await new Planner(fake, () => later, alerts: new Alerts(watcher, "owner/watcher")).Renew(target, ct);
+
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Equal([(first, died), (died + Lease.Default, later)], Lease.Windows(body));
+        Assert.Empty(Lease.Unreported(body));
+        Assert.Equal(later, Markers.Time(body, Lease.Reported));
+        // One comment per window, each keyed to its own, and the alert names both.
+        Assert.Equal(2, fake.Comments.Count);
+        Assert.Contains($"ran out at {Markers.Stamp(first)}", fake.Comments[0]);
+        Assert.Contains($"ran out at {Markers.Stamp(died + Lease.Default)}", fake.Comments[1]);
+        Assert.Single(watcher.Issues["owner/watcher"]);
+        Assert.Single(watcher.Comments);
+    }
+
+    // A green run reports and closes before the renewal runs, so the debt outlives the open lock (PR #52 review).
+    [Fact]
+    public async Task ALapseOwedByALockThatHasClosedIsStillReported()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var lapse = $"{Markers.Stamp(Now.AddMinutes(-90))}..{Markers.Stamp(Now.AddMinutes(-60))}";
+        var fake = new FakeGitHub();
+        var closed = fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+            Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddHours(3))), (Lease.Lapsed, lapse)));
+        closed.Issue = closed.Issue with { State = "closed", StateReason = "completed" };
+        var watcher = new FakeGitHub();
+
+        var lines = await new Planner(fake, () => Now, alerts: new Alerts(watcher, "owner/watcher"))
+            .Renew(new() { Repo = "owner/repo" }, ct);
+
+        Assert.Contains("reported 1 lapse(s) it closed still owing", lines.Single());
+        Assert.Contains("ran out at", fake.Comments.Single());
+        Assert.Single(watcher.Issues["owner/watcher"]);
+        // A closed lock needs no lease, so the only body write is the one that marks the debt paid.
+        Assert.Equal(["comment:1", "update:1"], fake.Order);
+        var body = fake.Find("owner/repo", 1).Body;
+        Assert.Empty(Lease.Unreported(body));
+        Assert.Equal(Now.AddHours(3), MainWatcher.Gate.LockLease.ReadLeaseUntil(body));
+    }
+
+    [Fact]
+    public async Task AClosedLockWithNothingOwedIsLeftAlone()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        var closed = fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+            Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(-90)))));
+        closed.Issue = closed.Issue with { State = "closed", StateReason = "completed" };
+        Assert.Empty(await new Planner(fake, () => Now).Renew(new() { Repo = "owner/repo" }, ct));
+        // No lease is renewed on a closed lock: a lock that is not enforced needs no lease, and it is no lapse either.
+        Assert.Empty(fake.Order);
+    }
+
+    [Fact]
+    public void TheLapseMarkerIsBoundedAndSkipsUnreadableWindows()
+    {
+        var windows = Enumerable.Range(0, Lease.MaxWindows + 5)
+            .Select(i => (From: Now.AddHours(i), At: Now.AddHours(i).AddMinutes(1))).ToArray();
+        var kept = Lease.Windows(Markers.Set("Locked.", (Lease.Lapsed, Lease.Field(windows))));
+        Assert.Equal(Lease.MaxWindows, kept.Count);
+        // The oldest are kept: they are the ones reconciliation has to look back at.
+        Assert.Equal(windows.Take(Lease.MaxWindows), kept);
+        Assert.Equal([(windows[0].From, windows[0].At)],
+            Lease.Windows(Markers.Set("Locked.", (Lease.Lapsed, $"{Lease.Field([windows[0]])},not..a-window,{Markers.Stamp(Now)}"))));
+    }
+
     [Fact]
     public async Task ALapseCannotBeReportedWithoutAnAlertSink()
     {

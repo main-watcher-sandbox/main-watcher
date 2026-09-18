@@ -286,17 +286,27 @@ order, so that a cycle stopped at any point resumes where it left off:
 
 1. the same issue-body update that sets the new `lease_until` also writes
    `lapsed=<old lease_until>..<renewal time>` and the ADR-016 `sweep_required`, so a crash right
-   after the renewal cannot hide that the lock was unenforced;
-2. a comment on the lock gives the window and says the merge queue accepted unlabelled pull
+   after the renewal cannot hide that the lock was unenforced. A renewal keeps every window that
+   is still owed a report and appends its own, comma-separated, so a cycle that dies before
+   reporting and a second lapse after it leave both windows on the issue rather than the later
+   one replacing the earlier. The marker holds at most 20, which needs 20 consecutive cycles that
+   each renewed a lapsed lease and then died;
+2. one comment per owed window gives it and says the merge queue accepted unlabelled pull
    requests during it, carrying `<!-- main-watcher lapsed=<from>..<to> -->`;
-3. a `watcher-infra` alert, "Lock lease lapsed on `owner/repo`", carries the same key, so
-   ADR-012 de-duplication makes a repeat create nothing;
-4. `lapse_reported=<renewal time>` records that both were posted.
+3. a `watcher-infra` alert, "Lock lease lapsed on `owner/repo`", carries the same key per
+   window, so ADR-012 de-duplication makes a repeat create nothing;
+4. `lapse_reported=<newest renewal time>` records how far the reporting got.
 
-While `lapse_reported` is missing or older than the lapse, a later cycle posts what is still
-missing, and the marker on the comment keeps it from being written twice. The merges made during
-the window are reported by reconciliation (#20), and the merge groups queued then have their
-gates re-run (#21); a lock with no readable lease at all is simply given one, because nothing
+While `lapse_reported` is missing or older than a window, a later cycle posts what is still
+missing, and the marker on each comment keeps it from being written twice. A cycle also reports
+the windows owed by locks that have **closed**, within `reconcile_lookback`, because a green run
+reports and closes before the renewal runs and a person can close a lock at any time; a closed
+lock gets no lease, only its report. Nothing tells the worker about that debt, so it is
+discharged by the next cycle the target has for any reason, and at the latest by the hourly
+sweep.
+
+The merges made during a window are reported by reconciliation (#20), and the merge groups queued
+then have their gates re-run (#21); a lock with no readable lease at all is simply given one, because nothing
 says since when the gate had been failing open.
 
 ## Neutral results

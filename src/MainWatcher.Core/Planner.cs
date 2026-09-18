@@ -107,47 +107,65 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
             // A lock with no readable lease is not a lapse: the gate has been failing open, but nothing says since when, and a
             // guessed window would be reported as fact. The renewal alone puts the lock back under enforcement.
             var expired = Markers.Time(issue.Body, Lease.Until) is { } previous && previous <= now ? previous : (DateTimeOffset?)null;
+            // A window whose comment and alert are still owed is kept, never replaced: a renewal that died before reporting,
+            // followed by a second lapse, must leave both windows on the issue for this cycle or a later one to post.
             (string Name, string Value)[] fields = expired is null
                 ? [(Lease.Until, Markers.Stamp(until))]
-                : [(Lease.Until, Markers.Stamp(until)), (Lease.Lapsed, $"{Markers.Stamp(expired.Value)}..{Markers.Stamp(now)}"),
-                    (Lease.SweepRequired, Markers.Stamp(now))];
+                : [(Lease.Until, Markers.Stamp(until)), (Lease.SweepRequired, Markers.Stamp(now)),
+                    (Lease.Lapsed, Lease.Field([.. Lease.Unreported(issue.Body), (expired.Value, now)]))];
             var body = Markers.Set(issue.Body, fields);
             await github.EditBody(repo, issue.Number, body, ct);
             afterWrite?.Invoke("renew");
             lines.Add($"Lock #{issue.Number}: lease renewed until {Markers.Stamp(until)}"
                 + (expired is null ? "." : $"; it had lapsed at {Markers.Stamp(expired.Value)}."));
-            if (Lease.Unreported(body) is { } lapse) await ReportLapse(target, issue, body, lapse, ct);
+            if (Lease.Unreported(body) is { Count: > 0 } owed) await ReportLapse(target, issue, body, owed, ct);
         }
+        // A lock that closed with a lapse still owed — a green run reports and closes before this runs, and a person can close
+        // one at any time — keeps that debt. It needs no lease, so it is only reported (ADR-014 point 4).
+        foreach (var issue in (await github.Issues(repo, Reporter.LockLabel, Now - Reporter.ReconcileLookback, ct))
+            .Where(i => IsApp(i) && i.State == "closed").OrderBy(i => i.Number))
+            if (Lease.Unreported(issue.Body) is { Count: > 0 } owed)
+            {
+                await ReportLapse(target, issue, issue.Body ?? "", owed, ct);
+                lines.Add($"Lock #{issue.Number}: reported {owed.Count} lapse(s) it closed still owing.");
+            }
         return lines;
     }
 
     /// <summary>
-    /// Reports a lapse the renewal recorded: a comment on the lock and a <c>watcher-infra</c> alert, then the
-    /// <c>lapse_reported</c> marker that says both were posted. Each carries the lapse window as a hidden key, so a replay
-    /// after a crash between them creates nothing new (ADR-012, ADR-014 point 4). Like the neutral result's alert, these are
-    /// required writes: a failure is thrown and the marker stays unwritten, so a later cycle posts what is still missing.
+    /// Reports the lapses a renewal recorded, oldest first: a comment on the lock and a <c>watcher-infra</c> alert for each,
+    /// then one <c>lapse_reported</c> marker saying how far the reporting got. Each carries its own window as a hidden key, so
+    /// a replay after a crash between them creates nothing new (ADR-012, ADR-014 point 4). Like the neutral result's alert,
+    /// these are required writes: a failure is thrown and the marker stays behind, so a later cycle posts what is missing.
     /// </summary>
-    async Task ReportLapse(Target target, Issue issue, string body, (DateTimeOffset From, DateTimeOffset At) lapse, CancellationToken ct)
+    async Task ReportLapse(Target target, Issue issue, string body,
+        IReadOnlyList<(DateTimeOffset From, DateTimeOffset At)> lapses, CancellationToken ct)
     {
         if (alerts is null) throw new InvalidOperationException("A lock lapse cannot be reported without an alert sink.");
         var repo = target.Repo;
-        var key = $"<!-- main-watcher {Lease.Lapsed}={Markers.Stamp(lapse.From)}..{Markers.Stamp(lapse.At)} -->";
-        var what = $"This lock's lease ran out at {Markers.Stamp(lapse.From)} and was renewed at {Markers.Stamp(lapse.At)}, "
-            + $"{(lapse.At - lapse.From).TotalMinutes:0} minutes later. While a lease is expired the gate fails open, so the "
-            + "merge queue accepted pull requests without the `fixes-main` label during that window (ADR-014). The lock is "
-            + "enforced again now.";
-        if (!(await github.Comments(repo, issue.Number, null, ct)).Any(c => c.Body.Contains(key, StringComparison.Ordinal)))
+        // Read once: several owed windows are one replay, and each is told apart by its own key.
+        var comments = await github.Comments(repo, issue.Number, null, ct);
+        foreach (var lapse in lapses.OrderBy(l => l.At))
         {
-            await github.Comment(repo, issue.Number, what + "\n\n" + key, ct);
-            afterWrite?.Invoke("lapse");
+            var key = $"<!-- main-watcher {Lease.Lapsed}={Markers.Stamp(lapse.From)}..{Markers.Stamp(lapse.At)} -->";
+            var what = $"This lock's lease ran out at {Markers.Stamp(lapse.From)} and was renewed at {Markers.Stamp(lapse.At)}, "
+                + $"{(lapse.At - lapse.From).TotalMinutes:0} minutes later. While a lease is expired the gate fails open, so the "
+                + "merge queue accepted pull requests without the `fixes-main` label during that window (ADR-014). The lock is "
+                + "enforced again now.";
+            if (!comments.Any(c => c.Body.Contains(key, StringComparison.Ordinal)))
+            {
+                await github.Comment(repo, issue.Number, what + "\n\n" + key, ct);
+                afterWrite?.Invoke("lapse");
+            }
+            await alerts.Raise($"Lock lease lapsed on {repo}",
+                $"Lock {issue.Url} on `{repo}` was open but unenforced: {char.ToLowerInvariant(what[0])}{what[1..]}\n\n"
+                + "Main Watcher renews a lease every cycle and the trigger worker asks for one each hour, so a lapse means the "
+                + "watcher did not run for the whole of `lock_lease`: check `watch.yml`, the trigger worker and the `main-watcher` "
+                + "App's credentials. Merges made during the window are reported by reconciliation, and merge groups queued then "
+                + "have their gate re-run (ADR-015, ADR-016).", ct, key);
         }
-        await alerts.Raise($"Lock lease lapsed on {repo}",
-            $"Lock {issue.Url} on `{repo}` was open but unenforced: {char.ToLowerInvariant(what[0])}{what[1..]}\n\n"
-            + "Main Watcher renews a lease every cycle and the trigger worker asks for one each hour, so a lapse means the "
-            + "watcher did not run for the whole of `lock_lease`: check `watch.yml`, the trigger worker and the `main-watcher` "
-            + "App's credentials. Merges made during the window are reported by reconciliation, and merge groups queued then "
-            + "have their gate re-run (ADR-015, ADR-016).", ct, key);
-        await github.EditBody(repo, issue.Number, Markers.Set(body, (Lease.Reported, Markers.Stamp(lapse.At))), ct);
+        await github.EditBody(repo, issue.Number,
+            Markers.Set(body, (Lease.Reported, Markers.Stamp(lapses.Max(l => l.At)))), ct);
         afterWrite?.Invoke("lapse_reported");
     }
 

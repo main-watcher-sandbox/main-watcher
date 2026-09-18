@@ -56,15 +56,33 @@ public static class Lease
         Due(body, lockLease, now) is not { } due || due <= now;
 
     /// <summary>
-    /// The lapse a renewal recorded, when its comment and alert are still owed. They and the <see cref="Reported"/> marker are
-    /// written after the renewal, so a crash between them leaves this owed and a later cycle posts it (ADR-014 point 4).
+    /// How many unreported windows <see cref="Lapsed"/> carries before the oldest crowd out the rest. Reaching it needs that
+    /// many consecutive cycles that each renewed a lapsed lease and then died before reporting it, so it exists only to bound
+    /// the marker. The oldest are kept, because they are the ones reconciliation has to look back at.
     /// </summary>
-    public static (DateTimeOffset From, DateTimeOffset At)? Unreported(string? body) =>
-        Window(body) is { } window && (Markers.Time(body, Reported) is not { } reported || reported < window.At)
-            ? window : null;
+    public const int MaxWindows = 20;
 
-    /// <summary>The lapse window <see cref="Lapsed"/> holds; null when it is missing or unreadable.</summary>
-    public static (DateTimeOffset From, DateTimeOffset At)? Window(string? body) =>
-        Markers.Field(body, Lapsed)?.Split("..") is [var from, var at]
-            && Markers.Read(from) is { } start && Markers.Read(at) is { } end ? (start, end) : null;
+    /// <summary>
+    /// The lapses whose comment and alert are still owed, oldest first. They are written after the renewal, so a crash between
+    /// them leaves the window owed and a later cycle posts it (ADR-014 point 4).
+    /// <para>
+    /// There can be more than one. A lease that is renewed and then lapses again before the first report was made must not
+    /// lose the first window, so a renewal keeps every owed window and appends its own; a window is owed until
+    /// <see cref="Reported"/> reaches its renewal time.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<(DateTimeOffset From, DateTimeOffset At)> Unreported(string? body) =>
+        Markers.Time(body, Reported) is { } reported
+            ? Windows(body).Where(w => w.At > reported).ToArray() : Windows(body);
+
+    /// <summary>The lapse windows <see cref="Lapsed"/> holds, oldest first; unreadable ones are skipped.</summary>
+    public static IReadOnlyList<(DateTimeOffset From, DateTimeOffset At)> Windows(string? body) =>
+        (Markers.Field(body, Lapsed) ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(w => w.Split("..") is [var from, var at] && Markers.Read(from) is { } start && Markers.Read(at) is { } end
+                ? (From: start, At: end) : default)
+            .Where(w => w != default).ToArray();
+
+    /// <summary>The <see cref="Lapsed"/> value holding <paramref name="windows"/>, bounded by <see cref="MaxWindows"/>.</summary>
+    public static string Field(IEnumerable<(DateTimeOffset From, DateTimeOffset At)> windows) =>
+        string.Join(",", windows.Take(MaxWindows).Select(w => $"{Markers.Stamp(w.From)}..{Markers.Stamp(w.At)}"));
 }
