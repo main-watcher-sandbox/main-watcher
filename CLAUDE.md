@@ -35,7 +35,10 @@ it stops (MainWatcher#18); TS-S16 (g) and (h) passed. Every cycle renews an open
 renewing one that had run out records the lapse, comments and alerts (MainWatcher#19); TS-S7 passed
 with a 10-minute sandbox lease, except its last clause, which waits on reconciliation (#20). That
 run also showed a fixed one-hour renewal interval asking only after so short a lease had expired,
-so the worker now asks at half the lease where that is sooner.
+so the worker now asks at half the lease where that is sooner. `CommittedTargetListParses`
+now scopes its "watch no sandbox target" clause to this repo, so the replica is green on the
+list that makes it the sandbox watcher while the clause still guards the file committed here
+(MainWatcher#53).
 
 ## Where things are
 
@@ -73,7 +76,8 @@ so the worker now asks at half the lease where that is sooner.
   `sandbox/issue-12-validation.md`, `sandbox/issue-13-validation.md`,
   `sandbox/issue-14-validation.md`, `sandbox/issue-15-validation.md`,
   `sandbox/issue-16-validation.md`, `sandbox/issue-17-validation.md`,
-  `sandbox/issue-18-validation.md` and `sandbox/issue-19-validation.md`.
+  `sandbox/issue-18-validation.md`, `sandbox/issue-19-validation.md` and
+  `sandbox/issue-53-validation.md`.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
@@ -146,10 +150,6 @@ metrics store (PostgreSQL + Grafana) is deferred.
    exists. The job-summary half passed on 2026-09-16 (MainWatcher#8): reporter v1.3.0 shows
    xUnit v3's millisecond durations in the right units (R-17).
 4. Remaining `[assumption]` tag: worker resource sizing.
-5. The sandbox replica's CI is red on its own working state (MainWatcher#53):
-   `CommittedTargetListParses` asserts the committed `targets.yml` watches no sandbox
-   target, which the replica must do. Until it is scoped, a real regression there looks
-   like the known failure, so read the run rather than the badge.
 
 ## Suggested next steps
 

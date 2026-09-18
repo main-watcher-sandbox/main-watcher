@@ -15,6 +15,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-17-validation.md` | TS-S12 and TS-S18: a cancelled run retested on the same head, three neutral results reaching the cap, the "head untestable" alert and a forced dispatch, for #17 |
 | `issue-18-validation.md` | TS-S16 (g) and (h): the queue and run deadlines, the cancel and force-cancel lifecycle and the "could not be stopped" alert, for #18 |
 | `issue-19-validation.md` | TS-S7: merges through a watcher outage with and without a lock, the "LOCK LEASE EXPIRED" gate, and the renewal, lapse record, comment and alert on recovery, for #19 |
+| `issue-53-validation.md` | The replica's CI green on its own sandbox target list, once `CommittedTargetListParses` scoped its sandbox-target clause to this repo, for #53 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
