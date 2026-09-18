@@ -29,6 +29,14 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     /// <summary>One entry per push list collected, for the job summary (ADR-003 walk-back length).</summary>
     public List<WalkBack> WalkBacks { get; } = [];
 
+    /// <summary>
+    /// The locks this Reporter has just created, for the queue sweep that follows in the same cycle (ADR-016). It is handed
+    /// over rather than looked up because GitHub's issue list does not show a new issue at once: in the sandbox, the list read
+    /// a second after the lock was created did not hold it, so the sweep would find nothing to do and only the next cycle,
+    /// about a minute later, would re-run the gates of the groups already queued.
+    /// </summary>
+    public List<Issue> Opened { get; } = [];
+
     DateTimeOffset Now => (clock ?? (() => DateTimeOffset.UtcNow))();
 
     public async Task<bool> Report(Target target, CheckRun check, CancellationToken ct)
@@ -308,6 +316,7 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
             + "<!-- main-watcher " + (pushes.Green is { } green ? $"last_green={green.Sha} " : "") + $"first_red={check.Sha} {Lease.Until}={leaseUntil} "
             + $"{QueueSweep.Required}={Markers.Stamp(now)} reported_check={check.Id} reported_sha={check.Sha} -->";
         var issue = await github.CreateIssue(target.Repo, $"main is broken: tests failed on {Short(check.Sha)}", body, LockLabel, ct);
+        Opened.Add(issue);
         afterWrite?.Invoke("create");
         if (mentions.Count == 0) await NobodyMentioned(target, issue, ct);
         return issue;
