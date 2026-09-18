@@ -1,6 +1,6 @@
 ---
 owner: platform-team
-reviewed: 2026-09-17
+reviewed: 2026-09-18
 review_by: 2027-03-15
 ---
 
@@ -325,8 +325,15 @@ a newer head and a forced dispatch alike, until the run stops or someone deletes
 output title is "Stopping a stale target run" meanwhile. As soon as the job completes, the
 outcome table judges its steps like any other: a cancellation during the tests leaves no
 `main-watcher-tests-finished` marker and is an infrastructure error, while a run stopped after
-the marker succeeded keeps its red or green result. Deleting the run gives "outcome unknown" and
-releases the target at once.
+the marker succeeded keeps its red or green result. GitHub can take several minutes to tear a
+cancelled job down, and the check run waits for it.
+
+**Releasing a run GitHub will not stop.** ADR-013 says a person can delete the run, which gives
+"outcome unknown" and releases the target. In the sandbox GitHub answered `403 Could not delete
+the workflow run` while the run was still going, so the action is two steps: **cancel the run by
+hand, then delete it once it has stopped**. Cancelling alone is usually enough — the job is then
+judged from its steps like any other. Deleting matters only when those steps should not be judged
+at all. ADR-013's one-step wording needs an amending ADR.
 
 A cancel or force-cancel GitHub refuses is logged with its status and never throws: the run is
 asked again next cycle, and the 15-minute steps are the escalation. An error reading the jobs
@@ -397,4 +404,9 @@ records what the schedule did: GitHub dropped two of the cron's first three slot
 third two minutes late, which is C-7 measured rather than assumed. The
 [issue #17 validation record](../sandbox/issue-17-validation.md) covers TS-S12 and TS-S18: a
 cancelled run retested on the same head, three neutral results reaching the cap, the "head
-untestable" alert, and a forced dispatch testing the head again.
+untestable" alert, and a forced dispatch testing the head again. The
+[issue #18 validation record](../sandbox/issue-18-validation.md) covers TS-S16 (g) and (h): the
+queue deadline that stops applying once a job starts, a job that never got a runner cancelled and
+judged, a hanging job cancelled at its run deadline whose lock still opened, and a run whose
+cancels were refused, which raised "target run could not be stopped" and stopped every test on
+the target — including a forced dispatch — for 78 minutes.

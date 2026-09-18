@@ -14,7 +14,11 @@ public interface IGitHubGateway
     Task<IReadOnlyList<Push>> Pushes(string repo, int limit, CancellationToken ct);
     /// <summary>Commits in <paramref name="after"/> that are not in <paramref name="before"/>; null when either commit cannot be compared.</summary>
     Task<int?> CommitCount(string repo, string before, string after, CancellationToken ct);
-    Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct);
+    /// <summary>
+    /// Creates the <c>main-watcher</c> check run, in progress, with the given output. The output is written by the same call,
+    /// so recording the run's settings costs no extra request.
+    /// </summary>
+    Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, string title, string summary, CancellationToken ct);
     Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct);
     /// <summary>Starts <paramref name="workflow"/> on <c>main</c> with <paramref name="inputs"/>. Never retried.</summary>
     Task DispatchWorkflow(string repo, string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct);

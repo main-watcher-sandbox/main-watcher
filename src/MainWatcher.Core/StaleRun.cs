@@ -41,6 +41,11 @@ public static class StaleRun
     /// </summary>
     public static readonly TimeSpan JobMargin = TimeSpan.FromMinutes(20);
 
+    /// <summary>
+    /// The check run output field holding the target's <c>timeout</c> as it was when the run was dispatched, in minutes.
+    /// </summary>
+    public const string TimeoutMinutes = "timeout_minutes";
+
     /// <summary>How long a cancel, and then a force-cancel, is given to stop the run before the next step.</summary>
     public static readonly TimeSpan StopWait = TimeSpan.FromMinutes(15);
 
@@ -70,6 +75,22 @@ public static class StaleRun
         jobs?.Where(j => Outcomes.IsTestJob(j.Name)).ToArray() is [var job] ? job : null;
 
     /// <summary>
+    /// The <c>timeout</c> the running job was dispatched with, from the check run's own output, falling back to the target's
+    /// current setting.
+    /// <para>
+    /// ADR-013 counts the run deadline from the job's <b>own</b> <c>timeout-minutes</c>, which is fixed when GitHub creates
+    /// the run. Reading <c>targets.yml</c> instead would move the deadline of a job already running: lowering a target's
+    /// <c>timeout</c> from 120 to 30 would cancel a healthy job at 60 minutes rather than its real 150, and raising it would
+    /// delay detection. So the Planner records the value with the check run and it is read back here. The fallback covers a
+    /// check run created before this was recorded; its deadline is then only as stable as the configuration, as it was.
+    /// </para>
+    /// </summary>
+    public static TimeSpan TestTimeout(CheckRun check, Target target) =>
+        int.TryParse(Markers.Field(check.Summary, TimeoutMinutes), System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var recorded) && recorded > 0
+            ? TimeSpan.FromMinutes(recorded) : TimeSpan.FromMinutes(target.Timeout);
+
+    /// <summary>
     /// When this run's deadline falls: the queue deadline while the job waits for a runner, the run deadline once it has one.
     /// Null for a completed job, and for a started job GitHub gives no <c>started_at</c> for, so an unreadable time never
     /// cancels a run that may still be testing.
@@ -78,7 +99,7 @@ public static class StaleRun
     {
         if (job.Status == "completed") return null;
         if (!Started(job)) return check.StartedAt + (queueDeadline ?? DefaultQueueDeadline);
-        return job.StartedAt is { } started ? started + TimeSpan.FromMinutes(target.Timeout) + JobMargin + RunGrace : null;
+        return job.StartedAt is { } started ? started + TestTimeout(check, target) + JobMargin + RunGrace : null;
     }
 
     /// <summary>
