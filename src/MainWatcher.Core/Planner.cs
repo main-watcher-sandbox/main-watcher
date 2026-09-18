@@ -157,8 +157,9 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
                 + $"force-cancelled at {Markers.Stamp(forced)}. GitHub has still not stopped it.\n\n"
                 + $"Check run {check.Id} stays `in_progress`, so **no test starts for `{repo}`** — not a retry, not a newer "
                 + "head and not a forced dispatch — for as long as this lasts (ADR-013). Main Watcher repeats the force-cancel "
-                + "on every cycle. As soon as the run stops, its `main-watcher` job is judged like any other; deleting the run "
-                + "instead gives \"outcome unknown\" and releases the target at once.",
+                + "on every cycle. As soon as the run stops, its `main-watcher` job is judged like any other. To release the "
+                + "target by hand, cancel the run yourself; GitHub refuses to delete a run that is still going, so delete it "
+                + "afterwards only if its steps should not be judged at all, which gives \"outcome unknown\".",
                 ct, $"<!-- main-watcher unstoppable check={check.Id} -->");
         }
         catch (Exception e) when (!ct.IsCancellationRequested) { AlertFailures.Add($"{title}: {e.Message}"); }
