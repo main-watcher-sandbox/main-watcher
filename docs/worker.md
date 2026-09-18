@@ -14,8 +14,7 @@ needs no inbound Service or Ingress.
 Issues #14 and #15 cover the cycle and the alerts described here, and #16 the hourly backup
 sweep, which does this work when the worker is not and says so; see
 [watcher.md](watcher.md#backup-sweep). #18 adds the stale-run deadlines below, #19 the lock
-lease and #20 the closed lock that still owes reconciliation. The queue sweep (#21) is a separate
-backlog item; a target whose only work is that is not flagged yet.
+lease, #20 the closed lock that still owes reconciliation and #21 the unfinished queue sweep.
 
 ## A cycle
 
@@ -94,6 +93,15 @@ where it is not `main-watcher[bot]`. The work is dated by the moment renewal bec
 carries no check ID: it is not a report owed. `watch.yml` does the renewing, and
 [watcher.md](watcher.md#lock-lease) describes the lease and what a lapse records.
 
+An open lock that owes a **queue sweep** is work too, and is asked for before the lease the same
+read found (ADR-016): until the sweep finishes, a merge group that passed its gate before the lock
+existed can still merge onto a red `main`. A sweep is owed while the lock's `queue_swept` marker
+is missing or older than its `sweep_required`, so a watcher that crashed part-way through one is
+simply asked again. Only an **open** lock owes one: a closed lock enforces nothing, and a debt
+nothing could discharge would ask for cycles for ever. The work is dated by the generation owed,
+which is when the lock opened or its lapsed lease was renewed, and it names the lock rather than a
+check run. `watch.yml` does the sweeping, and [watcher.md](watcher.md#queue-sweep) describes it.
+
 Last of all, a lock that has **closed without being reconciled** is work (ADR-015 point 6). Its
 window still owes a report for every pull request that merged during it without `fixes-main`, and
 once the issue is closed nothing else would ask for a cycle: no push tests it, no lease renews it.
@@ -105,8 +113,9 @@ and it carries no check ID. `watch.yml` does the reconciling, and
 [watcher.md](watcher.md#reconciliation) describes it.
 
 The worker therefore makes about five read calls per target per cycle while a target is
-idle, plus one for the watcher repo's `watch.yml` runs (R-13). Both issue reads use the Issues:
-read permission ADR-014 gave `mw-observer`. A cycle that finds an eligible head reads that target's
+idle, plus one for the watcher repo's `watch.yml` runs (R-13). The sweep obligation costs no read
+of its own: it is a marker in the open lock the lease read already fetched. Both issue reads use
+the Issues: read permission ADR-014 gave `mw-observer`. A cycle that finds an eligible head reads that target's
 repository activity as well, to date the head's push, and stops before the issue reads; an idle
 target never pays for the activity read.
 
@@ -172,6 +181,7 @@ conditions are:
 | GitHub answered 401, 403 or 404 to an installation-token request | A GitHub App credential is being refused |
 | A response left less than 20% of a rate-limit budget (R-13) | GitHub rate limit below 20% |
 | A report has been owed for more than 15 min (ADR-013 point 6) | Reporting pending on `owner/repo` |
+| A queue sweep has been owed for more than 15 min (ADR-016 point 2) | Queue sweep unfinished on `owner/repo` |
 
 **De-duplication (TS-U7).** Each condition is raised once when it starts to hold, and at
 most once an hour while it goes on holding. An open `watcher-infra` issue with the same
@@ -205,6 +215,14 @@ a Reporter that is itself waiting for a runner. A target stops owing a report wh
 looks at it and finds nothing owed, or when it leaves `targets.yml`, since nothing will
 report a target the watcher no longer watches. A cycle that threw names no targets, so it
 forgets none.
+
+**Queue sweep unfinished.** A lock owing a sweep is timed the same way, from the generation its
+`sweep_required` marker names, and for the same reason: while it is owed, a group queued before
+the lock can merge onto a red `main` and would be reported afterwards rather than blocked. The
+usual cause is a gate run that is still going, since the sweep waits for it and re-runs it once it
+completes, or one GitHub refuses to re-run; the `watch.yml` run log says which group and which
+run. It is its own condition per target, so it neither hides nor is hidden by a report pending on
+the same target, and it clears when a cycle finds the sweep finished.
 
 **Rate limit.** Every GitHub response the worker receives is read for
 `x-ratelimit-remaining` and `x-ratelimit-limit`, across both Apps and every installation,

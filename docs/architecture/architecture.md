@@ -229,7 +229,7 @@ flowchart LR
 | targets.yml | Lists targets: repo, test command, CTRF results glob, timeout, `poll_interval`, `notify`, `enabled` | YAML in watcher repo | Platform team | FR-1 |
 | Trigger worker | Every `check_period`, detects work per target (eligible head, ADR-017; finished `main-watcher` job, stale run, lock lease due for renewal, closed lock not yet reconciled, unfinished queue sweep) and starts `watch.yml`. Exposes `/healthz`. Raises `watcher-infra` issues if the watcher hasn't completed a run in 2 h, if reporting has been pending, or a queue sweep unfinished, for more than 15 min, on repeated errors, or on token failures (ADR-012, ADR-013, ADR-014, ADR-016) | .NET 10 `BackgroundService`, container, 1 replica | Platform team | FR-2, C-7 |
 | watch.yml — Planner | For the targets passed in (or all, on the hourly sweep): for an eligible head (ADR-017), creates an in-progress check run, starts the target's test workflow with `return_run_details`, stores the run ID in the check run's `external_id`. Handles stale runs: cancels a run past its queue or run deadline, and reports it once it has stopped (ADR-013); renews lock leases (ADR-014); finishes queue sweeps (ADR-016); reconciles merges made during a lock, through the lock's closure, judging labels at merge time (ADR-008, ADR-015); raises "worker appears down" if work waited more than 15 min | GitHub Actions job running the .NET watcher scripts | Platform team | FR-2, NFR-3, NFR-4 |
-| watch.yml — Reporter | When a target run's `main-watcher` job has completed (other jobs in the run are ignored): reads the outcome of the `main-watcher-test` step, trusted only when the `main-watcher-tests-finished` marker step succeeded, downloads CTRF, finds the last green commit, collects pushes, opens, updates or closes the lock issue (never re-locking a commit a human overrode), and only then completes the check run, so an interrupted report is replayed (ADR-013). After opening a lock, it re-runs the gate for merge groups queued before it (ADR-016). Adds a timing section to the check run: suite time, change from last green, 5 slowest tests, retry flag (ADR-011) | GitHub Actions job running the .NET watcher scripts | Platform team | FR-3, FR-4 |
+| watch.yml — Reporter | When a target run's `main-watcher` job has completed (other jobs in the run are ignored): reads the outcome of the `main-watcher-test` step, trusted only when the `main-watcher-tests-finished` marker step succeeded, downloads CTRF, finds the last green commit, collects pushes, opens, updates or closes the lock issue (never re-locking a commit a human overrode), and only then completes the check run, so an interrupted report is replayed (ADR-013). Opening a lock records the queue-sweep obligation in the same write, which the Planner discharges later in the same cycle (ADR-016). Adds a timing section to the check run: suite time, change from last green, 5 slowest tests, retry flag (ADR-011) | GitHub Actions job running the .NET watcher scripts | Platform team | FR-3, FR-4 |
 | run-integration-tests.yml | `main-watcher` job: checks out `sha` and restores (setup steps); builds and runs tests with one retry of failed tests in a single step, `main-watcher-test`, through a wrapper that enforces the target's timeout; a marker step, `main-watcher-tests-finished`, succeeds only if the tests ran to completion (ADR-013); then writes `timings.json` and uploads the `main-watcher-ctrf` artifact, even when that step failed. `report` job: no secrets, `actions: read` and `contents: read`, publishes the CTRF job summary with the slowest tests and duration trends, reading earlier runs from the `main-watcher-report` artifact it uploads (ADR-011, ADR-018) | Reusable GitHub workflow, version-tagged; `ctrf-io/github-test-reporter` pinned by SHA | Platform team | FR-2, FR-6, ADR-007 |
 | main-watcher-tests.yml | Caller: `workflow_dispatch` inputs → reusable workflow, `secrets: inherit`. The place where the target sets up OIDC or feeds | ~15-line workflow in target | Target owners (template from platform) | FR-5 |
 | Gate workflow | On `merge_group`: fails while an App-authored lock with an unexpired lease is open, unless every PR in the group has `fixes-main`. Fails open, with a warning, on API errors or an expired lease (ADR-008, ADR-014). On `pull_request`: always passes | ~40-line workflow in target | Target owners (template from platform) | FR-4, C-2 |
@@ -410,14 +410,18 @@ sequenceDiagram
 - **Groups already queued when a lock opens (ADR-016).** A group whose gate started before
   the lock existed would otherwise merge as soon as its other checks pass. After opening a
   lock, or renewing a lapsed one, the watcher lists the groups still in the queue
-  (`gh-readonly-queue/main/*` branches) and re-runs each gate run that started earlier; a
-  gate still running is re-run once it finishes. The obligation is recorded as
-  `sweep_required` in the same write that opens the lock or renews its lease, and stays
-  owed until `queue_swept` catches up, so a crash cannot drop it; the worker keeps
-  requesting work until then. A group that merges
-  before its re-run takes effect is reported by reconciliation.
+  (`gh-readonly-queue/main/*` branches) and re-runs each gate run that started before the
+  obligation's time plus 5 minutes; a gate still running is re-run once it finishes, and one
+  GitHub refuses to re-run leaves the sweep owed rather than passing the group. The
+  obligation is recorded as `sweep_required` in the same write that opens the lock or renews
+  its lease, and stays owed until `queue_swept` catches up, so a crash cannot drop it; the
+  worker keeps requesting work until then. A group that merges before its re-run takes effect
+  is reported by reconciliation.
 - **PRs the gate removed** are named in the unlock comment from the failed `merge_group` gate runs
-  since the lock opened, each identified by the PR in its queue branch (R-7).
+  whose failing attempt falls inside the lock's window, each identified by the PR in its queue
+  branch (R-7). A group the queue sweep removed failed on a **re-run** of a run GitHub still dates
+  by its first attempt, so the read reaches a day further back and the comment says which groups
+  went that way (ADR-016).
 - **Lock lease (ADR-014).** The watcher sets each open lock's `lease_until` to 4 h ahead
   whenever it processes the target, and the worker requests a renewal once a lease is an
   hour old. If the watcher stops, the lease runs out and the gate fails open with a
