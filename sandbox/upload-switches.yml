@@ -17,11 +17,16 @@
       # Sandbox switch hang_upload_forever (TS-S16 (h)): a step with no timeout-minutes that
       # never ends, so the job outlives the tests and only the job's own timeout, or Main
       # Watcher's cancel, can end it. The marker step has already run, so the outcome table
-      # still sees a finished test.
+      # still sees a finished test. It prints a heartbeat rather than sleeping silently: a
+      # hosted runner left with no output for about half an hour was reclaimed mid-scenario,
+      # which ended the job before its deadline.
       - name: sandbox upload hang
         if: always()
         run: |
           if jq -e '.hang_upload_forever == true' sandbox.json > /dev/null; then
             echo "hang_upload_forever: this step never ends"
-            sleep infinity
+            while true; do
+              echo "still here at $(date -u +%H:%M:%SZ)"
+              sleep 20
+            done
           fi
