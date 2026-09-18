@@ -149,11 +149,17 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
     /// a closed one enforces nothing, so re-running a gate for it would block nothing and never finish.
     /// </para>
     /// </summary>
+    /// <param name="opened">
+    /// Locks the Reporter created earlier in this cycle. They are passed in because GitHub's issue list does not show a new
+    /// issue at once, so the lock whose groups are most urgently owed a sweep is exactly the one the list can miss; a copy the
+    /// list does hold wins, being at least as fresh.
+    /// </param>
     /// <returns>A line per lock swept, for the log.</returns>
-    public async Task<IReadOnlyList<string>> SweepQueue(Target target, CancellationToken ct)
+    public async Task<IReadOnlyList<string>> SweepQueue(Target target, IEnumerable<Issue>? opened, CancellationToken ct)
     {
         var repo = target.Repo;
-        var owed = (await github.OpenIssues(repo, Reporter.LockLabel, ct)).Where(IsApp).OrderBy(i => i.Number)
+        var owed = (opened ?? []).Concat(await github.OpenIssues(repo, Reporter.LockLabel, ct))
+            .Where(IsApp).GroupBy(i => i.Number).Select(g => g.Last()).OrderBy(i => i.Number)
             .Select(issue => (Issue: issue, Required: QueueSweep.Owed(issue.Body)))
             .Where(l => l.Required is not null).ToArray();
         if (owed.Length == 0) return [];

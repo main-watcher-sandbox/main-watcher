@@ -429,7 +429,7 @@ public class WatcherTests
         // A group that left the queue is not swept: its commit is never asked about.
         fake.Gates["group-99"] = [new(9099, "completed", "success", Now.AddMinutes(-40))];
 
-        var lines = await new Planner(fake, () => Now).SweepQueue(Locked, ct);
+        var lines = await new Planner(fake, () => Now).SweepQueue(Locked, null, ct);
 
         Assert.Equal(["rerun:9012", "update:1"], fake.Order);
         Assert.DoesNotContain("gates:group-99", fake.Reads);
@@ -439,7 +439,7 @@ public class WatcherTests
 
         // Nothing is owed now, so a second cycle reads no queue and asks for no re-run.
         fake.Reads.Clear();
-        Assert.Empty(await new Planner(fake, () => Now).SweepQueue(Locked, ct));
+        Assert.Empty(await new Planner(fake, () => Now).SweepQueue(Locked, null, ct));
         Assert.Equal(["rerun:9012", "update:1"], fake.Order);
         Assert.Empty(fake.Reads);
     }
@@ -454,14 +454,14 @@ public class WatcherTests
         fake.Queued.Add(Group(12));
         fake.Gates["group-12"] = [new(9012, "in_progress", null, Now.AddMinutes(-20))];
 
-        var lines = await new Planner(fake, () => Now).SweepQueue(Locked, ct);
+        var lines = await new Planner(fake, () => Now).SweepQueue(Locked, null, ct);
         Assert.Empty(fake.Order);
         Assert.Null(Markers.Time(fake.Find("owner/repo", 1).Body, QueueSweep.Swept));
         Assert.Contains("gate run 9012 for #12 is still running", lines.Single());
 
         // It finishes, passing, and the next cycle re-runs it and finishes the sweep.
         fake.Gates["group-12"] = [new(9012, "completed", "success", Now.AddMinutes(-20))];
-        await new Planner(fake, () => Now).SweepQueue(Locked, ct);
+        await new Planner(fake, () => Now).SweepQueue(Locked, null, ct);
         Assert.Equal(["rerun:9012", "update:1"], fake.Order);
         Assert.Equal(Now.AddMinutes(-2), Markers.Time(fake.Find("owner/repo", 1).Body, QueueSweep.Swept));
     }
@@ -487,7 +487,7 @@ public class WatcherTests
         // A group passed its gate during the lapse and is still queued, waiting for another required check.
         fake.Queued.Add(Group(12));
         fake.Gates["group-12"] = [new(9012, "completed", "success", Now.AddMinutes(-60))];
-        await new Planner(fake, () => Now.AddMinutes(1)).SweepQueue(Locked, ct);
+        await new Planner(fake, () => Now.AddMinutes(1)).SweepQueue(Locked, null, ct);
 
         Assert.Contains("rerun:9012", fake.Order);
         Assert.Equal(Now, Markers.Time(fake.Find("owner/repo", 1).Body, QueueSweep.Swept));
@@ -503,11 +503,38 @@ public class WatcherTests
         fake.Queued.Add(Group(12));
         fake.Gates["group-12"] = [new(9012, "completed", "success", Now.AddMinutes(-20))];
 
-        var lines = await new Planner(fake, () => Now).SweepQueue(Locked, ct);
+        var lines = await new Planner(fake, () => Now).SweepQueue(Locked, null, ct);
 
         Assert.Equal(["rerun:9012"], fake.Order);
         Assert.Null(Markers.Time(fake.Find("owner/repo", 1).Body, QueueSweep.Swept));
         Assert.Contains("could not be re-run (HTTP 403)", lines.Single());
+    }
+
+    // The sandbox found GitHub's issue list not yet holding a lock created a second earlier, so the sweep the lock most needs
+    // — the one for the groups already queued when it opened — found nothing to do. The Reporter hands over what it created.
+    [Fact]
+    public async Task ALockCreatedInThisCycleIsSweptWithoutWaitingForTheIssueList()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { JobConclusion = "failure", Rerunning = Now };
+        fake.Queued.Add(Group(12));
+        fake.Gates["group-12"] = [new(9012, "completed", "success", Now.AddMinutes(-20))];
+        var reporter = new Reporter(fake, clock: () => Now);
+        await reporter.Report(Locked, Pending(), ct);
+        var lock1 = fake.Find("owner/repo", 1);
+        Assert.Equal(Now, QueueSweep.Owed(lock1.Body));
+
+        // The list has not caught up: without the hand-over there is nothing to sweep, and with it the gate is re-run at once.
+        fake.Issues["owner/repo"].Clear();
+        Assert.Empty(await new Planner(fake, () => Now).SweepQueue(Locked, null, ct));
+        Assert.DoesNotContain("rerun:9012", fake.Order);
+
+        fake.Issues["owner/repo"].Add(lock1);
+        var lines = await new Planner(fake, () => Now).SweepQueue(Locked, [lock1.Issue], ct);
+        Assert.Contains("rerun:9012", fake.Order);
+        Assert.Contains("re-ran 1 gate run(s) — #12 (gate run 9012)", lines.Single());
+        // The copy the list does hold wins, being at least as fresh: one sweep, one write, whichever way the lock arrived.
+        Assert.Single(fake.Order, o => o == "update:1");
     }
 
     // Only an open App lock owes a sweep: a closed one enforces nothing, and a hand-made issue is not Main Watcher's lock.
@@ -523,7 +550,7 @@ public class WatcherTests
         fake.Queued.Add(Group(12));
         fake.Gates["group-12"] = [new(9012, "completed", "success", Now.AddMinutes(-20))];
 
-        Assert.Empty(await new Planner(fake, () => Now).SweepQueue(Locked, ct));
+        Assert.Empty(await new Planner(fake, () => Now).SweepQueue(Locked, null, ct));
         Assert.Empty(fake.Order);
         Assert.Empty(fake.Reads);
     }

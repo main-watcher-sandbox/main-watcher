@@ -103,7 +103,7 @@ try
     // comes before planning, because a group queued before the lock merges onto a red `main` while it waits, and a test that
     // starts a minute later costs nothing. A failure leaves the obligation in the issue, so the next cycle sweeps again.
     var queueSweepFailed = false;
-    try { foreach (var line in await planner.SweepQueue(target, timeout.Token)) Console.WriteLine(line); }
+    try { foreach (var line in await planner.SweepQueue(target, reporter.Opened, timeout.Token)) Console.WriteLine(line); }
     catch (Exception e) when (!timeout.IsCancellationRequested)
     {
         queueSweepFailed = true;
