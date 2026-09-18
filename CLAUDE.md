@@ -40,7 +40,10 @@ reconciled through its closure, judging each pull request by the label it carrie
 (MainWatcher#20); TS-S9 and TS-S15 passed, and the same pass discharged TS-S7's last clause.
 `CommittedTargetListParses` now scopes its "watch no sandbox target" clause to this repo, so the
 replica is green on the list that makes it the sandbox watcher while the clause still guards the
-file committed here (MainWatcher#53).
+file committed here (MainWatcher#53). TS-S10 passed on 2026-09-18 (MainWatcher#23) and closed
+R-10: an App's team @-mention notifies the team only where the App holds organisation
+`Members: read`, through `notify` and through the CODEOWNERS fallback alike, so that permission
+is an install requirement and no Reporter change was needed.
 
 ## Where things are
 
@@ -81,7 +84,8 @@ file committed here (MainWatcher#53).
   `sandbox/issue-14-validation.md`, `sandbox/issue-15-validation.md`,
   `sandbox/issue-16-validation.md`, `sandbox/issue-17-validation.md`,
   `sandbox/issue-18-validation.md`, `sandbox/issue-19-validation.md`,
-  `sandbox/issue-20-validation.md` and `sandbox/issue-53-validation.md`.
+  `sandbox/issue-20-validation.md`, `sandbox/issue-23-validation.md` and
+  `sandbox/issue-53-validation.md`.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
@@ -149,12 +153,11 @@ metrics store (PostgreSQL + Grafana) is deferred.
    with the worker's alerts (MainWatcher#15), TS-S12 and TS-S18 with the neutral retry cap
    (MainWatcher#17), TS-S16 (g) and (h) with the stale-run lifecycle (MainWatcher#18), and
    TS-S7 with the lock lease (MainWatcher#19), whose reconciliation clause passed with TS-S9 and
-   TS-S15 (MainWatcher#20).
-2. Verify team @-mentions from an App notify the team (TS-S10, R-10).
-3. TS-S13, check-run half: suite time, 5 slowest tests and retry flag, once the Reporter
+   TS-S15 (MainWatcher#20), and TS-S10 with the team mention on 2026-09-18 (MainWatcher#23).
+2. TS-S13, check-run half: suite time, 5 slowest tests and retry flag, once the Reporter
    exists. The job-summary half passed on 2026-09-16 (MainWatcher#8): reporter v1.3.0 shows
    xUnit v3's millisecond durations in the right units (R-17).
-4. Remaining `[assumption]` tag: worker resource sizing.
+3. Remaining `[assumption]` tag: worker resource sizing.
 
 ## Suggested next steps
 
