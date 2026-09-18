@@ -88,5 +88,5 @@ public sealed class Sweep(IGitHubGateway github, IGitHubGateway watcher, string 
         return found.Count;
     }
 
-    static string Short(string sha) => sha[..Math.Min(7, sha.Length)];
+    static string Short(string sha) => Markdown.Short(sha);
 }

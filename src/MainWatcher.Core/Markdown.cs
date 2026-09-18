@@ -1,6 +1,6 @@
 namespace MainWatcher.Core;
 
-/// <summary>Escaping for text from targets (test output, pusher names, workflow step names) written into issues and check runs.</summary>
+/// <summary>Markdown the watcher writes into issues and check runs: escaping for text from targets, and commit links.</summary>
 static class Markdown
 {
     /// <summary>
@@ -9,4 +9,10 @@ static class Markdown
     /// </summary>
     public static string Escape(string text) => System.Net.WebUtility.HtmlEncode(text)
         .Replace("\r", " ").Replace("\n", " ").Replace("`", "\\`").Replace("*", "\\*").Replace("[", "\\[").Replace("@", "&#64;");
+
+    /// <summary>A commit SHA abbreviated the way GitHub's UI abbreviates it.</summary>
+    public static string Short(string sha) => sha.Length > 7 ? sha[..7] : sha;
+
+    /// <summary>A link to a commit, labelled with its short SHA.</summary>
+    public static string Commit(string repo, string sha) => $"[`{Short(sha)}`](https://github.com/{repo}/commit/{sha})";
 }

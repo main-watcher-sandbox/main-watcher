@@ -32,14 +32,14 @@ try
     using var alertHttp = Client(Required("MW_ALERT_TOKEN"));
     var appId = long.Parse(Required("MW_APP_ID"));
     var github = new GitHubGateway(http, appId, log: Console.WriteLine);
-    var planner = new Planner(github);
     var alertRepo = Required("MW_ALERT_REPO");
     var watcherGithub = new GitHubGateway(alertHttp, appId);
     var alerts = new Alerts(watcherGithub, alertRepo);
+    var botLogin = Environment.GetEnvironmentVariable("MW_BOT_LOGIN") is { Length: > 0 } app ? app : Reporter.DefaultBotLogin;
+    var planner = new Planner(github, alerts: alerts, botLogin: botLogin);
     // Sandbox fault injection (TS-S14): exit right after the named Reporter write, so the next cycle replays the report.
     var exitAfter = Environment.GetEnvironmentVariable("MW_SANDBOX_EXIT_AFTER") ?? "";
-    var reporter = new Reporter(github, alerts,
-        Environment.GetEnvironmentVariable("MW_BOT_LOGIN") is { Length: > 0 } bot ? bot : Reporter.DefaultBotLogin,
+    var reporter = new Reporter(github, alerts, botLogin,
         afterWrite: write =>
         {
             if (!exitAfter.Split(',', StringSplitOptions.TrimEntries).Contains(write)) return;
@@ -95,6 +95,9 @@ try
     var planned = await planner.Plan(target, Environment.GetEnvironmentVariable("MW_FORCE") == "true", timeout.Token);
     Console.WriteLine(planned is null ? "No eligible head." : string.IsNullOrEmpty(planned.ExternalId)
         ? $"Check {planned.Id} awaits dispatch recovery." : $"Started check {planned.Id}, target run {planned.ExternalId}.");
+    // The "head untestable" alert (ADR-017) is the Planner's only write when it starts nothing; a failure to raise it is
+    // reported at the end, so it never stops the rest of the cycle.
+    foreach (var failure in planner.AlertFailures) Console.Error.WriteLine($"Alert not raised: {failure}");
     // After planning, so a lock whose comments cannot be written (for example, a locked conversation) never stops testing.
     var overrides = await reporter.NoteOverrides(target, timeout.Token);
     if (overrides > 0) Console.WriteLine($"Posted {overrides} override comment(s) on locks closed by hand.");
@@ -112,7 +115,7 @@ try
             Console.Error.WriteLine($"Sweep: the gate fail-open check failed: {e.Message}");
         }
     }
-    return sweepFailed ? 1 : 0;
+    return sweepFailed || planner.AlertFailures.Count > 0 ? 1 : 0;
 }
 catch (Exception e)
 {
