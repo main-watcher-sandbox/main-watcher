@@ -10,6 +10,22 @@ public sealed class GitHubGateway(HttpClient http, long appId,
 {
     public const string CheckName = "main-watcher";
     public const string Workflow = "main-watcher-tests.yml";
+    /// <summary>The watcher's own workflow in the watcher repo, dispatched per target and swept hourly (ADR-010).</summary>
+    public const string WatchWorkflow = "watch.yml";
+    /// <summary>The prefix of a per-target <c>watch.yml</c> <c>run-name</c>: how a cycle for one target is recognised.</summary>
+    public const string WatchRunPrefix = "watch ";
+    /// <summary>The gate workflow targets copy from <c>templates/main-watcher-gate.yml</c>.</summary>
+    public const string GateWorkflow = "main-watcher-gate.yml";
+    /// <summary>The gate template's job that runs only when the gate could not enforce a lock (ADR-008).</summary>
+    public const string FailOpenJob = "main-watcher/gate-fail-open";
+    /// <summary>At most this many gate runs are examined in one sweep, newest first, so a busy queue cannot lengthen it.</summary>
+    public const int FailOpenRuns = 50;
+    /// <summary>
+    /// How much older than the window a gate run may be and still be examined. The fail-open job is <c>needs: gate</c>, so it
+    /// exists only once the gate job has finished, up to its 10-minute timeout plus queue time after the run was created. The
+    /// window itself is judged on the job's own time, so this lag only widens what is looked at, never what is reported.
+    /// </summary>
+    public static readonly TimeSpan FailOpenLag = TimeSpan.FromHours(1);
     readonly Dictionary<string, (string Head, List<CheckRun> Checks)> snapshots = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -206,6 +222,34 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     public async Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct) =>
         (await Pages($"repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&created={Uri.EscapeDataString(">=" + since.ToString("O"))}", "workflow_runs", ct))
         .Select(r => new WorkflowRun(r.GetProperty("id").GetInt64(), Text(r, "display_title")!, Date(r, "created_at")!.Value, Text(r, "status")!, Date(r, "updated_at"))).ToArray();
+
+    public async Task<IReadOnlyList<FailOpen>> FailOpens(string repo, DateTimeOffset since, CancellationToken ct)
+    {
+        List<JsonElement> runs;
+        try
+        {
+            // Runs from before the window are read too: one created just before it can post its fail-open check run inside it.
+            var created = Uri.EscapeDataString(">=" + (since - FailOpenLag).ToString("O"));
+            runs = await Pages($"repos/{repo}/actions/workflows/{GateWorkflow}/runs?event=merge_group&created={created}", "workflow_runs", ct);
+        }
+        // A target that has not copied the gate workflow, or has renamed it, has no such runs to report.
+        catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.NotFound) { return []; }
+        var found = new List<FailOpen>();
+        foreach (var run in runs.OrderByDescending(r => r.GetProperty("id").GetInt64()).Take(FailOpenRuns))
+        {
+            var id = run.GetProperty("id").GetInt64();
+            // The template skips this job unless the gate failed open, so a job with any other conclusion, or none yet, is one.
+            var jobs = await Pages($"repos/{repo}/actions/runs/{id}/jobs?filter=latest", "jobs", ct);
+            if (jobs.Where(j => Text(j, "name") == FailOpenJob && Text(j, "conclusion") != "skipped")
+                .Select(j => (JsonElement?)j).FirstOrDefault() is not { } job) continue;
+            // ADR-008 counts the check run when it was posted, not when its run started, so each sweep's window abuts the last
+            // one's: a job that appeared after the previous sweep read it belongs to this one, and is reported exactly once.
+            var at = Date(job, "started_at") ?? Date(run, "created_at");
+            if (at < since) continue;
+            found.Add(new(id, Text(run, "head_sha") ?? "", Text(run, "head_branch") ?? "", at ?? since));
+        }
+        return found;
+    }
 
     public async Task Link(string repo, long checkId, long runId, CancellationToken ct) =>
         await Send(HttpMethod.Patch, $"repos/{repo}/check-runs/{checkId}", new { external_id = runId.ToString(System.Globalization.CultureInfo.InvariantCulture), details_url = $"https://github.com/{repo}/actions/runs/{runId}" }, ct);

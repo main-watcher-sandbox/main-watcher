@@ -15,6 +15,8 @@ sealed class FakeGitHub : IGitHubGateway
     public Dictionary<string, string> Files { get; } = [];
     public List<(string Repo, string Workflow, IReadOnlyDictionary<string, string> Inputs)> Dispatches { get; } = [];
     public List<string> Reads { get; } = [];
+    /// <summary>Repository activity on main, newest first: how an eligible head's work is dated for the hourly sweep.</summary>
+    public List<Push> Activity { get; } = [];
     /// <summary>The watcher repo's <c>watcher-infra</c> issues, for the worker's alerts.</summary>
     public List<Issue> IssueList { get; } = [];
     public Dictionary<int, List<string>> CommentsByIssue { get; } = [];
@@ -60,8 +62,10 @@ sealed class FakeGitHub : IGitHubGateway
     public Task ValidateTarget(Target target, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<string>> History(string repo, string sha, int limit, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<CheckRun>> CommitChecks(string repo, string sha, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IReadOnlyList<Push>> Pushes(string repo, int limit, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<Push>> Pushes(string repo, int limit, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<Push>>(Activity.Take(limit).ToArray());
     public Task<int?> CommitCount(string repo, string before, string after, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<FailOpen>> FailOpens(string repo, DateTimeOffset since, CancellationToken ct) => throw new NotSupportedException();
     public Task<CheckRun> CreateCheck(string repo, string sha, DateTimeOffset now, CancellationToken ct) => throw new NotSupportedException();
     public Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct) => throw new NotSupportedException();
     public Task Link(string repo, long checkId, long runId, CancellationToken ct) => throw new NotSupportedException();

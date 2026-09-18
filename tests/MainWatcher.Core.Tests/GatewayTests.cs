@@ -358,6 +358,62 @@ public class GatewayTests
         Assert.Equal(4, requests.Count);
     }
 
+    // ADR-008: the sweep reads the target's merge-group gate runs and keeps the fail-open check runs posted in its window.
+    // Run 9's job was skipped, so its gate enforced the lock; run 7's fail-open was posted before the window, and run 8's after
+    // it, although run 8 itself started earlier: the job's own time is what "posted in the past hour" means.
+    [Fact]
+    public async Task FailOpensKeepsTheFailOpenCheckRunsPostedInTheWindow()
+    {
+        var paths = new List<string>();
+        var started = new Dictionary<string, string>
+        {
+            ["/9/"] = "2026-09-17T10:20:00Z", ["/8/"] = "2026-09-17T10:18:00Z", ["/7/"] = "2026-09-17T10:16:00Z"
+        };
+        var handler = new Handler(request =>
+        {
+            paths.Add(request.RequestUri!.PathAndQuery);
+            if (request.RequestUri.AbsolutePath.EndsWith("/jobs"))
+            {
+                var run = started.Keys.First(k => request.RequestUri.AbsolutePath.Contains(k));
+                return Task.FromResult(Response(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    jobs = new object[]
+                    {
+                        new { name = "main-watcher-gate", conclusion = "success", started_at = "2026-09-17T10:15:00Z" },
+                        new { name = "main-watcher/gate-fail-open", conclusion = run == "/9/" ? "skipped" : "success", started_at = started[run] }
+                    }
+                })));
+            }
+            return Task.FromResult(Response(System.Text.Json.JsonSerializer.Serialize(new
+            {
+                workflow_runs = new[]
+                {
+                    new { id = 9L, head_sha = "aaa", head_branch = "gh-readonly-queue/main/pr-1", created_at = "2026-09-17T10:14:00Z" },
+                    new { id = 8L, head_sha = "bbb", head_branch = "gh-readonly-queue/main/pr-2", created_at = "2026-09-17T10:14:30Z" },
+                    new { id = 7L, head_sha = "ccc", head_branch = "gh-readonly-queue/main/pr-3", created_at = "2026-09-17T10:15:30Z" }
+                }
+            })));
+        });
+        using var http = Client(handler);
+        var since = DateTimeOffset.Parse("2026-09-17T10:17:00Z");
+        var found = await new GitHubGateway(http, 1).FailOpens("owner/repo", since, TestContext.Current.CancellationToken);
+        var open = Assert.Single(found);
+        Assert.Equal(8, open.RunId);
+        Assert.Equal("gh-readonly-queue/main/pr-2", open.Branch);
+        // The check run's own time, so the next sweep's window starts where this one ended.
+        Assert.Equal(DateTimeOffset.Parse("2026-09-17T10:18:00Z"), open.At);
+        Assert.Contains("workflows/main-watcher-gate.yml/runs?event=merge_group", paths[0]);
+        // Runs from before the window are read too: the fail-open job appears only after the gate job has finished.
+        Assert.Contains("created=%3E%3D2026-09-17T09%3A17", paths[0]);
+    }
+
+    [Fact]
+    public async Task ATargetWithoutTheGateWorkflowHasNoFailOpens()
+    {
+        using var http = Client(new Handler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound))));
+        Assert.Empty(await new GitHubGateway(http, 1).FailOpens("owner/repo", DateTimeOffset.UtcNow, TestContext.Current.CancellationToken));
+    }
+
     static HttpClient Client(HttpMessageHandler handler) => new(handler) { BaseAddress = new Uri("https://api.github.com/") };
     static HttpResponseMessage Response(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
     sealed class Handler(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) : HttpMessageHandler

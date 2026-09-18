@@ -25,3 +25,8 @@ public sealed record IssueComment(string Body, string Author, string AuthorType)
 public sealed record Account(string Login, string Type);
 /// <summary>One entry of the repository activity API on <c>main</c>. <see cref="Actor"/> is null for a deleted account.</summary>
 public sealed record Push(string Before, string After, DateTimeOffset Timestamp, string Type, string? Actor);
+/// <summary>
+/// A merge group whose gate passed without being able to enforce a lock (ADR-008, ADR-014): the gate run that recorded it with
+/// a <c>main-watcher/gate-fail-open</c> check run. <see cref="Branch"/> is the merge-queue branch it ran on.
+/// </summary>
+public sealed record FailOpen(long RunId, string Sha, string Branch, DateTimeOffset At);

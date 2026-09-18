@@ -22,7 +22,11 @@ target has work (MainWatcher#14); deployed to the sandbox namespace, it drove TS
 TS-S2 end to end with no hand-run cycle. The worker raises its own de-duplicated
 `watcher-infra` alerts, for failing cycles, uncompleted `watch.yml` runs, refused
 credentials, a low rate limit and a report owed for more than 15 minutes (MainWatcher#15);
-TS-S14 (c) passed.
+TS-S14 (c) passed. The hourly sweep at minute 17 gives every enabled target a cycle and
+raises "trigger worker appears down" and gate fail-open alerts (MainWatcher#16). In the
+sandbox a sweep tested a push that had waited two hours with the worker down, and reported a
+real `gate-fail-open` check run once; TS-S11 passed. GitHub dropped two of the cron's first
+three slots and ran the third two minutes late, which is C-7 measured rather than assumed.
 
 ## Where things are
 
@@ -58,7 +62,8 @@ TS-S14 (c) passed.
   `docs/watcher.md`. Sandbox evidence is in `sandbox/issue-9-validation.md`,
   `sandbox/issue-10-validation.md`, `sandbox/issue-11-validation.md`,
   `sandbox/issue-12-validation.md`, `sandbox/issue-13-validation.md`,
-  `sandbox/issue-14-validation.md` and `sandbox/issue-15-validation.md`.
+  `sandbox/issue-14-validation.md`, `sandbox/issue-15-validation.md` and
+  `sandbox/issue-16-validation.md`.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
@@ -67,7 +72,8 @@ TS-S14 (c) passed.
 - `.github/workflows/` — `ci.yml` (`dotnet test` and actionlint on every PR) and
   `sandbox-lock.yml` (hand-made App-authored locks, sandbox org only), and
   `run-integration-tests.yml`, the reusable test workflow targets call;
-  `watch.yml` runs a manual Planner/Reporter cycle for one configured target.
+  `watch.yml` runs a Planner/Reporter cycle for one dispatched target, or, on its hourly
+  schedule or a dispatch with no target, sweeps every enabled one.
 - `.claude/skills/architecture-design/` — the design skill used to produce these documents,
   including its validation scripts.
 
@@ -145,9 +151,9 @@ metrics store (PostgreSQL + Grafana) is deferred.
       interrupted reports without undoing overrides (MainWatcher#12), and gives
       infrastructure errors a neutral result with an alert (MainWatcher#13). Automated
       triggers, stale-run cancellation and lease renewal remain in later tickets.
-   4. Trigger worker. Built (MainWatcher#14), with its health alerts (MainWatcher#15); the
-      hourly sweep (#16) remains, as do stale runs (#18), leases (#19), reconciliation (#20)
-      and queue sweeps (#21).
+   4. Trigger worker. Built (MainWatcher#14), with its health alerts (MainWatcher#15) and
+      the hourly backup sweep that watches it in turn (MainWatcher#16); stale runs (#18),
+      leases (#19), reconciliation (#20) and queue sweeps (#21) remain.
    5. Onboarding docs.
 
 ## Validating the docs after edits

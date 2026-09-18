@@ -21,7 +21,7 @@ public sealed record WorkerSettings(
     string TargetsPath,
     Uri Api)
 {
-    public const string WatchWorkflow = "watch.yml";
+    public const string WatchWorkflow = GitHubGateway.WatchWorkflow;
 
     /// <summary>A cycle that runs longer is cancelled, so one stuck request cannot stop the worker.</summary>
     public static readonly TimeSpan CycleTimeout = TimeSpan.FromMinutes(5);

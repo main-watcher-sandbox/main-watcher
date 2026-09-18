@@ -45,7 +45,7 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
                 examined.Add(target.Repo);
                 if (found is not { } work) continue;
                 // A report the Reporter owes is timed from the test job, so a Reporter that keeps failing becomes visible (ADR-013).
-                if (work.Check is { } check) pending.Add(new(target.Repo, check, work.Reason, work.ReportableSince));
+                if (work.Check is { } check) pending.Add(new(target.Repo, check, work.Reason, work.Since ?? default));
                 // Never retried: a lost response may still have started the run, and the next cycle looks again.
                 await doorbell.DispatchWorkflow(watcherRepo, WorkerSettings.WatchWorkflow,
                     new Dictionary<string, string> { ["target"] = target.Repo }, ct);
@@ -119,5 +119,5 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
     }
 
     /// <summary><c>watch.yml</c>'s <c>run-name</c> is this prefix followed by the target.</summary>
-    public const string RunNamePrefix = "watch ";
+    public const string RunNamePrefix = GitHubGateway.WatchRunPrefix;
 }

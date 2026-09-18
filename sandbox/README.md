@@ -10,6 +10,8 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-12-validation.md` | TS-S14 (a), (b) and (d) with the Reporter fault switch, and the override part of TS-S3, for #12 |
 | `issue-13-validation.md` | TS-S16 (a) to (f): neutral results, their alerts, and red results that survive upload failures and late cancels, for #13 |
 | `issue-14-validation.md` | The trigger worker's sandbox deployment and its TS-S1 and TS-S2 evidence, for #14 |
+| `issue-15-validation.md` | TS-S14 (c): the worker's "reporting pending" alert with the Reporter's issue writes failing for 20 minutes, for #15 |
+| `issue-16-validation.md` | TS-S11: a push tested by a sweep with the worker scaled to zero, the "worker appears down" and gate fail-open alerts, and what GitHub's scheduler actually did, for #16 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
