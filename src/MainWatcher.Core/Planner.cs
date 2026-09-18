@@ -1,11 +1,25 @@
 namespace MainWatcher.Core;
 
-/// <summary>Starts eligible heads and recovers unlinked dispatches (R-14, ADR-017).</summary>
+/// <summary>
+/// Starts eligible heads, recovers unlinked dispatches (R-14, ADR-017) and stops target runs that have passed a deadline
+/// (ADR-013 point 5).
+/// </summary>
+/// <param name="queueDeadline">The ADR-013 queue deadline; the sandbox shortens it (TS-S16 (g)).</param>
+/// <param name="cancelsRuns">
+/// Whether a stop request is really sent. The sandbox sets it false so that every cancel fails, which is how TS-S16 (h)
+/// reaches "target run could not be stopped" without a run GitHub genuinely cannot stop.
+/// </param>
 public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock = null,
-    Func<TimeSpan, CancellationToken, Task>? delay = null, Alerts? alerts = null, string botLogin = Reporter.DefaultBotLogin)
+    Func<TimeSpan, CancellationToken, Task>? delay = null, Alerts? alerts = null, string botLogin = Reporter.DefaultBotLogin,
+    TimeSpan? queueDeadline = null, bool cancelsRuns = true)
 {
+    /// <summary>The check run's output title while its target run is being stopped.</summary>
+    public const string StaleTitle = "Stopping a stale target run";
+
     /// <summary>Alerts that could not be raised, as "title: reason". They never stop a cycle, but the run reports them.</summary>
     public List<string> AlertFailures { get; } = [];
+
+    DateTimeOffset Now => (clock ?? (() => DateTimeOffset.UtcNow))();
 
     /// <summary>
     /// Starts a test for the target's head when the shared rule allows it. The check runs are read here, inside
@@ -17,7 +31,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         if (!target.Enabled) return null;
         var sha = await github.MainHead(target.Repo, ct);
         var checks = await github.Checks(target.Repo, ct);
-        var now = (clock ?? (() => DateTimeOffset.UtcNow))();
+        var now = Now;
         if (!Eligibility.CanStart(sha, checks, TimeSpan.FromMinutes(target.PollInterval), now, force))
         {
             // A forced dispatch is someone already dealing with this head; it needs no alert telling them to send one.
@@ -50,12 +64,104 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         if (matches.Length == 1) return await Link(repo, check, matches[0].Id, ct);
         // A successful empty lookup is required: API errors and ambiguous matches never
         // release the check, since there may still be an active target run.
-        if (matches.Length == 0 && (clock ?? (() => DateTimeOffset.UtcNow))() - check.StartedAt >= DispatchWindow)
+        if (matches.Length == 0 && Now - check.StartedAt >= DispatchWindow)
         {
             await github.Complete(repo, check.Id, "neutral", Outcomes.Title(OutcomeKind.Unknown), "Dispatch produced no discoverable target run within 30 minutes; retry after poll_interval.", ct);
             return check with { Status = "completed", Conclusion = "neutral" };
         }
         return check;
+    }
+
+    /// <summary>
+    /// ADR-013 point 5: a target run that has passed a deadline is stopped before it is judged. One step is taken per cycle,
+    /// and each is recorded in the check run's output before the request it describes, so a crash resumes from the recorded
+    /// times instead of starting the wait again:
+    /// <list type="number">
+    ///   <item>past the queue or run deadline, record <c>cancel_requested</c> and cancel;</item>
+    ///   <item>while the run has not stopped, ask again, and after <see cref="StaleRun.StopWait"/> record
+    ///     <c>force_cancel_requested</c> and force-cancel;</item>
+    ///   <item>another <see cref="StaleRun.StopWait"/> on, raise "target run could not be stopped" and keep force-cancelling.</item>
+    /// </list>
+    /// The check run stays <c>in_progress</c> throughout, so <see cref="Eligibility.CanStart"/> starts no second test for the
+    /// target — not a retry, not a newer head and not a forced dispatch — until the run stops or someone deletes it (R-24).
+    /// Once it has stopped, its job goes through the outcome table like any other (ADR-013 point 1).
+    /// </summary>
+    /// <returns>What this cycle did, for the log, or null when there is nothing to stop.</returns>
+    public async Task<string?> Stop(Target target, CheckRun check, CancellationToken ct)
+    {
+        var repo = target.Repo;
+        if (check.Status == "completed" || !long.TryParse(check.ExternalId, out var runId)) return null;
+        // A read that fails throws before anything is written, so nothing changes and the next cycle asks again.
+        var jobs = await github.Jobs(repo, runId, ct);
+        // A deleted run has nothing to stop, and a completed or duplicated job is the Reporter's to judge, not this rule's.
+        if (StaleRun.TestJob(jobs) is not { } job) return null;
+        var now = Now;
+        var stage = StaleRun.State(target, check, job, now, queueDeadline).Stage;
+        if (stage == StaleStage.None) return null;
+        var run = $"[target run {runId}](https://github.com/{repo}/actions/runs/{runId})";
+        var asked = Markers.Time(check.Summary, StaleRun.CancelRequested);
+        if (asked is null)
+        {
+            var why = stage == StaleStage.Queue
+                ? $"did not get a runner within {(queueDeadline ?? StaleRun.DefaultQueueDeadline).TotalMinutes:0} minutes of this check run"
+                : $"has run {StaleRun.RunGrace.TotalMinutes:0} minutes past the deadline its `timeout-minutes` allows";
+            await Record(repo, check, $"The {run} {why}, so Main Watcher cancelled it. This check run stays in progress, and no "
+                + $"test starts for `{repo}`, until the run has stopped (ADR-013).", ct, (StaleRun.CancelRequested, Markers.Stamp(now)));
+            return $"Check {check.Id}: target run {runId} passed its {(stage == StaleStage.Queue ? "queue" : "run")} deadline; "
+                + await AskFor(repo, runId, false, ct);
+        }
+        var forced = Markers.Time(check.Summary, StaleRun.ForceCancelRequested);
+        if (forced is null && now - asked.Value < StaleRun.StopWait)
+            return $"Check {check.Id}: target run {runId} was cancelled at {Markers.Stamp(asked.Value)} and has not stopped; "
+                + await AskFor(repo, runId, false, ct);
+        if (forced is null)
+        {
+            await Record(repo, check, $"The {run} has not stopped in the {StaleRun.StopWait.TotalMinutes:0} minutes since it was "
+                + "cancelled, so Main Watcher force-cancelled it. This check run stays in progress until the run stops (ADR-013).",
+                ct, (StaleRun.CancelRequested, Markers.Stamp(asked.Value)), (StaleRun.ForceCancelRequested, Markers.Stamp(now)));
+            return $"Check {check.Id}: target run {runId} outlived its cancel; " + await AskFor(repo, runId, true, ct);
+        }
+        // The alert comes before the request it escalates: a force-cancel that keeps failing is exactly what it exists for.
+        if (now - forced.Value >= StaleRun.StopWait) await Unstoppable(target, check, runId, asked.Value, forced.Value, ct);
+        return $"Check {check.Id}: target run {runId} was force-cancelled at {Markers.Stamp(forced.Value)} and has not stopped; "
+            + await AskFor(repo, runId, true, ct);
+    }
+
+    /// <summary>Writes the stale-run state into the check run's output, which leaves it <c>in_progress</c>.</summary>
+    Task Record(string repo, CheckRun check, string text, CancellationToken ct, params (string Name, string Value)[] fields) =>
+        github.Output(repo, check.Id, StaleTitle, Markers.Set(text, fields), ct);
+
+    /// <summary>Asks GitHub to stop the run, unless the sandbox switch is making that fail, and says what came of it.</summary>
+    async Task<string> AskFor(string repo, long runId, bool force, CancellationToken ct)
+    {
+        var what = force ? "force-cancel" : "cancel";
+        var refusal = cancelsRuns ? await github.CancelRun(repo, runId, force, ct) : "the sandbox cancel switch refused it";
+        return refusal is null ? $"{what} accepted." : $"{what} refused: {refusal}.";
+    }
+
+    /// <summary>
+    /// ADR-013 point 5's last step: GitHub has not stopped the run in the <see cref="StaleRun.StopWait"/> since the
+    /// force-cancel, so every test on the target is blocked until it stops or someone deletes it (R-24). The hidden marker
+    /// keys the alert to the check run, so the cycles that keep force-cancelling do not repeat it.
+    /// </summary>
+    async Task Unstoppable(Target target, CheckRun check, long runId, DateTimeOffset asked, DateTimeOffset forced, CancellationToken ct)
+    {
+        var repo = target.Repo;
+        var title = $"Target run could not be stopped on {repo}";
+        if (alerts is null) { AlertFailures.Add($"{title}: no alert sink configured"); return; }
+        try
+        {
+            await alerts.Raise(title,
+                $"[Target run {runId}](https://github.com/{repo}/actions/runs/{runId}) of `{repo}`, testing "
+                + $"{Markdown.Commit(repo, check.Sha)}, passed its deadline and was cancelled at {Markers.Stamp(asked)} and "
+                + $"force-cancelled at {Markers.Stamp(forced)}. GitHub has still not stopped it.\n\n"
+                + $"Check run {check.Id} stays `in_progress`, so **no test starts for `{repo}`** — not a retry, not a newer "
+                + "head and not a forced dispatch — for as long as this lasts (ADR-013). Main Watcher repeats the force-cancel "
+                + "on every cycle. As soon as the run stops, its `main-watcher` job is judged like any other; deleting the run "
+                + "instead gives \"outcome unknown\" and releases the target at once.",
+                ct, $"<!-- main-watcher unstoppable check={check.Id} -->");
+        }
+        catch (Exception e) when (!ct.IsCancellationRequested) { AlertFailures.Add($"{title}: {e.Message}"); }
     }
 
     /// <summary>

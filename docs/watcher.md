@@ -14,7 +14,8 @@ overrides. Issue #13 gives infrastructure errors a neutral result with an alert,
 head again until it gives one. #14 adds the trigger worker,
 which dispatches this workflow whenever a target has work; see [worker.md](worker.md). #16 adds
 the hourly backup sweep, which processes every enabled target and watches the worker in turn.
-Lease renewal and stale-run cancellation are separate backlog items.
+#18 stops a target run that has passed a deadline and judges it once it has stopped.
+Lease renewal is a separate backlog item.
 
 Configure the `reporter` environment with `MAIN_WATCHER_APP_ID` (variable) and
 `MAIN_WATCHER_PRIVATE_KEY` (secret). Install that App on each target with
@@ -89,7 +90,8 @@ The reason is the HTTP status, a network error or timeout message, or a response
 without `workflow_run_id`. After 30 minutes, a successful lookup finding no matching run completes the check as
 neutral. Ambiguous matches and failed API reads remain pending. A recovery error on
 one check does not prevent reporting other pending checks, but blocks new planning
-for that cycle. Automated cancellation of stale target runs remains in #18.
+for that cycle. A target run that did start but produces no result is stopped instead;
+see [stale target runs](#stale-target-runs).
 
 Check discovery bootstraps from main's history once per `GitHubGateway` instance.
 Reuse one instance per target in the worker: subsequent polls refresh the current
@@ -268,8 +270,9 @@ tests and a lost runner all leave the marker skipped or missing, so they are inf
 errors. A test step renamed in the workflow leaves the marker without a test result, a
 contract error; a renamed marker step reads as tests that did not finish. Anything after a
 successful marker, such as a hung upload or a cancellation, does not change a red or green
-result. A job still running leaves the report pending, and any other jobs API error fails the
-cycle with the check still `in_progress`.
+result. A job still running leaves the report pending, unless it has passed one of the
+[stale-run deadlines](#stale-target-runs), and any other jobs API error fails the cycle with the
+check still `in_progress`.
 
 A neutral result never creates, comments on or closes a lock. The alert comes first, then the
 check run completes as `neutral` with the same explanation. Its output title records the kind:
@@ -287,6 +290,58 @@ fails, the check run stays `in_progress`, the cycle fails, and the next cycle re
 report. Each alert carries the check's hidden `<!-- main-watcher check=<id> -->` marker, and an
 open alert with the same title that already holds it is not repeated, so the replay raises only
 what is missing.
+
+## Stale target runs
+
+A cycle that has nothing to report looks at whether the target run should still be running
+(ADR-013 point 5). Waiting for a runner is not running, so there are two deadlines, and only
+one of them applies at a time:
+
+| The `main-watcher` job | Deadline |
+| --- | --- |
+| Has not started (`queued`, or not yet created) | The check run's creation plus 30 minutes |
+| Has started (`in_progress`) | The job's `started_at` plus the target's `timeout`, plus the 20 minutes the reusable workflow adds for setup and upload, plus a 10-minute grace |
+
+The job's status decides which, never its `started_at`, which GitHub fills in for a queued job
+too. The jobs API does not report a job's `timeout-minutes`, so the run deadline is derived from
+the same two numbers `run-integration-tests.yml` uses; the grace covers a target pinned to a tag
+with a different margin. A started job GitHub gives no `started_at` for is never cancelled: it
+may still be testing. A completed job is judged by the [outcome table](#neutral-results) instead,
+whatever the deadlines say, and a deleted run gives "outcome unknown".
+
+Past either deadline the cycle takes one step, and records it in the check run's output before
+it makes the request, so a crash resumes from the recorded time rather than starting the wait
+again:
+
+1. write `cancel_requested=<time>` into the output, then cancel the run;
+2. on each later cycle, ask again; 15 minutes after `cancel_requested`, write
+   `force_cancel_requested=<time>` and call GitHub's force-cancel endpoint;
+3. 15 minutes after that, raise "Target run could not be stopped on `owner/repo`" and keep
+   force-cancelling every cycle.
+
+The check run stays `in_progress` throughout, which is what blocks a second test: the shared
+eligibility rule refuses any head while a check run is active, so a stale run stops the retry,
+a newer head and a forced dispatch alike, until the run stops or someone deletes it (R-24). The
+output title is "Stopping a stale target run" meanwhile. As soon as the job completes, the
+outcome table judges its steps like any other: a cancellation during the tests leaves no
+`main-watcher-tests-finished` marker and is an infrastructure error, while a run stopped after
+the marker succeeded keeps its red or green result. Deleting the run gives "outcome unknown" and
+releases the target at once.
+
+A cancel or force-cancel GitHub refuses is logged with its status and never throws: the run is
+asked again next cycle, and the 15-minute steps are the escalation. An error reading the jobs
+API changes nothing, since nothing is written before the read; the cycle exits non-zero and the
+next one looks again. The alert carries an `<!-- main-watcher unstoppable check=<id> -->` marker,
+so the cycles that keep force-cancelling raise it only once.
+
+### Sandbox fault injection
+
+Two watcher-repo variables support TS-S16 (g) and (h) and are unset in production:
+
+| Variable | Effect |
+| --- | --- |
+| `MW_QUEUE_DEADLINE_MINUTES` | The queue deadline, 1 to 30 minutes; anything else falls back to 30. The trigger worker reads the same variable and **must be given the same value**, or it starts cycles for runs the Planner does not judge stale |
+| `MW_SANDBOX_REFUSE_CANCEL` | `true` makes every cancel and force-cancel fail without asking GitHub, so the "could not be stopped" alert can be reached without a run GitHub genuinely cannot stop |
 
 ## Retesting a neutral head
 
@@ -315,11 +370,12 @@ never retests a head whose newest result is `success` or `failure`.
 `GITHUB_TOKEN` (`issues: write`), since the App token is scoped to the target. An open
 alert with the same title gets a comment instead of a new issue (ADR-012). A lock that
 mentions nobody raises "Lock issues on `owner/repo` mention nobody". Neutral results raise the
-alerts [above](#neutral-results), a head out of attempts raises the one
+alerts [above](#neutral-results), a target run GitHub will not stop raises the one
+[above](#stale-target-runs), a head out of attempts raises the one
 [above](#retesting-a-neutral-head), and a sweep raises the two [above](#backup-sweep). A failed
-"mention nobody" or "head untestable" alert never blocks the lock, the check run or the testing
-the cycle does; the cycle logs it and exits non-zero. A failed neutral-result alert leaves the
-check run `in_progress` for a replay.
+"mention nobody", "target run could not be stopped" or "head untestable" alert never blocks the
+lock, the check run or the testing the cycle does; the cycle logs it and exits non-zero. A failed
+neutral-result alert leaves the check run `in_progress` for a replay.
 
 ## Validation
 

@@ -85,6 +85,25 @@ public class SettingsTests
         finally { File.Delete(key); }
     }
 
+    // The sandbox queue deadline (TS-S16 (g)). Unset in production, and an unusable value falls back to the ADR-013 default
+    // the same way in the watcher, so the two can never disagree about which runs are stale.
+    [Theory]
+    [InlineData(null, 30)]
+    [InlineData("10", 10)]
+    [InlineData("45", 30)]
+    [InlineData("later", 30)]
+    public void TheQueueDeadlineComesFromTheEnvironment(string? value, int minutes)
+    {
+        var key = KeyFile();
+        try
+        {
+            var env = Valid(key);
+            if (value is not null) env["MW_QUEUE_DEADLINE_MINUTES"] = value;
+            Assert.Equal(TimeSpan.FromMinutes(minutes), WorkerSettings.Load(env.GetValueOrDefault).QueueDeadline);
+        }
+        finally { File.Delete(key); }
+    }
+
     [Theory]
     [InlineData("MW_WATCHER_REPO", "watcher")]
     [InlineData("MW_MAIN_WATCHER_APP_ID", "-1")]

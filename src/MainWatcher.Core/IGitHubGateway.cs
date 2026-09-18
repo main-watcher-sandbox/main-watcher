@@ -28,6 +28,14 @@ public interface IGitHubGateway
     Task Link(string repo, long checkId, long runId, CancellationToken ct);
     Task<IReadOnlyList<WorkflowJob>?> Jobs(string repo, long runId, CancellationToken ct);
     Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct);
+    /// <summary>
+    /// Asks GitHub to stop a workflow run: <c>cancel</c>, or <c>force-cancel</c>, which skips the run's own cleanup
+    /// (ADR-013 point 5). Both are idempotent, so a later cycle simply asks again.
+    /// </summary>
+    /// <returns>Null when GitHub accepted the request, else why it did not. Never throws: the escalation is the answer.</returns>
+    Task<string?> CancelRun(string repo, long runId, bool force, CancellationToken ct);
+    /// <summary>Replaces a check run's output without completing it, so it stays <c>in_progress</c>.</summary>
+    Task Output(string repo, long checkId, string title, string summary, CancellationToken ct);
     Task Complete(string repo, long checkId, string conclusion, string title, string summary, CancellationToken ct);
     /// <summary>A file on <c>main</c>: null when it does not exist, "" when it is empty or too large to read inline.</summary>
     Task<string?> File(string repo, string path, CancellationToken ct);

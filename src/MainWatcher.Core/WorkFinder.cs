@@ -7,7 +7,8 @@ namespace MainWatcher.Core;
 /// <para>
 /// <see cref="Since"/> is when the work became available: the <c>main-watcher</c> job's completion for a report the Reporter
 /// owes (ADR-013), the check run's creation for one awaiting linking, the end of the dispatch window for one that never got a
-/// target run, and the push that made an eligible head current (ADR-017). It is null when GitHub does not date the work — a
+/// target run, the deadline passed or the stop asked for by a run that must be cancelled (ADR-013 point 5), and the push that
+/// made an eligible head current (ADR-017). It is null when GitHub does not date the work — a
 /// deleted target run, or a head whose push the activity read does not name — so the hourly sweep never judges how long work
 /// has waited from a guess. <see cref="Check"/> is set only when the work is a report already owed.
 /// </para>
@@ -19,7 +20,8 @@ public sealed record Work(string Reason, DateTimeOffset? Since = null, long? Che
 /// and uses the Planner's and Reporter's own rules, so the worker never starts a cycle they would not act on. The hourly sweep
 /// asks the same question to see how long work has been waiting for the worker.
 /// </summary>
-public sealed class WorkFinder(Func<DateTimeOffset>? clock = null)
+/// <param name="queueDeadline">The ADR-013 queue deadline, which the Planner must be given to the same value.</param>
+public sealed class WorkFinder(Func<DateTimeOffset>? clock = null, TimeSpan? queueDeadline = null)
 {
     /// <summary>Why the target needs a <c>watch.yml</c> cycle, or null when it has no work.</summary>
     public async Task<Work?> Find(Target target, IGitHubGateway github, CancellationToken ct)
@@ -39,6 +41,18 @@ public sealed class WorkFinder(Func<DateTimeOffset>? clock = null)
                 if (Outcomes.Read(jobs) is not null)
                     return new($"check {check.Id}: the main-watcher job of target run {runId} has completed",
                         jobs.Where(j => Outcomes.IsTestJob(j.Name)).Select(j => j.CompletedAt).FirstOrDefault(), check.Id);
+                // A job that has not completed has two deadlines, and past either one the Planner must stop the run before it
+                // can be judged (ADR-013 point 5). What the marker step shows says nothing here: the job is still going, so no
+                // row of the outcome table applies, and it stays flagged until the run has stopped. This is not a report owed,
+                // so it carries no check ID: the "reporting pending" alert times reports, not runs.
+                if (StaleRun.TestJob(jobs) is { } job
+                    && StaleRun.State(target, check, job, now, queueDeadline) is { Stage: not StaleStage.None } stale)
+                    return new($"check {check.Id}: target run {runId} " + stale.Stage switch
+                    {
+                        StaleStage.Queue => $"did not start within {(queueDeadline ?? StaleRun.DefaultQueueDeadline).TotalMinutes:0} minutes",
+                        StaleStage.Run => "has run past its deadline",
+                        _ => "was asked to stop and has not stopped"
+                    }, stale.Since);
                 continue;
             }
             // An unlinked check (a lost dispatch response): Planner.Recover links a single matching run, or releases the check

@@ -70,6 +70,8 @@ sealed class FakeGitHub : IGitHubGateway
     public Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct) => throw new NotSupportedException();
     public Task Link(string repo, long checkId, long runId, CancellationToken ct) => throw new NotSupportedException();
     public Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct) => throw new NotSupportedException();
+    public Task<string?> CancelRun(string repo, long runId, bool force, CancellationToken ct) => throw new NotSupportedException();
+    public Task Output(string repo, long checkId, string title, string summary, CancellationToken ct) => throw new NotSupportedException();
     public Task Complete(string repo, long checkId, string conclusion, string title, string summary, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<Issue>> Issues(string repo, string label, DateTimeOffset since, CancellationToken ct) => throw new NotSupportedException();
     public Task<IReadOnlyList<IssueComment>> Comments(string repo, int number, DateTimeOffset? since, CancellationToken ct) => throw new NotSupportedException();

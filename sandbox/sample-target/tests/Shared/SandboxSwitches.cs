@@ -23,6 +23,7 @@ public sealed record SandboxSwitches
     // Stubs: read by the sandbox build of the reusable test workflow, not by tests.
     [JsonPropertyName("fail_upload")] public bool FailUpload { get; init; }
     [JsonPropertyName("hang_upload")] public bool HangUpload { get; init; }
+    [JsonPropertyName("hang_upload_forever")] public bool HangUploadForever { get; init; }
 
     // Read by the sandbox-slow-check workflow, not by tests.
     [JsonPropertyName("slow_check_minutes")] public double SlowCheckMinutes { get; init; }

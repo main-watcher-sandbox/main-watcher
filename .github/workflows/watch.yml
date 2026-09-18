@@ -115,4 +115,9 @@ jobs:
           MW_SWEEP: ${{ inputs.target == '' }}
           # Sandbox only (TS-S14): a comma-separated list of Reporter writes to exit after. Unset in production.
           MW_SANDBOX_EXIT_AFTER: ${{ vars.MW_SANDBOX_EXIT_AFTER }}
+          # Sandbox only (TS-S16 (g)): a shorter ADR-013 queue deadline, 1 to 30 minutes. The trigger worker reads the same
+          # variable and must be given the same value, or it starts cycles for runs the Planner does not judge stale.
+          MW_QUEUE_DEADLINE_MINUTES: ${{ vars.MW_QUEUE_DEADLINE_MINUTES }}
+          # Sandbox only (TS-S16 (h)): "true" makes every cancel and force-cancel fail without asking GitHub.
+          MW_SANDBOX_REFUSE_CANCEL: ${{ vars.MW_SANDBOX_REFUSE_CANCEL }}
         run: dotnet src/MainWatcher.Watcher/bin/Release/net10.0/MainWatcher.Watcher.dll
