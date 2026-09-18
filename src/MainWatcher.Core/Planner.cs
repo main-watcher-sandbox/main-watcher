@@ -248,15 +248,23 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         string? stopped = null;
         DateTimeOffset? blocked = null;
         var complete = false;
-        string? progress = null;
+        // How far each entry of the second the cursor is stuck on has been read. Entries no longer in the window are dropped.
+        var progress = Reconciliation.Progress(issue.Body, merges.Select(m => m.After));
         Exception? failed = null;
         try
         {
             for (var i = 0; i < merges.Length; i++)
             {
                 var merge = merges[i];
-                // Where an earlier pass stopped inside this entry's range, if it did.
-                var read = Reconciliation.Read(issue.Body, merge.After);
+                // An entry an earlier pass read to its end, while a neighbour stamped in the same second held the cursor
+                // back, is not read again — and is still remembered, because forgetting it is what would let two long ranges
+                // in one second take turns and never finish.
+                var at = progress.TryGetValue(merge.After, out var recorded) ? recorded : 0;
+                if (at is not { } read)
+                {
+                    if (i + 1 == merges.Length || merges[i + 1].Timestamp != merge.Timestamp) Passed(merge);
+                    continue;
+                }
                 MergedRange? range;
                 try { range = await github.MergedCommits(repo, merge.Before, merge.After, read, ct); }
                 catch (Exception e) when (Unreadable(e, ct))
@@ -303,14 +311,22 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
                 // what is bounded is the work one cycle does, not what is checked.
                 if (range is { Truncated: true })
                 {
-                    progress = Reconciliation.Progress(merge.After, read + range.Commits.Count);
+                    progress[merge.After] = read + range.Commits.Count;
                     (stopped, blocked) = ($"the range of `{Markdown.Short(merge.After)}` is longer than one pass reads; "
                         + $"{read + range.Commits.Count} of its commits have been checked", merge.Timestamp);
                     break;
                 }
-                // The cursor moves a whole second at a time, because the next run reads strictly after it: advancing between
-                // two entries stamped in the same second would put the one still unjudged behind the cursor for good.
-                if (i + 1 == merges.Length || merges[i + 1].Timestamp != merge.Timestamp) reached = merge.Timestamp;
+                progress[merge.After] = null;
+                if (i + 1 == merges.Length || merges[i + 1].Timestamp != merge.Timestamp) Passed(merge);
+            }
+
+            // The cursor moves a whole second at a time, because the next run reads strictly after it: advancing between two
+            // entries stamped in the same second would put the one still unjudged behind the cursor for good. Once the whole
+            // second is behind it, nothing in that second needs remembering any more.
+            void Passed(Push merge)
+            {
+                reached = merge.Timestamp;
+                progress.Clear();
             }
             // The activity read is bounded (ADR-003), so a window whose start it does not reach may hold merges nothing can see.
             if (activity.Count >= PushList.Limit && from is { } begin && activity.Min(p => p.Timestamp) > begin
@@ -320,9 +336,11 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
                     + Reconciliation.Truncated);
             // Complete only once the whole window has been checked: a pass that stopped part-way is retried on the next run.
             complete = stopped is null && issue.State == "closed";
+            var written = Reconciliation.Field(progress);
             (string Name, string Value)[] fields = [
                 .. reached is { } mark && mark != cursor ? new[] { (Reconciliation.Cursor, Markers.Stamp(mark)) } : [],
-                .. progress is not null ? new[] { (Reconciliation.Commits, progress) } : [],
+                .. written != (Markers.Field(issue.Body, Reconciliation.Commits) ?? "")
+                    ? new[] { (Reconciliation.Commits, written) } : [],
                 .. complete ? new[] { (Reconciliation.Complete, Reconciliation.CompleteValue) } : []];
             if (rows.Count > 0 || fields.Length > 0)
             {

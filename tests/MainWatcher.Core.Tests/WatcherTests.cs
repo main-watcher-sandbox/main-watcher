@@ -683,6 +683,44 @@ public class WatcherTests
         Assert.Equal(2, watcher.Comments.Count + watcher.Issues["owner/watcher"].Count);
     }
 
+    // PR #55 review: the two rules above meet here. The cursor cannot move until a whole second is done, so while one entry
+    // of a second is unfinished its neighbours cannot be put behind it — and an entry whose progress was forgotten would be
+    // read again from the start. Two long ranges in one second would then take turns overwriting each other's progress and
+    // neither would ever finish.
+    [Fact]
+    public async Task TwoLongRangesInTheSameSecondBothFinish()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub
+        {
+            Activity = { PushAt('a', 'b', "merge_queue_merge", "alice", 30), PushAt('b', 'c', "merge_queue_merge", "bob", 30) }
+        };
+        // Two entries stamped in the same second, each naming two pull requests and each read one commit a pass.
+        fake.Merged[Sha('b')] = [Pull(7, 30), Pull(8, 30)];
+        fake.Merged[Sha('c')] = [Pull(9, 30), Pull(10, 30)];
+        fake.Truncated.Add(Sha('b'));
+        fake.Truncated.Add(Sha('c'));
+        foreach (var pull in new[] { 7, 8, 9, 10 }) fake.Labels[pull] = [Merge(30)];
+        SeedWindow(fake, 60);
+        fake.CloseByHand("owner/repo", 1, "alice", Now.AddMinutes(-5));
+        var watcher = new FakeGitHub();
+
+        // Three passes finish both ranges: b, then b's tail and c, then c's tail.
+        for (var pass = 0; pass < 3; pass++) await Reconciler(fake, watcher).Reconcile(Locked, ct);
+        var body = fake.Find("owner/repo", 1).Body;
+        foreach (var pull in new[] { 7, 8, 9, 10 })
+            Assert.Contains($"[#{pull}](https://github.com/owner/repo/pull/{pull})", body);
+        Assert.Equal(Now.AddMinutes(-30), Markers.Time(body, Reconciliation.Cursor));
+        Assert.Equal(Reconciliation.CompleteValue, Markers.Field(body, Reconciliation.Complete));
+        // Nothing of that second needs remembering once it is behind the cursor.
+        Assert.Equal("", Markers.Field(body, Reconciliation.Commits));
+        // The first range is never restarted: each commit of each range is read exactly once.
+        Assert.Equal([
+            "merged:" + Sha('b') + ":0", "labels:7",
+            "merged:" + Sha('b') + ":1", "labels:8", "merged:" + Sha('c') + ":0", "labels:9",
+            "merged:" + Sha('c') + ":1", "labels:10"], fake.Reads);
+    }
+
     // PR #55 review: the writes that fail are the ones that would have said something, so nothing else would notice. The
     // overdue alert goes to the watcher repo, which is writable when the target's issue is not.
     [Fact]
