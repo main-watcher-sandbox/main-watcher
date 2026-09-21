@@ -45,8 +45,10 @@ gh workflow run sandbox-selftest.yml -R main-watcher-sandbox/sample-target
 
 ## The sandbox watcher and gate repos
 
-`main-watcher-sandbox/main-watcher` is private and stands in for this repo. Its `reporter`
-environment holds the `main-watcher` App key. Before a scenario test, put the MainWatcher tree
+`main-watcher-sandbox/main-watcher` stands in for this repo. It is public, like every sandbox repo, since 2026-09-21. On
+the Free plan only private repos use the org's 2000 Actions minutes a month, and one full scenario suite run used about
+700 of them in the replica (#25). Its `reporter` environment holds the `main-watcher` App key; secrets are never shown
+on a public repo. Before a scenario test, put the MainWatcher tree
 under test on its `main`.
 
 The replica's `main` is never an ancestor of that commit: it ends in the `targets.yml` commit

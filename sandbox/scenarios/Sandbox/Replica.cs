@@ -9,7 +9,7 @@ namespace MainWatcher.Scenarios.Sandbox;
 public sealed record TargetEntry(string Repo, int Timeout = 30, int PollInterval = 1, string[]? Notify = null, bool Enabled = true);
 
 /// <summary>
-/// The private watcher replica, <c>main-watcher-sandbox/main-watcher</c>: its <c>watch.yml</c> cycles and sweeps, its sandbox
+/// The watcher replica, <c>main-watcher-sandbox/main-watcher</c>: its <c>watch.yml</c> cycles and sweeps, its sandbox
 /// switches, its <c>targets.yml</c> and the <c>watcher-infra</c> alerts it raises. Several scenarios change the shared switch
 /// variables and <c>targets.yml</c> at once, so each change is a read, an edit of one target's part, and a write, one at a time.
 /// </summary>
@@ -111,6 +111,7 @@ public sealed class Replica(GitHub github, string repo)
             }
         }
     }
+
     public Task DisableWatch(CancellationToken ct) => github.Put($"repos/{Repo}/actions/workflows/{WatchWorkflow}/disable", null, ct);
 
     // ---- sandbox switches ----
