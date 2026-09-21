@@ -56,7 +56,7 @@ own environment (MainWatcher#24). TS-S8's second run on 2026-09-21 showed every 
 403, beside a working control. The PR #59 review added `list` and `watch` to the Secret check, made failed
 queries fail, and added `main-watcher`'s installation (through `app-installations.yml`). The third run passed all
 but the Secret check. That check showed `kubectl auth can-i --as=system:anonymous` cannot answer at all, so it
-now uses `SubjectAccessReview`s, and one more run is owed. The first run found `mw-observer` installed on
+now uses `SubjectAccessReview`s. TS-S8 passed on the fourth run, all 35 checks. The first run found `mw-observer` installed on
 `sample-target-slow`, which is not a target (R-11); that App was removed from it. The first run also showed that,
 on a public repo, GitHub validates a new issue's body before it checks permission, so issue writes are probed with
 an empty update instead.
@@ -165,15 +165,14 @@ metrics store (PostgreSQL + Grafana) is deferred.
 
 ## Open items before building
 
-1. Run sandbox tests early. Of the scenarios named here, only TS-S8 is still open. Passed since:
+1. Run sandbox tests early. None of the scenarios named here is still open. Passed since:
    TS-S17 on 2026-09-18 (MainWatcher#21), which confirmed A-7 through the App and the watcher's
    own sweep; TS-S14 (a), (b) and (d) on 2026-09-17 (MainWatcher#12), TS-S16 (a) to (f) the same
    day (MainWatcher#13), TS-S14 (c) with the worker's alerts (MainWatcher#15), TS-S12 and TS-S18
    with the neutral retry cap (MainWatcher#17), TS-S16 (g) and (h) with the stale-run lifecycle
    (MainWatcher#18), TS-S7 with the lock lease (MainWatcher#19), whose reconciliation clause
    passed with TS-S9 and TS-S15 (MainWatcher#20), TS-S10 with the team mention
-   (MainWatcher#23). TS-S8 is still open: its last run predates the PR #59 review
-   (MainWatcher#24).
+   (MainWatcher#23), and TS-S8 with the credential-scope script (MainWatcher#24).
 2. Remaining `[assumption]` tag: worker resource sizing.
 
 ## Suggested next steps
