@@ -61,7 +61,7 @@ public sealed class GitHubGateway(HttpClient http, long appId,
                     await (delay ?? Task.Delay)(TimeSpan.FromSeconds(2 * Math.Pow(2, attempt)), ct);
                     continue;
                 }
-                response.EnsureSuccessStatusCode();
+                await Ensure(response, method, path, ct);
                 var text = await response.Content.ReadAsStringAsync(ct);
                 nextPage?.Invoke(NextPage(response));
                 if (string.IsNullOrWhiteSpace(text)) return default;
@@ -72,6 +72,30 @@ public sealed class GitHubGateway(HttpClient http, long appId,
             catch (TaskCanceledException) when (method == HttpMethod.Get && attempt < 3 && !ct.IsCancellationRequested) { }
             await (delay ?? Task.Delay)(TimeSpan.FromSeconds(2 * Math.Pow(2, attempt)), ct);
         }
+    }
+
+    /// <summary>
+    /// Throws for a refused request, naming it and saying what GitHub said, with its rate-limit headers. A bare "403
+    /// (Forbidden)" could not tell a missing permission from an exhausted or secondary rate limit: the scenario suite saw
+    /// every cycle fail with only that (#25).
+    /// </summary>
+    static async Task Ensure(HttpResponseMessage response, HttpMethod method, string path, CancellationToken ct)
+    {
+        if (response.IsSuccessStatusCode) return;
+        string? message = null;
+        try
+        {
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            message = json.RootElement.ValueKind == JsonValueKind.Object ? Text(json.RootElement, "message") : null;
+        }
+        catch (JsonException) { }
+        var limits = string.Join(", ", new[] { "x-ratelimit-resource", "x-ratelimit-remaining", "x-ratelimit-reset", "retry-after" }
+            .Select(name => response.Headers.TryGetValues(name, out var values) ? $"{name}: {values.First()}" : null).OfType<string>());
+        // The path without its query: the resource is what matters, and a page link's query is long.
+        var resource = "/" + path.Split('?')[0].Replace("https://api.github.com/", "").TrimStart('/');
+        throw new HttpRequestException(
+            $"GitHub answered {(int)response.StatusCode} ({response.ReasonPhrase}) to {method} {resource}"
+            + (message is null ? "" : $": {message}") + (limits.Length == 0 ? "" : $" [{limits}]"), null, response.StatusCode);
     }
 
     static bool IsTransient(HttpResponseMessage response) => (int)response.StatusCode >= 500
