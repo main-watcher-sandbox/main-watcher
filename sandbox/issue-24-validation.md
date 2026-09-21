@@ -99,10 +99,11 @@ It then checks:
   script cannot mint that App's token, so it starts the watcher's `app-installations.yml`, waits for it and reads
   its artifact. That workflow runs in the `reporter` environment, checks out no code, and asks for a
   metadata-read token covering the App's whole installation;
-- no service account outside the `kube-*` namespaces, and not `system:anonymous`, can `get` the Secret, or
-  `list` or `watch` Secrets in its namespace, which returns their contents just the same. Only an explicit `no`
-  counts as denied: a query that errors, or a namespace or service account list that cannot be read, fails
-  the row;
+- no one can `get` the Secret, or `list` or `watch` Secrets in its namespace, which returns their contents just
+  the same. "No one" means `system:anonymous`, any signed-in user, and every service account outside the `kube-*`
+  namespaces. Each question is a `SubjectAccessReview` made by the person running the script, naming the
+  subject's groups. Only `allowed: false` counts as denied: a review that fails, or a namespace or service account
+  list that cannot be read, fails the row;
 - the running Deployment has `automountServiceAccountToken: false`;
 - the namespace holds no Service or Ingress.
 
@@ -238,12 +239,33 @@ The review found two gaps in what the second run could show.
   is installed on targets only (ARCH-001 §8). A run that cannot be started, found, finished or downloaded fails
   the row.
 
+## The third run, 2026-09-21T15:56:12Z
+
+Run from `25a707d`, after that tree had been taken to the replica's `main` and its `targets.yml` set back to the
+sandbox target. **32 pass, 1 fail.**
+
+Every row from the second run passed again, with the same codes. The new rows:
+
+| Result | Check | Detail |
+| --- | --- | --- |
+| PASS | `main-watcher` installed on selected repositories | `selected`, read by `app-installations.yml` run [35622319030](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35622319030) |
+| PASS | `main-watcher` repositories | `main-watcher-sandbox/sample-target`: exactly `targets.yml`, and not the watcher |
+| PASS | Service accounts listed | 3 subjects: `system:anonymous` and the `default` service accounts of `default` and `main-watcher-sandbox` |
+| **FAIL** | No service account can get, list or watch the Secret | Not every query was answered. All three of `system:anonymous`'s queries failed with *selfsubjectaccessreviews.authorization.k8s.io is forbidden: User "system:anonymous" cannot create resource "selfsubjectaccessreviews"* |
+
+**The failure is the review's point, found in practice.** `kubectl auth can-i --as=<subject>` asks as the
+impersonated subject, and `system:anonymous` may not ask anything. So that query could never answer, and the
+first two runs' `get` row counted the error as a denial and passed. Only the two service accounts' answers in
+those runs were real. The script no longer impersonates. The person running it creates a `SubjectAccessReview` for
+each subject, naming the subject's groups (`system:unauthenticated` for anonymous; `system:serviceaccounts`, the
+namespace's service account group and `system:authenticated` for a service account). This works for any subject.
+It also adds a fourth subject, any signed-in user (`system:authenticated`).
+
+A fake `kubectl` confirmed the review form behaves as the `can-i` form did in every case. It passes on 12
+answers of `false`, and fails on a review error, on one `list` allowed, and when namespaces cannot be listed.
+
 ## TS-S8 status
 
-The second run passed every check it made. It is not yet a full pass, because it asked only `get` and did not
-cover `main-watcher`. What remains:
-
-1. Put this tree on the replica's `main` (sandbox/README.md), so that `app-installations.yml` exists there, and
-   set the replica's `targets.yml` back to the sandbox target.
-2. Re-run `sandbox/ts-s8-credential-scope.sh` and record the new rows: `main-watcher installed on selected
-   repositories`, `main-watcher repositories`, `Service accounts listed`, and the get, list and watch row.
+Every check passes except the Secret access row, which now needs one more run with the `SubjectAccessReview`
+form. Nothing has to be taken to the replica for it: the change is in the script alone, and
+`app-installations.yml` is already there.
