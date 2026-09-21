@@ -167,7 +167,7 @@ metrics store (PostgreSQL + Grafana) is deferred.
    day (MainWatcher#13), TS-S14 (c) with the worker's alerts (MainWatcher#15), TS-S12 and TS-S18
    with the neutral retry cap (MainWatcher#17), TS-S16 (g) and (h) with the stale-run lifecycle
    (MainWatcher#18), TS-S7 with the lock lease (MainWatcher#19), whose reconciliation clause
-   passed with TS-S9 and TS-S15 (MainWatcher#20), and TS-S10 with the team mention
+   passed with TS-S9 and TS-S15 (MainWatcher#20), TS-S10 with the team mention
    (MainWatcher#23), and TS-S8 with the credential-scope script (MainWatcher#24).
 2. Remaining `[assumption]` tag: worker resource sizing.
 
