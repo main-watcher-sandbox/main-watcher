@@ -137,7 +137,7 @@ try
     // Reconciliation (ADR-008, ADR-015) runs after planning for the same reason: it is a reporting obligation, not a testing
     // one, and it makes the most API calls of anything in a cycle. A failure fails the run, so the worker asks again.
     var reconcileFailed = false;
-    try { foreach (var line in await planner.Reconcile(target, timeout.Token)) Console.WriteLine(line); }
+    try { foreach (var line in await planner.Reconcile(target, timeout.Token, reporter.ClosedSeen)) Console.WriteLine(line); }
     catch (Exception e) when (!timeout.IsCancellationRequested)
     {
         reconcileFailed = true;
