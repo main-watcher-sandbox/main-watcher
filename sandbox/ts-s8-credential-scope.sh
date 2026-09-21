@@ -9,8 +9,12 @@
 # 422 and changes nothing. Issue writes on a target are the exception: on a public repository GitHub validates an
 # issue's body before it checks the caller's permission, so an empty new issue gets a 422 even from a token with no
 # access to the repository at all (first TS-S8 run, #24). They are probed with an empty update to an existing
-# issue instead, which a token allowed to write would apply as a no-op. Then it checks where the keys live, which repositories each App is installed on (R-11), who
-# can read the worker's Secret, and that nothing exposes the worker inbound.
+# issue instead, which a token allowed to write would apply as a no-op.
+#
+# Then it checks where the keys live, which repositories each App is installed on (R-11), who can get, list or
+# watch the worker's Secret, and that nothing exposes the worker inbound. main-watcher's installation is read by
+# the watcher's app-installations.yml, which this script starts, because that App's key never leaves the
+# reporter environment.
 #
 # The keys are read from the worker's Secret into a private temporary folder and deleted on exit. They are
 # never printed.
@@ -159,6 +163,36 @@ check_installation() { # app, jwt, token, expected repos...
 check_installation mw-observer "$observer_jwt" "$observer" "$watcher" "${targets[@]}"
 check_installation mw-doorbell "$doorbell_jwt" "$doorbell" "$watcher"
 
+# main-watcher's key exists only in the watcher's reporter environment, so its installation is read there, by
+# app-installations.yml, and handed back as an artifact. It is installed on the targets only, not the watcher.
+check_main_watcher() {
+  local since run="" selection actual expected
+  since="$(date -u -d '-10 seconds' +%Y-%m-%dT%H:%M:%SZ)"
+  if ! gh workflow run app-installations.yml -R "$watcher" 2> "$work/err"; then
+    row FAIL "main-watcher repositories" "could not start app-installations.yml: $(head -1 "$work/err")"
+    return
+  fi
+  for _ in $(seq 60); do
+    run="$(gh run list -R "$watcher" -w app-installations.yml -e workflow_dispatch -L 5 --json databaseId,createdAt \
+      --jq "[.[] | select(.createdAt >= \"$since\")] | last | .databaseId // empty")"
+    [ -n "$run" ] && break
+    sleep 5
+  done
+  if [ -z "$run" ] || ! gh run watch "$run" -R "$watcher" --exit-status > /dev/null 2>&1 ||
+    ! gh run download "$run" -R "$watcher" -n main-watcher-installation -D "$work/main-watcher" 2> "$work/err"; then
+    row FAIL "main-watcher repositories" "app-installations.yml run ${run:-not found} gave no result"
+    return
+  fi
+  selection="$(cat "$work/main-watcher/selection.txt")"
+  [ "$selection" = selected ] && row PASS "main-watcher installed on selected repositories" "$selection (run $run)" ||
+    row FAIL "main-watcher installed on selected repositories" "repository_selection is $selection (run $run)"
+  actual="$(sort "$work/main-watcher/repositories.txt" | paste -sd ' ' -)"
+  expected="$(printf '%s\n' "$@" | sort -u | paste -sd ' ' -)"
+  [ "${actual,,}" = "${expected,,}" ] && row PASS "main-watcher repositories" "$actual" ||
+    row FAIL "main-watcher repositories" "expected $expected, got $actual"
+}
+check_main_watcher "${targets[@]}"
+
 section "Where the keys live"
 key_names='MAIN_WATCHER|MW_OBSERVER|MW_DOORBELL|PRIVATE_KEY'
 reporter="$(gh api "repos/$watcher/environments/reporter/secrets" --jq '.secrets[].name' | paste -sd ' ' -)"
@@ -186,22 +220,52 @@ done
   echo "(note: the reporter environment has no protection rules)"
 
 section "The worker's Secret and network (Kubernetes)"
-readers=()
+# Who can read the Secret. get names it; list and watch return every Secret's contents in the namespace, so
+# either gives the same access (Kubernetes RBAC good practices, "Listing Secrets"). Only an explicit "no" counts
+# as denied: an error from any query, or a namespace or service account list that cannot be read, fails the row.
 subjects=(system:anonymous)
-for namespace_name in $(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}'); do
-  case "$namespace_name" in kube-*) continue ;; esac # the cluster's own controllers read every Secret
-  for account in $(kubectl -n "$namespace_name" get serviceaccounts -o jsonpath='{.items[*].metadata.name}'); do
-    subjects+=("system:serviceaccount:$namespace_name:$account")
+discovery=()
+if namespaces="$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' 2> "$work/err")"; then
+  for namespace_name in $namespaces; do
+    case "$namespace_name" in kube-*) continue ;; esac # the cluster's own controllers read every Secret
+    if accounts="$(kubectl -n "$namespace_name" get serviceaccounts -o jsonpath='{.items[*].metadata.name}' 2> "$work/err")"; then
+      for account in $accounts; do subjects+=("system:serviceaccount:$namespace_name:$account"); done
+    else
+      discovery+=("service accounts in $namespace_name: $(head -1 "$work/err")")
+    fi
+  done
+else
+  discovery+=("namespaces: $(head -1 "$work/err")")
+fi
+[[ " ${subjects[*]} " == *" system:serviceaccount:$namespace:default "* ]] ||
+  discovery+=("system:serviceaccount:$namespace:default was not found")
+[ "${#discovery[@]}" -eq 0 ] &&
+  row PASS "Service accounts listed" "${#subjects[@]} subjects: system:anonymous and every service account outside kube-* namespaces" ||
+  row FAIL "Service accounts listed" "could not list ${discovery[*]}"
+
+readers=()
+errors=()
+for subject in "${subjects[@]}"; do
+  for query in "get secret/trigger-worker-keys" "list secrets" "watch secrets"; do
+    read -r verb resource <<< "$query"
+    answer="$(kubectl auth can-i "$verb" "$resource" -n "$namespace" --as="$subject" 2> "$work/err" || true)"
+    case "$answer" in
+      no) ;;
+      yes) readers+=("$subject ($verb)") ;;
+      *) errors+=("$subject ($verb): ${answer:-$(head -1 "$work/err")}") ;;
+    esac
   done
 done
-for subject in "${subjects[@]}"; do
-  if [ "$(kubectl auth can-i get secret/trigger-worker-keys -n "$namespace" --as="$subject" 2> /dev/null)" = yes ]; then
-    readers+=("$subject")
-  fi
-done
-[ "${#readers[@]}" -eq 0 ] &&
-  row PASS "No service account can read $namespace/trigger-worker-keys" "${#subjects[@]} subjects checked, kube-* namespaces excepted" ||
-  row FAIL "No service account can read $namespace/trigger-worker-keys" "readable by ${readers[*]}"
+check="No service account can get, list or watch $namespace/trigger-worker-keys"
+if [ "${#readers[@]}" -gt 0 ]; then
+  row FAIL "$check" "allowed: ${readers[*]}"
+elif [ "${#errors[@]}" -gt 0 ]; then
+  row FAIL "$check" "not every query was answered: ${errors[*]}"
+elif [ "${#discovery[@]}" -gt 0 ]; then
+  row FAIL "$check" "not every service account could be listed, so ${#subjects[@]} subjects is not all of them"
+else
+  row PASS "$check" "$((${#subjects[@]} * 3)) queries, each answered no"
+fi
 automount="$(kubectl -n "$namespace" get deploy trigger-worker -o jsonpath='{.spec.template.spec.automountServiceAccountToken}')"
 [ "$automount" = false ] && row PASS "Worker pod gets no service account token" "automountServiceAccountToken: false" ||
   row FAIL "Worker pod gets no service account token" "automountServiceAccountToken: ${automount:-unset}"
