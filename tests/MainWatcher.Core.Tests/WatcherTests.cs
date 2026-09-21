@@ -1868,6 +1868,27 @@ public class WatcherTests
         Assert.Equal("again", fake.Comments.Single());
     }
 
+    [Fact]
+    public async Task AnAlertJustOpenedTakesTheNextOneAlthoughTheListLags()
+    {
+        // The issue list does not hold an issue created a second earlier: two merges reported 2 s apart opened two alerts (#25).
+        var fake = new FakeGitHub { ListLags = true };
+        var at = Now;
+        var alerts = new Alerts(fake, "owner/watcher", () => at);
+        var ct = TestContext.Current.CancellationToken;
+        await alerts.Raise("Merged while locked on owner/repo", "#6 merged", ct, "<!-- pr=6 -->");
+        await alerts.Raise("Merged while locked on owner/repo", "#7 merged", ct, "<!-- pr=7 -->");
+        await alerts.Raise("Merged while locked on owner/repo", "#6 merged", ct, "<!-- pr=6 -->");
+        var alert = Assert.Single(fake.Issues["owner/watcher"]);
+        Assert.Contains("<!-- pr=6 -->", alert.Issue.Body);
+        Assert.Equal(new[] { "#7 merged\n\n<!-- pr=7 -->" }, fake.Comments);
+
+        // Trusted only briefly: past the window, an alert the list still does not show, as when a person has closed it, is not used.
+        at += Alerts.Remembered + TimeSpan.FromSeconds(1);
+        await alerts.Raise("Merged while locked on owner/repo", "#8 merged", ct, "<!-- pr=8 -->");
+        Assert.Equal(2, fake.Issues["owner/watcher"].Count);
+    }
+
     [Theory]
     [InlineData("user", true)]
     [InlineData("@org/team-name", true)]
@@ -2467,6 +2488,10 @@ public class WatcherTests
         public List<string> Order { get; } = [];
         public List<string> Comments { get; } = [];
         public bool IssueError { get; init; }
+        /// <summary>The issue list lags, as GitHub's does: an issue this fake creates is not listed until <see cref="Catch"/>.</summary>
+        public bool ListLags { get; set; }
+        readonly HashSet<int> unlisted = [];
+        public void Catch() => unlisted.Clear();
         public string JobConclusion { get; init; } = "failure";
         /// <summary>Stops the report, as a crash would, right after this many issue writes succeed.</summary>
         public int? StopAfterWrites { get; set; }
@@ -2501,7 +2526,8 @@ public class WatcherTests
 
         public Task<string?> File(string repo, string path, CancellationToken ct) => Task.FromResult(Files.GetValueOrDefault($"{repo}:{path}"));
         public Task<IReadOnlyList<Issue>> OpenIssues(string repo, string label, CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<Issue>>(Issues.GetValueOrDefault(repo, []).Where(i => i.Label == label && i.Open).Select(i => i.Issue).ToArray());
+            Task.FromResult<IReadOnlyList<Issue>>(Issues.GetValueOrDefault(repo, [])
+                .Where(i => i.Label == label && i.Open && !unlisted.Contains(i.Issue.Number)).Select(i => i.Issue).ToArray());
         Task<IReadOnlyList<Issue>> IGitHubGateway.Issues(string repo, string label, DateTimeOffset since, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<Issue>>(Issues.GetValueOrDefault(repo, [])
                 .Where(i => i.Label == label && (i.Issue.UpdatedAt is null || i.Issue.UpdatedAt >= since)).Select(i => i.Issue).ToArray());
@@ -2516,6 +2542,7 @@ public class WatcherTests
         {
             if (IssueError) throw new HttpRequestException("issues unavailable");
             var issue = Seed(repo, label, title, "main-watcher[bot]", "Bot", body);
+            if (ListLags) unlisted.Add(issue.Issue.Number);
             Wrote($"create:{repo}");
             return Task.FromResult(issue.Issue);
         }
