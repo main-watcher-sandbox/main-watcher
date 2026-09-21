@@ -50,7 +50,10 @@ the team only where the App holds organisation `Members: read`, through `notify`
 CODEOWNERS fallback alike, so that permission is an install requirement and no Reporter change
 was needed. The check run shows a timing section — suite time, its change from the last green
 run, the 5 slowest tests and the retry flag, converted from CTRF milliseconds by the watcher
-(MainWatcher#22); TS-S13's check-run half passed, so TS-S13 has passed as a whole.
+(MainWatcher#22); TS-S13's check-run half passed, so TS-S13 has passed as a whole. The TS-001 §6 workflow and deployment checklist is now a set of
+tests (`SecurityChecklistTests`), and a sandbox target test run found no Main Watcher key or GitHub token in its
+own environment (MainWatcher#24). TS-S8's token probes are scripted in `sandbox/ts-s8-credential-scope.sh` but
+have not been run yet.
 
 ## Where things are
 
@@ -93,7 +96,7 @@ run, the 5 slowest tests and the retry flag, converted from CTRF milliseconds by
   `sandbox/issue-16-validation.md`, `sandbox/issue-17-validation.md`,
   `sandbox/issue-18-validation.md`, `sandbox/issue-19-validation.md`,
   `sandbox/issue-20-validation.md`, `sandbox/issue-21-validation.md`,
-  `sandbox/issue-22-validation.md`, `sandbox/issue-23-validation.md` and `sandbox/issue-53-validation.md`.
+  `sandbox/issue-22-validation.md`, `sandbox/issue-23-validation.md`, `sandbox/issue-24-validation.md` and `sandbox/issue-53-validation.md`.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls

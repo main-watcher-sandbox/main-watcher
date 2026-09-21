@@ -21,7 +21,7 @@ Two test projects exist so a run produces two CTRF reports to merge:
 
 | Project | Tests |
 |---|---|
-| `SampleTarget.Tests` | `OutcomeTests.Alpha`, `.Beta`, `.Gamma`; `BehaviourTests.SlowSuite`, `.Hang`, `.Flaky` |
+| `SampleTarget.Tests` | `OutcomeTests.Alpha`, `.Beta`, `.Gamma`; `BehaviourTests.SlowSuite`, `.Hang`, `.Flaky`; `EnvironmentTests.NoMainWatcherKey` |
 | `SampleTarget.Timing.Tests` | `Duration50Milliseconds`, `Duration2Seconds`, `Duration20Seconds` (run in parallel); `Baseline.Runs` |
 
 Tests whose switch is off are skipped, not passed. `Baseline.Runs` always runs, because
@@ -36,6 +36,7 @@ Microsoft Testing Platform exits with code 8 when a project runs no tests.
 | `slow_suite_minutes` | `0` | When above 0, `SlowSuite` waits that many minutes | TS-S2 (slow variant) |
 | `hang_test` | `false` | `Hang` sleeps forever and ignores cancellation | TS-S16 (e) |
 | `flaky_test` | `false` | `Flaky` fails on the first attempt of a workflow run and passes on the retry | TS-S13 retry flag |
+| `inspect_environment` | `false` | `NoMainWatcherKey` searches the test run's environment variables, the runner's work and temp folders and the home folder for a private key, a GitHub token or a persisted git credential, fails naming any it finds (never the value), and writes what it inspected to the job summary | TS-S8 |
 | `fail_restore` | `false` | `Directory.Build.props` points restore at an unreachable feed, with an empty packages folder: `dotnet restore` fails with NU1301 | TS-S16, TS-S18 |
 | `fail_upload` | `false` | A failing step before the CTRF upload deletes the reports and `timings.json`, so no `main-watcher-ctrf` artifact is uploaded. Read by the sandbox build of the reusable test workflow, not by this repo's tests | TS-S16 |
 | `slow_check_minutes` | `0` | On merge groups, the required `sandbox-slow-check` job waits this many minutes before passing, like a target's own slow CI. Read from the merge group's commit | TS-S17, MainWatcher#6 |
