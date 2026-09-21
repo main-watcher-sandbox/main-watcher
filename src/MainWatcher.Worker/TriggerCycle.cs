@@ -44,11 +44,14 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
                 }
                 var found = await finder.Find(target, observerFor(target.Repo), ct);
                 examined.Add(target.Repo);
-                if (found is not { } work) continue;
+                // A queue sweep is timed from the generation it owes, and is recorded whether or not it is the reason for this
+                // cycle: a report that keeps failing wins as the reason every time, and would hide the sweep for as long as it
+                // lasted (ADR-016, PR #56 review). Saying nothing here means the cycle looked and found the sweep finished.
+                if (found.Sweep is { Sweep: { } lockIssue } sweep)
+                    sweeps.Add(new(target.Repo, lockIssue, sweep.Reason, sweep.Since ?? default));
+                if (found.Work is not { } work) continue;
                 // A report the Reporter owes is timed from the test job, so a Reporter that keeps failing becomes visible (ADR-013).
                 if (work.Check is { } check) pending.Add(new(target.Repo, check, work.Reason, work.Since ?? default));
-                // A queue sweep is timed from the generation it owes, so a sweep that never finishes becomes visible (ADR-016).
-                if (work.Sweep is { } lockIssue) sweeps.Add(new(target.Repo, lockIssue, work.Reason, work.Since ?? default));
                 // Never retried: a lost response may still have started the run, and the next cycle looks again.
                 await doorbell.DispatchWorkflow(watcherRepo, WorkerSettings.WatchWorkflow,
                     new Dictionary<string, string> { ["target"] = target.Repo }, ct);

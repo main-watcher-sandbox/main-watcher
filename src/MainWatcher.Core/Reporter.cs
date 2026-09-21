@@ -54,6 +54,8 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         if (outcome.Conclusion is "success" or "failure")
         {
             var reports = await github.Reports(repo, runId, ct);
+            // Before the lock details, so a long failure list cannot truncate it or its marker away.
+            summary += "\n\n" + await Timing(repo, check, reports, ct);
             var locks = await Locks(repo, ct);
             if (outcome.Conclusion == "failure") summary += await ReportRed(target, check, locks, reports, runUrl, ct);
             else
@@ -83,6 +85,20 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
         // neutral result is written, with nothing left for the retest but the rule itself (TS-S18).
         await Write($"check:{outcome.Conclusion}", github.Complete(repo, check.Id, outcome.Conclusion, outcome.Title, summary, ct));
         return true;
+    }
+
+    /// <summary>
+    /// The check run's timing section (ADR-011). The last green run's time is only for comparison, so check runs that cannot be
+    /// read leave the change unknown rather than the report unwritten.
+    /// </summary>
+    async Task<string> Timing(string repo, CheckRun check, CtrfResult reports, CancellationToken ct)
+    {
+        if (reports.Timing is null) return TimingSection.Write(repo, reports, null);
+        try { return TimingSection.Write(repo, reports, TimingSection.LastGreen(await github.Checks(repo, ct), check)); }
+        catch (Exception e) when (!ct.IsCancellationRequested && e is HttpRequestException or IOException or TaskCanceledException)
+        {
+            return TimingSection.Write(repo, reports, null, e.Message);
+        }
     }
 
     async Task<string> ReportRed(Target target, CheckRun check, LockSet locks, CtrfResult reports, string runUrl, CancellationToken ct)

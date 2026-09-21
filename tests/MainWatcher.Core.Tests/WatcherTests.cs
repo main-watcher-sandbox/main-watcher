@@ -41,6 +41,116 @@ public class WatcherTests
         Assert.Equal(new string('x', 200), result.Failures[0].Message);
     }
 
+    // ADR-011: wall clock spans every report's summary, summed time adds up the tests, and the slowest are this run's.
+    [Fact]
+    public void ReportsGiveSuiteTimeSlowestTestsAndRetries()
+    {
+        var first = JsonNode.Parse(Fixture("project-0.json"))!;
+        var second = JsonNode.Parse(Fixture("failed-project.json"))!;
+        var start = first["results"]!["summary"]!["start"]!.GetValue<long>();
+        first["results"]!["summary"]!["stop"] = start + 20_000;
+        second["results"]!["summary"]!["start"] = start + 5_000;
+        second["results"]!["summary"]!["stop"] = start + 26_500;
+        var tests = first["results"]!["tests"]!.AsArray().Concat(second["results"]!["tests"]!.AsArray()).ToArray();
+        for (var i = 0; i < tests.Length; i++)
+        {
+            tests[i]!["duration"] = (i + 1) * 100;
+            tests[i]!.AsObject().Remove("retries");
+        }
+        tests[^1]!["duration"] = 20_100;
+        tests[^1]!["retries"] = 1;
+
+        var timing = CtrfReader.Read([first.ToJsonString(), second.ToJsonString()]).Timing!;
+        Assert.Equal(26_500, timing.WallClockMs);
+        Assert.Equal(Enumerable.Range(1, tests.Length - 1).Sum(i => i * 100L) + 20_100, timing.SummedMs);
+        Assert.Equal(1, timing.Retried);
+        Assert.Equal(CtrfReader.SlowestCount, timing.Slowest.Count);
+        Assert.Equal(tests[^1]!["name"]!.GetValue<string>(), timing.Slowest[0].Name);
+        Assert.True(timing.Slowest[0].Retried);
+        Assert.Equal(timing.Slowest.Select(t => t.DurationMs).OrderDescending(), timing.Slowest.Select(t => t.DurationMs));
+        Assert.Null(CtrfReader.Read([]).Timing);
+    }
+
+    // R-17: the watcher's own conversion of CTRF milliseconds, checked against what TS-S13 saw for xUnit v3's values.
+    [Theory]
+    [InlineData(0, "0 ms")]
+    [InlineData(136, "136 ms")]
+    [InlineData(2_100, "2.1 s")]
+    [InlineData(20_149, "20.1 s")]
+    [InlineData(59_999, "59.9 s")]
+    [InlineData(125_300, "2 min 5 s")]
+    public void DurationsAreConvertedFromMilliseconds(long ms, string shown) => Assert.Equal(shown, TimingSection.Duration(ms));
+
+    static readonly CtrfResult Timed = new(true, [new("Alpha", "suite", "failed")],
+        new(20_200, 22_300, 1, [new("Tests.Slow", 20_100, false), new("Tests.Flaky|pipe", 2_100, true), new("Tests.Fast", 136, false)]));
+
+    [Theory]
+    [InlineData("success")]
+    [InlineData("failure")]
+    public async Task CheckRunShowsTimingAgainstTheLastGreenRun(string conclusion)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        CheckRun Green(long id, int hours, string? summary) =>
+            new(id, $"green{id}", "completed", "success", Now.AddHours(-hours), Now.AddHours(-hours).AddMinutes(5), "1", "Tests passed", summary);
+        var fake = new FakeGitHub
+        {
+            JobConclusion = conclusion,
+            ReportResult = Timed,
+            CheckList =
+            [
+                Green(5, 5, "<!-- main-watcher suite_ms=10000 -->"),
+                Green(6, 2, "Passed.\n\n<!-- main-watcher suite_ms=19000 -->"),
+                new(7, "red", "completed", "failure", Now.AddHours(-1.5), Now, "1", "Tests failed", "<!-- main-watcher suite_ms=1 -->"),
+                // Started after this run, so it is no earlier result to compare with.
+                Green(8, 0, "<!-- main-watcher suite_ms=1 -->"),
+            ],
+        };
+        await new Reporter(fake, clock: () => Now).Report(new() { Repo = "owner/repo" }, Check("in_progress", null), ct);
+
+        Assert.Equal(conclusion, fake.Conclusion);
+        Assert.Contains("- Suite time: 20.2 s wall clock; 22.3 s summed across tests", fake.Summary);
+        Assert.Contains("- Change from the last green run: +1.2 s (+6.3%) against 19.0 s at [`green6`]", fake.Summary);
+        Assert.Contains("- Retried: yes, 1 failed test was run a second time", fake.Summary);
+        Assert.Contains("| Tests.Slow | 20.1 s |\n| Tests.Flaky\\|pipe (retried) | 2.1 s |\n| Tests.Fast | 136 ms |", fake.Summary);
+        Assert.Equal("20200", Markers.Field(fake.Summary, TimingSection.SuiteMs));
+        // The section precedes the lock details, so a long failure list cannot truncate it away.
+        if (conclusion == "failure") Assert.True(fake.Summary.IndexOf("**Timing**") < fake.Summary.IndexOf("Lock issue"));
+    }
+
+    [Fact]
+    public async Task TimingSaysWhenThereIsNothingToCompareWith()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { JobConclusion = "success", ReportResult = Timed with { Failures = [] } };
+        await new Reporter(fake).Report(new() { Repo = "owner/repo" }, Check("in_progress", null), ct);
+        Assert.Contains("- Change from the last green run: none to compare with", fake.Summary);
+
+        // A green run from before this section existed recorded no time.
+        var old = new FakeGitHub
+        {
+            JobConclusion = "success", ReportResult = Timed with { Failures = [] },
+            CheckList = [new(5, "old", "completed", "success", Now.AddHours(-3), Now, "1", "Tests passed", "Passed.")],
+        };
+        await new Reporter(old).Report(new() { Repo = "owner/repo" }, Check("in_progress", null), ct);
+        Assert.Contains("unknown, because the last green run, [`old`](https://github.com/owner/repo/commit/old), recorded no suite time", old.Summary);
+    }
+
+    [Fact]
+    public async Task UnreadableCheckRunsOrReportsNeverStopTheReport()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { JobConclusion = "success", ReportResult = Timed with { Failures = [] }, ChecksError = true };
+        Assert.True(await new Reporter(fake).Report(new() { Repo = "owner/repo" }, Check("in_progress", null), ct));
+        Assert.Equal("success", fake.Conclusion);
+        Assert.Contains("- Change from the last green run: unknown, because the earlier check runs could not be read (checks unavailable)", fake.Summary);
+        Assert.Contains("- Suite time: 20.2 s", fake.Summary);
+
+        var unknown = new FakeGitHub { JobConclusion = "success", ReportResult = new(true, []), ChecksError = true };
+        await new Reporter(unknown).Report(new() { Repo = "owner/repo" }, Check("in_progress", null), ct);
+        Assert.Contains("Timings unknown: the CTRF reports could not be read.", unknown.Summary);
+        Assert.Null(Markers.Field(unknown.Summary, TimingSection.SuiteMs));
+    }
+
     // TS-U13 and TS-U3: the shared rule, read from the fixtures the trigger worker's tests also use.
     [Theory]
     [MemberData(nameof(EligibilityFixtures.Names), true, MemberType = typeof(EligibilityFixtures))]
@@ -2042,11 +2152,11 @@ public class WatcherTests
             Activity = { new("before", "head", Now.AddMinutes(-90), "push", "alice") }
         };
         var watched = new Target { Repo = "owner/repo", PollInterval = 30 };
-        var work = await new WorkFinder(() => Now).Find(watched, target, TestContext.Current.CancellationToken);
+        var work = (await new WorkFinder(() => Now).Find(watched, target, TestContext.Current.CancellationToken)).Work;
         Assert.Equal(Now, work!.Since);
         // Without the push in the activity read, the work is not dated at all.
         target.Activity.Clear();
-        Assert.Null((await new WorkFinder(() => Now).Find(watched, target, TestContext.Current.CancellationToken))!.Since);
+        Assert.Null((await new WorkFinder(() => Now).Find(watched, target, TestContext.Current.CancellationToken)).Work!.Since);
     }
 
     // ADR-008 point 3: a secondary signal, since a gate that cannot reach the API usually cannot report through it either.
@@ -2154,7 +2264,7 @@ public class WatcherTests
         Assert.Equal(stale ? ["output:7", "cancel:41"] : [], fake.Order);
         // The worker reads the same check run, so it flags exactly what the Planner would cancel (TS-U5 (c)).
         var worker = new FakeGitHub { CheckList = [check], JobList = [Running(ran)] };
-        Assert.Equal(stale, await new WorkFinder(() => Now).Find(target, worker, ct) is not null);
+        Assert.Equal(stale, (await new WorkFinder(() => Now).Find(target, worker, ct)).Work is not null);
     }
 
     [Fact]

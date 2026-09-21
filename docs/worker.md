@@ -102,6 +102,13 @@ nothing could discharge would ask for cycles for ever. The work is dated by the 
 which is when the lock opened or its lapsed lease was renewed, and it names the lock rather than a
 check run. `watch.yml` does the sweeping, and [watcher.md](watcher.md#queue-sweep) describes it.
 
+The sweep debt is **read on every cycle**, whether or not it is the reason the cycle is dispatched
+for. Only one reason can be the reason, and a report owed or an eligible head is found first; a
+target whose reports keep failing would otherwise have its sweep hidden for as long as that lasted,
+which is exactly when the groups queued before its lock are still free to merge (PR #56 review).
+So the open-lock read happens for every target every cycle, and the worker's silence about a sweep
+means a cycle looked and found it finished, rather than that nothing looked.
+
 Last of all, a lock that has **closed without being reconciled** is work (ADR-015 point 6). Its
 window still owes a report for every pull request that merged during it without `fixes-main`, and
 once the issue is closed nothing else would ask for a cycle: no push tests it, no lease renews it.
@@ -113,11 +120,12 @@ and it carries no check ID. `watch.yml` does the reconciling, and
 [watcher.md](watcher.md#reconciliation) describes it.
 
 The worker therefore makes about five read calls per target per cycle while a target is
-idle, plus one for the watcher repo's `watch.yml` runs (R-13). The sweep obligation costs no read
-of its own: it is a marker in the open lock the lease read already fetched. Both issue reads use
-the Issues: read permission ADR-014 gave `mw-observer`. A cycle that finds an eligible head reads that target's
-repository activity as well, to date the head's push, and stops before the issue reads; an idle
-target never pays for the activity read.
+idle, plus one for the watcher repo's `watch.yml` runs (R-13). The open-lock read is one of them
+and is made every cycle, since the lease and the sweep debt both come out of it; the sweep costs no
+read of its own, being a marker in the same issue. The closed-lock read is made only when nothing
+else has asked for a cycle, so a busy target does not pay for it. Both use the Issues: read
+permission ADR-014 gave `mw-observer`. A cycle that finds an eligible head reads that target's
+repository activity as well, to date the head's push; an idle target never pays for that.
 
 ## Configuration
 
@@ -221,8 +229,10 @@ forgets none.
 the lock can merge onto a red `main` and would be reported afterwards rather than blocked. The
 usual cause is a gate run that is still going, since the sweep waits for it and re-runs it once it
 completes, or one GitHub refuses to re-run; the `watch.yml` run log says which group and which
-run. It is its own condition per target, so it neither hides nor is hidden by a report pending on
-the same target, and it clears when a cycle finds the sweep finished.
+run. It is its own condition per target, judged from the sweep debt the cycle read rather than from
+the reason it dispatched for, so it neither hides nor is hidden by a report pending on the same
+target — which is the case that matters, since a report that keeps failing is what keeps a sweep
+waiting. It clears when a cycle looks at the target and finds the sweep finished.
 
 **Rate limit.** Every GitHub response the worker receives is read for
 `x-ratelimit-remaining` and `x-ratelimit-limit`, across both Apps and every installation,
