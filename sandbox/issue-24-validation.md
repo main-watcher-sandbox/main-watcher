@@ -13,7 +13,7 @@ checklist, applied to every workflow and deployment file. The work has three par
 | --- | --- | --- |
 | The checklist, against the committed files | `SecurityChecklistTests` in `MainWatcher.Core.Tests`, on every PR | Passes |
 | A target test run inspects its own environment | `inspect_environment` switch, `EnvironmentTests.NoMainWatcherKey` in the sample target | Passed on 2026-09-21 |
-| Each App token is refused outside its scope, the keys are where §8 says, R-11 installations, the live cluster | `sandbox/ts-s8-credential-scope.sh` | Run on 2026-09-21: 29 pass, 3 fail, 1 skipped. Two of the failures were the probe's fault and the script is fixed. The third is a real R-11 finding: `mw-observer` is installed on `sample-target-slow` |
+| Each App token is refused outside its scope, the keys are where §8 says, R-11 installations, the live cluster | `sandbox/ts-s8-credential-scope.sh` | Passed on 2026-09-21, on the second run. The first run's failures were two inconclusive issue probes, since replaced, and `mw-observer` installed on `sample-target-slow`, since removed |
 
 ## The checklist (TS-001 §6)
 
@@ -32,7 +32,7 @@ given `contents: write` and a secret, `watch.yml`'s checkout pointed at `inputs.
 | Worker Secret RBAC restricted | `WorkerSecretHasRestrictedAccess` (manifests); the script (live cluster) | The manifests define no Role, binding or ServiceAccount. The pod runs as `default` with `automountServiceAccountToken: false`, and mounts `trigger-worker-keys` with mode `0440`. The live check, listing who can `get` the Secret, is in the script |
 | No inbound Service or Ingress | `WorkerHasNoInboundServiceOrIngress` (manifests); the script (live namespace) | No Service, Ingress, Gateway API route, `hostPort`, `hostNetwork` or `nodePort`, including inside the kustomize patch text |
 | `report` job secret-free and read-only | `ReportJobIsSecretFreeAndReadOnly` | Permissions exactly `actions: read`, `contents: read`. No `secrets:` and no `secrets` in any expression. Its token is the job's own `github.token` |
-| `main-watcher` and `mw-observer` on selected repositories only (R-11) | The script | **Fails for `mw-observer`**: it is on selected repositories, but one of them, `sample-target-slow`, is not a target. `mw-doorbell` is on the watcher only. `main-watcher` is not checked, because its key is not available outside `watch.yml` |
+| `main-watcher` and `mw-observer` on selected repositories only (R-11) | The script | `mw-observer` is on exactly the watcher and `sample-target` (second run), after `sample-target-slow` was removed. `mw-doorbell` is on the watcher only. `main-watcher` is not checked by the script, because its key is not available outside `watch.yml` |
 
 Outside the checklist, one thing turned up. `ci.yml`'s `test` and `lint` jobs check out without
 `persist-credentials: false`. They run on `pull_request` with a `contents: read` token and hold no App key, so
@@ -104,7 +104,7 @@ The `main-watcher` App is not probed: its key is only in the `reporter` environm
 ## The first run, 2026-09-21T15:14:17Z
 
 Run by a sandbox org admin against `main-watcher-sandbox/main-watcher`, whose `targets.yml` lists one target,
-`main-watcher-sandbox/sample-target`. The keys came from the cluster's `trigger-worker-keys` Secret. **29 pass,
+`main-watcher-sandbox/sample-target`. The keys came from the cluster's `trigger-worker-keys` Secret. **27 pass,
 3 fail, 1 skipped.**
 
 ### mw-observer
@@ -161,8 +161,7 @@ JWT's installation lookup returned 404 two rows earlier. So on a public reposito
 a new issue before it checks the caller's permission, and an empty issue says nothing about the permission. The
 row is not needed for `mw-observer`: `POST …/labels` needs the same Issues write permission and was refused with
 403. The script now sends an empty update to an existing issue instead, and adds the labels probe for
-`mw-doorbell`. **These two rows have not been re-run.** Until they are, `mw-doorbell`'s inability to write a
-target's issues rests on the 404 above and the 403s on its target dispatch and check run.
+`mw-doorbell`. The second run shows both Apps refused on both.
 
 **`mw-observer` on `sample-target-slow` is a real R-11 deviation.** R-11's security approval of Issues: read for
 `mw-observer` required the App to be installed only on the repositories being watched, plus the watcher.
@@ -178,12 +177,43 @@ condition exists to prevent.
 The `main-watcher` App's installations are not checked at all: the script cannot mint its token, because its key
 exists only in the `reporter` environment. Check them by hand under the organisation's installed GitHub Apps.
 
+## The second run, 2026-09-21T15:27:05Z
+
+Run after these three changes:
+
+- the script's issue probes were changed (`951cf5d`);
+- `sample-target-slow` was removed from `mw-observer`'s selected repositories;
+- the `gh` token was given `admin:org`.
+
+**All 32 checks pass.** The rows unchanged from the first run give the same codes and are not repeated.
+
+| Result | Check | Got |
+| --- | --- | --- |
+| PASS | `mw-observer`: `PATCH` target `issues/59` with an empty body | 403 |
+| PASS | `mw-doorbell`: `PATCH` target `issues/59` with an empty body | 403 |
+| PASS | `mw-doorbell`: `POST` target `labels` | 403 |
+| PASS | `mw-observer` repositories | `main-watcher-sandbox/main-watcher`, `main-watcher-sandbox/sample-target`: exactly the watcher and `targets.yml` |
+| PASS | No Main Watcher key in the organisation's secrets | No secrets |
+
+Every other row passed as in the first run:
+
+- **`mw-observer`:** 200 on all five reads. 403 on dispatching `watch.yml` and the target's tests, on creating a
+  watcher issue, a target check run or a label, and on writing a file.
+- **`mw-doorbell`:** 422 on dispatching `watch.yml` (allowed, failing only on the branch) and 200 on reading
+  watcher issues. 403 on a watcher check run or file write, 404 on its target installation lookup, and 403 on
+  the target's dispatch and check run.
+- **Installations:** both Apps are on selected repositories only, and `mw-doorbell` is on the watcher alone.
+- **Keys:** `MAIN_WATCHER_PRIVATE_KEY` is in the `reporter` environment and in no repository or target secret.
+- **Kubernetes:** no service account can read the Secret, the pod gets no service account token, and there is no
+  Service or Ingress.
+
 ## TS-S8 status
 
-Not yet passed. What remains:
+**Passed.** `mw-observer` can read but cannot write or dispatch anywhere. `mw-doorbell` can start `watch.yml`
+but cannot touch a target, and no target token can even be minted for it. Every refusal is a 403, beside a
+control call that shows the token works. A target test run found no Main Watcher key and no GitHub token in its
+environment. The TS-001 §6 checklist is enforced by `SecurityChecklistTests` on every PR.
 
-1. Remove `sample-target-slow` from `mw-observer`'s selected repositories, or add it to the replica's
-   `targets.yml`.
-2. Re-run `sandbox/ts-s8-credential-scope.sh` with `admin:org` on the `gh` token, so the new issue-update and
-   labels probes and the organisation secrets row are recorded.
-3. Check `main-watcher`'s installed repositories by hand against `targets.yml`.
+One thing the script cannot reach: the `main-watcher` App's own installed repositories, because its key exists
+only in the `reporter` environment. Check them by hand against `targets.yml` under the organisation's installed
+GitHub Apps. The same applies at each onboarding and removal (ARCH-001 §10).

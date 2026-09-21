@@ -52,10 +52,11 @@ was needed. The check run shows a timing section — suite time, its change from
 run, the 5 slowest tests and the retry flag, converted from CTRF milliseconds by the watcher
 (MainWatcher#22); TS-S13's check-run half passed, so TS-S13 has passed as a whole. The TS-001 §6 workflow and deployment checklist is now a set of
 tests (`SecurityChecklistTests`), and a sandbox target test run found no Main Watcher key or GitHub token in its
-own environment (MainWatcher#24). TS-S8's first run of `sandbox/ts-s8-credential-scope.sh` found every
-out-of-scope call refused. The two empty issue-creation probes were inconclusive: on a public repo GitHub
-validates the body first, so the probe is now an empty issue update. The run also found `mw-observer` installed on
-`sample-target-slow`, which is not a target (R-11), so TS-S8 has not passed yet.
+own environment (MainWatcher#24). TS-S8 passed on 2026-09-21: `sandbox/ts-s8-credential-scope.sh` showed every
+out-of-scope call refused with 403, beside a working control. Its first run found `mw-observer` installed on
+`sample-target-slow`, which is not a target (R-11); that App was removed from it. The first run also showed that,
+on a public repo, GitHub validates a new issue's body before it checks permission, so issue writes are probed with
+an empty update instead.
 
 ## Where things are
 
@@ -167,7 +168,7 @@ metrics store (PostgreSQL + Grafana) is deferred.
    with the neutral retry cap (MainWatcher#17), TS-S16 (g) and (h) with the stale-run lifecycle
    (MainWatcher#18), TS-S7 with the lock lease (MainWatcher#19), whose reconciliation clause
    passed with TS-S9 and TS-S15 (MainWatcher#20), and TS-S10 with the team mention
-   (MainWatcher#23).
+   (MainWatcher#23), and TS-S8 with the credential-scope script (MainWatcher#24).
 2. Remaining `[assumption]` tag: worker resource sizing.
 
 ## Suggested next steps
