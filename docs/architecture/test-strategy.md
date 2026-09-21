@@ -4,7 +4,7 @@ type: test-strategy
 status: draft
 state: target
 owner: platform-team
-reviewed: 2026-09-16
+reviewed: 2026-09-21
 review_by: 2027-03-15
 sources: [ARCH-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016, ADR-017, ADR-018]
 confidence: assumed
@@ -65,7 +65,7 @@ confidence: assumed
 | TS-S5: a batched group mixing a fix and a non-fix PR fails the gate | R-3, A-5 | Merge limit 2 | Release, and at onboarding |
 | TS-S6: a hand-made `main-broken` issue does not lock | R-2 | Issue created by a user | Release |
 | TS-S7: with the worker scaled to 0 and the sweep disabled, merges still proceed: (a) with no lock open, at once; (b) starting from an open lock, once `lock_lease` has passed, with the gate warning "LOCK LEASE EXPIRED". After the watcher is restored, the lease is renewed, the lock is enforced again, a "lock lapsed" alert is raised, and the merge from (b) is reported | NFR-3, ADR-014 | Queue a PR in each case; sandbox `lock_lease` of 10 min | Release |
-| TS-S8: credential scope. `mw-observer` cannot write or dispatch; `mw-doorbell` cannot touch targets; a target test run has no access to any Main Watcher key | ADR-009, ADR-010 | API calls with each token must return 403; the test run inspects its own environment | Release |
+| TS-S8: credential scope. `mw-observer` cannot write or dispatch; `mw-doorbell` cannot touch targets; a target test run has no access to any Main Watcher key | ADR-009, ADR-010 | API calls with each token must return 403, with a working call beside each as control (`sandbox/ts-s8-credential-scope.sh`); the test run inspects its own environment (`inspect_environment` switch) | Release |
 | TS-S9: when the gate cannot reach the API, it fails open with a warning, and the next watcher run reports the unlabelled merge | NFR-3, NFR-4, ADR-008 | Invalid-token override in the gate, lock open, unlabelled PR | Release |
 | TS-S10: the lock issue notifies the `notify` team, and falls back to CODEOWNERS | CQ-6, R-10 | Sandbox team member checks their notifications | Release |
 | TS-S11: with the worker scaled to 0, a push is tested by the next hourly sweep and a "worker appears down" alert is raised | ADR-010, R-5 | Scale down, push, wait | Release |
@@ -92,7 +92,7 @@ confidence: assumed
 | TS-U14: the test wrapper sets `finished=true` only when the test command exits on its own, passes the command's exit code through after the one retry, and at its deadline stops the whole process tree and exits non-zero without setting `finished` | ADR-007, ADR-013 | Fake test commands that pass, fail, spawn child processes, and sleep past a short deadline | Every commit |
 | TS-U15: the stale-run lifecycle: the queue deadline counts from check-run creation until the job starts, and the run deadline from the job's `started_at`; past either, the Planner records `cancel_requested`, cancels, and keeps the check run `in_progress` until the run stops; it force-cancels 15 min later; once the job has stopped, the outcome table is applied to its steps; 15 min after an unsuccessful force-cancel it raises an alert, keeps the check run `in_progress`, repeats the force-cancel each cycle, and starts no test for the target (no retry, newer head or forced dispatch) until the run stops or is deleted; a 404 gives "outcome unknown"; a jobs API error changes nothing; a crash between any two steps resumes from the recorded times | ADR-013, ADR-017 | Timestamped job, run and check-run fixtures; faked cancel and force-cancel responses | Every commit |
 
-**Workflow and deployment review checklist:**
+**Workflow and deployment review checklist:** each item is also a test in `SecurityChecklistTests` (watcher CI), except the App installations, which `sandbox/ts-s8-credential-scope.sh` checks against the live Apps.
 - no `pull_request_target`;
 - the reusable workflow requests no App tokens;
 - `watch.yml` never checks out or runs target code;
