@@ -63,11 +63,13 @@ public static class TimingSection
     /// Milliseconds as people read them: whole milliseconds under a second, tenths of a second under a minute, then minutes
     /// and seconds. The job summary's reporter shows 20.1 s, 2.1 s and 136 ms for xUnit v3's own values (TS-S13).
     /// </summary>
-    public static string Duration(long ms) => ms switch
+    public static string Duration(long ms)
     {
-        < 1000 => $"{ms.ToString(CultureInfo.InvariantCulture)} ms",
-        // Truncated to the tenth, so a time just under a minute never reads as 60.0 s.
-        < 60_000 => (ms / 100 / 10.0).ToString("0.0", CultureInfo.InvariantCulture) + " s",
-        _ => $"{(ms / 60_000).ToString(CultureInfo.InvariantCulture)} min {(ms % 60_000 / 1000).ToString(CultureInfo.InvariantCulture)} s"
-    };
+        if (ms < 1000) return $"{ms.ToString(CultureInfo.InvariantCulture)} ms";
+        // Rounded, as the job summary rounds; a time that rounds to a whole minute is shown in minutes, never as 60.0 s.
+        var tenths = (ms + 50) / 100;
+        if (tenths < 600) return (tenths / 10.0).ToString("0.0", CultureInfo.InvariantCulture) + " s";
+        var seconds = (ms + 500) / 1000;
+        return $"{(seconds / 60).ToString(CultureInfo.InvariantCulture)} min {(seconds % 60).ToString(CultureInfo.InvariantCulture)} s";
+    }
 }

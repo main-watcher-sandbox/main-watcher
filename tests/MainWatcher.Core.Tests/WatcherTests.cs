@@ -76,8 +76,11 @@ public class WatcherTests
     [InlineData(0, "0 ms")]
     [InlineData(136, "136 ms")]
     [InlineData(2_100, "2.1 s")]
+    [InlineData(999, "999 ms")]
+    [InlineData(20_091, "20.1 s")]
     [InlineData(20_149, "20.1 s")]
-    [InlineData(59_999, "59.9 s")]
+    [InlineData(59_949, "59.9 s")]
+    [InlineData(59_950, "1 min 0 s")]
     [InlineData(125_300, "2 min 5 s")]
     public void DurationsAreConvertedFromMilliseconds(long ms, string shown) => Assert.Equal(shown, TimingSection.Duration(ms));
 
