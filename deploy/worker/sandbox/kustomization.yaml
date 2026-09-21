@@ -26,3 +26,6 @@ configMapGenerator:
       - MW_OBSERVER_APP_ID=4966600
       - MW_DOORBELL_APP_ID=4966655
       - MW_CHECK_PERIOD_SECONDS=60
+      # The scenario suite shortens the ADR-013 queue deadline for one target only (TS-S16 (g)); watch.yml reads the same
+      # setting from the replica's MW_QUEUE_DEADLINE_MINUTES variable, which the suite sets. See SandboxSwitch.
+      - MW_QUEUE_DEADLINE_MINUTES=main-watcher-sandbox/sample-target-10=10

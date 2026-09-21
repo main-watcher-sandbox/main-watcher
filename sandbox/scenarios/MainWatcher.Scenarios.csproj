@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The scenario suite (TS-001 §5): drives the sandbox organisation and the sandbox worker from
+       this machine. Run it with sandbox/run-scenarios.sh, never from CI. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>MainWatcher.Scenarios</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Markers are read back with the watcher's own parser, and targets.yml checked with its own. -->
+    <ProjectReference Include="../../src/MainWatcher.Core/MainWatcher.Core.csproj" />
+    <InternalsVisibleTo Include="MainWatcher.Scenarios.Tests" />
+  </ItemGroup>
+</Project>
