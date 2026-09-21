@@ -79,6 +79,23 @@ public class GatewayTests
     }
 
     [Fact]
+    public async Task TheBudgetIsTheLatestResponsesRateLimit()
+    {
+        using var http = Client(new Handler(_ =>
+        {
+            var response = Response("{\"jobs\":[]}");
+            response.Headers.Add("x-ratelimit-limit", "5000");
+            response.Headers.Add("x-ratelimit-remaining", "1234");
+            response.Headers.Add("x-ratelimit-reset", DateTimeOffset.Parse("2026-09-21T22:15:29Z").ToUnixTimeSeconds().ToString());
+            return Task.FromResult(response);
+        }));
+        var gateway = new GitHubGateway(http, 1);
+        Assert.Null(gateway.Budget);
+        await gateway.Jobs("owner/repo", 1, TestContext.Current.CancellationToken);
+        Assert.Equal("1234 of 5000 requests left, refilled at 22:15:29Z", gateway.Budget);
+    }
+
+    [Fact]
     public async Task UndownloadableArtifactIsUnknown()
     {
         using var http = Client(new Handler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden))));

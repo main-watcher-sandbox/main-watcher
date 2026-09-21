@@ -29,6 +29,13 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     readonly Dictionary<string, (string Head, List<CheckRun> Checks)> snapshots = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// The rate-limit budget GitHub reported on the latest response: what the token's installation has left of its hourly
+    /// requests, and when it refills (R-13). Every target shares one installation's budget, and the scenario suite's fourth
+    /// run spent it all (#25).
+    /// </summary>
+    public string? Budget { get; private set; }
+
+    /// <summary>
     /// An installation token for the App this gateway authenticates as (a JWT client), limited to <paramref name="repo"/>.
     /// </summary>
     public async Task<InstallationToken> InstallationToken(string repo, CancellationToken ct)
@@ -56,6 +63,7 @@ public sealed class GitHubGateway(HttpClient http, long appId,
                 using var request = new HttpRequestMessage(method, path);
                 if (body is not null) request.Content = JsonContent.Create(body);
                 using var response = await http.SendAsync(request, ct);
+                Note(response);
                 if (method == HttpMethod.Get && attempt < 3 && IsTransient(response))
                 {
                     await (delay ?? Task.Delay)(TimeSpan.FromSeconds(2 * Math.Pow(2, attempt)), ct);
@@ -96,6 +104,14 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         throw new HttpRequestException(
             $"GitHub answered {(int)response.StatusCode} ({response.ReasonPhrase}) to {method} {resource}"
             + (message is null ? "" : $": {message}") + (limits.Length == 0 ? "" : $" [{limits}]"), null, response.StatusCode);
+    }
+
+    void Note(HttpResponseMessage response)
+    {
+        string? Header(string name) => response.Headers.TryGetValues(name, out var values) ? values.First() : null;
+        if (Header("x-ratelimit-remaining") is { } remaining && Header("x-ratelimit-limit") is { } limit
+            && long.TryParse(Header("x-ratelimit-reset"), out var reset))
+            Budget = $"{remaining} of {limit} requests left, refilled at {DateTimeOffset.FromUnixTimeSeconds(reset):HH:mm:ss}Z";
     }
 
     static bool IsTransient(HttpResponseMessage response) => (int)response.StatusCode >= 500

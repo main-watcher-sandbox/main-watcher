@@ -229,14 +229,18 @@ With `--no-deploy` it skips the first part and tests whatever the sandbox alread
 A full run takes about 1 h 45 min. The longest unit, TS-S16 (h)'s unstoppable run, starts first and sets that time: from
 its run deadline through the refused cancel and force-cancel to the alert is about 90 min of GitHub time.
 
-**The pool.** Scenarios run side by side, each on a target of its own: `sample-target` and
+**The pool.** Scenarios run side by side, each on a target of its own. Ten targets are set up: `sample-target` and
 `sample-target-2` to `sample-target-10`. A pool target needs three things:
 
 - it is seeded from the template;
 - `main-watcher` and `mw-observer` are installed on it;
 - the `sandbox-owners` team has write access (TS-S10).
 
-`--targets N` uses fewer targets.
+A run uses six of them by default: `sample-target`, `sample-target-2` to `-5`, and `sample-target-10`, the one the worker
+gives a short queue deadline. `--targets N` uses N, from 2 to 10. More is not faster in practice. Every target's cycles
+share the `main-watcher` App installation's 5000 API requests an hour. With ten targets, the fourth run spent the whole
+budget in 39 minutes, and every cycle then failed with 403 until it refilled (#25). Each cycle's log ends with the budget
+it left: "API budget of this installation: … requests left".
 
 After each unit, its target is reset:
 
