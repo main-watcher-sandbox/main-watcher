@@ -56,7 +56,7 @@ own environment (MainWatcher#24). TS-S8's second run on 2026-09-21 showed every 
 403, beside a working control. The PR #59 review added `list` and `watch` to the Secret check, made failed
 queries fail, and added `main-watcher`'s installation (through `app-installations.yml`). The third run passed all
 but the Secret check. That check showed `kubectl auth can-i --as=system:anonymous` cannot answer at all, so it
-now uses `SubjectAccessReview`s. TS-S8 passed on the fourth run, all 35 checks. The first run found `mw-observer` installed on
+now uses `SubjectAccessReview`s. TS-S8 passed on the fourth run, all 35 checks, and again on a fifth run that also rejects a denial carrying an `evaluationError`. The first run found `mw-observer` installed on
 `sample-target-slow`, which is not a target (R-11); that App was removed from it. The first run also showed that,
 on a public repo, GitHub validates a new issue's body before it checks permission, so issue writes are probed with
 an empty update instead.

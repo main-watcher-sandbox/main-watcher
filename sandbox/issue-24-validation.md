@@ -13,7 +13,7 @@ checklist, applied to every workflow and deployment file. The work has three par
 | --- | --- | --- |
 | The checklist, against the committed files | `SecurityChecklistTests` in `MainWatcher.Core.Tests`, on every PR | Passes |
 | A target test run inspects its own environment | `inspect_environment` switch, `EnvironmentTests.NoMainWatcherKey` in the sample target | Passed on 2026-09-21 |
-| Each App token is refused outside its scope, the keys are where §8 says, R-11 installations, the live cluster | `sandbox/ts-s8-credential-scope.sh`, and `app-installations.yml` for `main-watcher` | **Passed on 2026-09-21**, on the fourth run: all 35 checks. The earlier runs found an App installed on a repository it should not be on, a probe that could not tell a refusal from a bad body, and, after the PR #59 review, a Secret check that could not ask about `system:anonymous`. All three are fixed |
+| Each App token is refused outside its scope, the keys are where §8 says, R-11 installations, the live cluster | `sandbox/ts-s8-credential-scope.sh`, and `app-installations.yml` for `main-watcher` | **Passed on 2026-09-21**, on the fourth run and again on the fifth, after the follow-up review: all 35 checks each time. The earlier runs found an App installed on a repository it should not be on, a probe that could not tell a refusal from a bad body, and, after the PR #59 review, a Secret check that could not ask about `system:anonymous`. All three are fixed |
 
 ## The checklist (TS-001 §6)
 
@@ -302,12 +302,23 @@ The review now returns `allowed|evaluationError`. Only `false` with an empty eva
 | Namespaces cannot be listed | FAIL twice: discovery, and the incomplete subject list |
 
 The fourth run's 12 answers were `false` as read then. The error handling did not change what a clean denial
-looks like, so that run's pass stands. A fifth run would show the evaluation error field empty on the live cluster
-too.
+looks like, so that run's pass stands, and the fifth run below confirmed it on the live cluster.
+
+## The fifth run, 2026-09-21T16:41:02Z
+
+Run from `4284ff7`, which reads `evaluationError`. **All 35 checks pass**, the same rows as the fourth run:
+
+- **App tokens:** all 21 rows, every refusal a 403, with the same working controls.
+- **Installations:** all 6 rows. `main-watcher` is on `selected` repositories, only `sample-target`
+  (`app-installations.yml` run [35627187647](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35627187647)).
+- **Keys:** all 4 rows.
+- **Kubernetes:** 4 subjects listed. All 12 access reviews answered "no": `allowed: false` with an empty
+  evaluation error, so no authorizer failed to evaluate a request. No service account token in the pod, and no
+  Service or Ingress.
 
 ## TS-S8 status
 
-**Passed on 2026-09-21.** The claims and their evidence:
+**Passed on 2026-09-21**, on the fourth and fifth runs. The claims and their evidence:
 
 - **`mw-observer` cannot write or dispatch anywhere.** Every write or dispatch returned 403, beside working reads.
 - **`mw-doorbell` cannot touch a target.** No token for a target can be minted, and its watcher token is refused
