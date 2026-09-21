@@ -5,8 +5,11 @@
 # Mints an installation token for mw-observer and for mw-doorbell and proves each can do only what ARCH-001 §8
 # allows. A call it must not make has to return 403, and a positive control beside it proves the token itself
 # works, so a 403 is the permission and not a dead token. Every refused write is sent with a body GitHub would
-# reject anyway (no issue title, a branch that does not exist), so a call that is wrongly allowed gets a 422 and
-# changes nothing. Then it checks where the keys live, which repositories each App is installed on (R-11), who
+# reject anyway (a branch that does not exist, a check run with no name), so a call that is wrongly allowed gets a
+# 422 and changes nothing. Issue writes on a target are the exception: on a public repository GitHub validates an
+# issue's body before it checks the caller's permission, so an empty new issue gets a 422 even from a token with no
+# access to the repository at all (first TS-S8 run, #24). They are probed with an empty update to an existing
+# issue instead, which a token allowed to write would apply as a no-op. Then it checks where the keys live, which repositories each App is installed on (R-11), who
 # can read the worker's Secret, and that nothing exposes the worker inbound.
 #
 # The keys are read from the worker's Secret into a private temporary folder and deleted on exit. They are
@@ -72,6 +75,11 @@ probe() { # app, token, expected status, method, path, [body]
   fi
 }
 
+some_issue() { # repo -> the number of its newest issue, read with mw-observer
+  call "$observer" GET "/repos/$1/issues?state=all&per_page=1" > /dev/null
+  first number
+}
+
 installation_token() { # jwt -> token for the App's installation on the watcher repo
   local code
   code="$(call "$1" GET "/repos/$watcher/installation")"
@@ -115,7 +123,7 @@ for target in "${targets[@]}"; do
   probe mw-observer "$observer" 200 GET "/repos/$target/issues?per_page=1"
   probe mw-observer "$observer" 403 POST "/repos/$target/actions/workflows/main-watcher-tests.yml/dispatches" "$none"
   probe mw-observer "$observer" 403 POST "/repos/$target/check-runs" '{}'
-  probe mw-observer "$observer" 403 POST "/repos/$target/issues" '{}'
+  probe mw-observer "$observer" 403 PATCH "/repos/$target/issues/$(some_issue "$target")" '{}'
   probe mw-observer "$observer" 403 POST "/repos/$target/labels" '{}'
   probe mw-observer "$observer" 403 PUT "/repos/$target/contents/ts-s8-probe.txt" '{}'
 done
@@ -131,7 +139,8 @@ for target in "${targets[@]}"; do
   probe mw-doorbell "$doorbell_jwt" 404 GET "/repos/$target/installation"
   probe mw-doorbell "$doorbell" 403 POST "/repos/$target/actions/workflows/main-watcher-tests.yml/dispatches" "$none"
   probe mw-doorbell "$doorbell" 403 POST "/repos/$target/check-runs" '{}'
-  probe mw-doorbell "$doorbell" 403 POST "/repos/$target/issues" '{}'
+  probe mw-doorbell "$doorbell" 403 PATCH "/repos/$target/issues/$(some_issue "$target")" '{}'
+  probe mw-doorbell "$doorbell" 403 POST "/repos/$target/labels" '{}'
 done
 
 section "Installations (R-11)"

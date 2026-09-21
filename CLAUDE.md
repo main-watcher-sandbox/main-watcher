@@ -52,8 +52,10 @@ was needed. The check run shows a timing section — suite time, its change from
 run, the 5 slowest tests and the retry flag, converted from CTRF milliseconds by the watcher
 (MainWatcher#22); TS-S13's check-run half passed, so TS-S13 has passed as a whole. The TS-001 §6 workflow and deployment checklist is now a set of
 tests (`SecurityChecklistTests`), and a sandbox target test run found no Main Watcher key or GitHub token in its
-own environment (MainWatcher#24). TS-S8's token probes are scripted in `sandbox/ts-s8-credential-scope.sh` but
-have not been run yet.
+own environment (MainWatcher#24). TS-S8's first run of `sandbox/ts-s8-credential-scope.sh` found every
+out-of-scope call refused. The two empty issue-creation probes were inconclusive: on a public repo GitHub
+validates the body first, so the probe is now an empty issue update. The run also found `mw-observer` installed on
+`sample-target-slow`, which is not a target (R-11), so TS-S8 has not passed yet.
 
 ## Where things are
 
