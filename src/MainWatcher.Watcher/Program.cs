@@ -1,6 +1,8 @@
 using System.Net.Http.Headers;
 using MainWatcher.Core;
 
+// The App installation's rate-limit budget is shared by every target, so each cycle says what it left (R-13).
+GitHubGateway? budget = null;
 try
 {
     var config = TargetConfiguration.Parse(File.ReadAllText(Environment.GetEnvironmentVariable("MW_TARGETS_FILE") ?? "targets.yml"));
@@ -32,6 +34,7 @@ try
     using var alertHttp = Client(Required("MW_ALERT_TOKEN"));
     var appId = long.Parse(Required("MW_APP_ID"));
     var github = new GitHubGateway(http, appId, log: Console.WriteLine);
+    budget = github;
     var alertRepo = Required("MW_ALERT_REPO");
     var watcherGithub = new GitHubGateway(alertHttp, appId);
     var alerts = new Alerts(watcherGithub, alertRepo);
@@ -162,6 +165,10 @@ catch (Exception e)
 {
     Console.Error.WriteLine($"Watcher failed: {e.Message}");
     return 1;
+}
+finally
+{
+    if (budget?.Budget is { } left) Console.WriteLine($"API budget of this installation: {left}.");
 }
 
 static HttpClient Client(string token)

@@ -13,7 +13,8 @@ if (options is null)
 
           --only       run only the units covering these scenarios (a prefix: TS-S16 is every TS-S16 unit)
           --no-deploy  skip publishing, the replica push, the worker image and seeding: test what the sandbox already runs
-          --targets    how many pool targets to use, sample-target and sample-target-2 to -N (default 10)
+          --targets    how many pool targets to use (2 to 10, default 6): sample-target, sample-target-2 onwards, and
+                       always sample-target-10, which the worker gives a short queue deadline
           --no-status  post no commit status, even when the run qualifies
           --list       list the units and exit
         """);
@@ -47,7 +48,9 @@ var token = Environment.GetEnvironmentVariable("GH_TOKEN") is { Length: > 0 } fr
 using var github = new GitHub(token);
 var me = (await github.Get("user", stop.Token))!["login"]!.GetValue<string>();
 var templates = new Templates(root);
-var pool = Enumerable.Range(1, options.Targets)
+// Every target's cycles share the main-watcher App installation's 5000 requests an hour. Ten targets at once spent it all
+// in 39 minutes in the fourth run (#25), so six is the default. The last is always sample-target-10, for TS-S16 (g).
+var pool = Enumerable.Range(1, options.Targets - 1).Append(10)
     .Select(n => new Target(github, $"{SandboxOrg.Org}/sample-target{(n == 1 ? "" : $"-{n}")}", templates)).ToList();
 var sandbox = new SandboxOrg(github, templates, new Replica(github, $"{SandboxOrg.Org}/main-watcher"), new Worker(SandboxOrg.Org), pool, me);
 log.Info($"MainWatcher@{commit[..7]}: {selected.Count} of {catalogue.Count} units on {pool.Count} targets, as {me}. Output: {RunInfo.OutDir}");
@@ -101,7 +104,7 @@ sealed record Options(string[]? Only, bool NoDeploy, int Targets, bool NoStatus,
     {
         string[]? only = null;
         bool noDeploy = false, noStatus = false, list = false;
-        var targets = 10;
+        var targets = 6;
         for (var i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -112,7 +115,7 @@ sealed record Options(string[]? Only, bool NoDeploy, int Targets, bool NoStatus,
                 case "--no-deploy": noDeploy = true; break;
                 case "--no-status": noStatus = true; break;
                 case "--list": list = true; break;
-                case "--targets" when i + 1 < args.Length && int.TryParse(args[i + 1], out var n) && n is >= 2 and <= 20:
+                case "--targets" when i + 1 < args.Length && int.TryParse(args[i + 1], out var n) && n is >= 2 and <= 10:
                     targets = n;
                     i++;
                     break;
