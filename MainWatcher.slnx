@@ -6,6 +6,9 @@
     <Project Path="src/MainWatcher.Watcher/MainWatcher.Watcher.csproj" />
     <Project Path="src/MainWatcher.Worker/MainWatcher.Worker.csproj" />
   </Folder>
+  <Folder Name="/sandbox/">
+    <Project Path="sandbox/scenarios/MainWatcher.Scenarios.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/MainWatcher.Core.Tests/MainWatcher.Core.Tests.csproj" />
     <Project Path="tests/MainWatcher.Gate.Tests/MainWatcher.Gate.Tests.csproj" />

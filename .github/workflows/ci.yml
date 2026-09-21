@@ -37,6 +37,39 @@ jobs:
       - name: Smoke test
         run: src/MainWatcher.Worker/smoke-test.sh main-watcher-worker:ci
 
+  # A new ctrf-io/github-test-reporter pin can change how the job summary reads history and ranks the slowest tests, so it
+  # needs TS-S13 to have passed on the pull request's own commit (TS-001 §4, ADR-018): the scenario-suite/ts-s13 status,
+  # which sandbox/run-scenarios.sh --only TS-S13 posts. Re-run this job once it has.
+  reporter-pin:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          FILE: .github/workflows/run-integration-tests.yml
+        run: |
+          set -euo pipefail
+          pin() { gh api "repos/$GITHUB_REPOSITORY/contents/$FILE?ref=$1" --jq .content | base64 -d | grep -o 'ctrf-io/github-test-reporter@[0-9a-f]*' || true; }
+          before="$(pin "$BASE")"
+          after="$(pin "$HEAD")"
+          if [ "$before" = "$after" ]; then
+            echo "The reporter pin is unchanged ($after)."
+            exit 0
+          fi
+          state="$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD/statuses?per_page=100" \
+            --jq '[.[] | select(.context == "scenario-suite/ts-s13")][0].state // "missing"')"
+          if [ "$state" != success ]; then
+            echo "::error::The reporter pin changes ($before -> $after), so TS-S13 must pass on $HEAD first (scenario-suite/ts-s13: $state). Run: sandbox/run-scenarios.sh --only TS-S13, then re-run this job."
+            exit 1
+          fi
+          echo "The reporter pin changes ($before -> $after), and TS-S13 passed on $HEAD."
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 5

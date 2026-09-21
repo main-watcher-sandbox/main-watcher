@@ -109,6 +109,10 @@ public class SettingsTests
     [InlineData("10", 10)]
     [InlineData("45", 30)]
     [InlineData("later", 30)]
+    // Per target, so the scenario suite can shorten it for one target while others run beside it (MainWatcher#25).
+    [InlineData("owner/other=5,owner/target=10", 10)]
+    [InlineData("owner/other=5", 30)]
+    [InlineData("12,OWNER/TARGET=7", 7)]
     public void TheQueueDeadlineComesFromTheEnvironment(string? value, int minutes)
     {
         var key = KeyFile();
@@ -116,7 +120,7 @@ public class SettingsTests
         {
             var env = Valid(key);
             if (value is not null) env["MW_QUEUE_DEADLINE_MINUTES"] = value;
-            Assert.Equal(TimeSpan.FromMinutes(minutes), WorkerSettings.Load(env.GetValueOrDefault).QueueDeadline);
+            Assert.Equal(TimeSpan.FromMinutes(minutes), WorkerSettings.Load(env.GetValueOrDefault).QueueDeadline("owner/target"));
         }
         finally { File.Delete(key); }
     }

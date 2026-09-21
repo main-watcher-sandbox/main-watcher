@@ -35,9 +35,12 @@ public sealed record Findings(Work? Work, Work? Sweep);
 /// and uses the Planner's and Reporter's own rules, so the worker never starts a cycle they would not act on. The hourly sweep
 /// asks the same question to see how long work has been waiting for the worker.
 /// </summary>
-/// <param name="queueDeadline">The ADR-013 queue deadline, which the Planner must be given to the same value.</param>
+/// <param name="queueDeadline">
+/// The ADR-013 queue deadline of each target, which the Planner must be given to the same value; the sandbox shortens it for
+/// chosen targets (TS-S16 (g)).
+/// </param>
 /// <param name="botLogin">The App whose lock issues carry a lease, as the Planner, the Reporter and the gate all read it.</param>
-public sealed class WorkFinder(Func<DateTimeOffset>? clock = null, TimeSpan? queueDeadline = null,
+public sealed class WorkFinder(Func<DateTimeOffset>? clock = null, Func<string, TimeSpan>? queueDeadline = null,
     string botLogin = Reporter.DefaultBotLogin)
 {
     /// <summary>Why the target needs a <c>watch.yml</c> cycle, and what it owes whatever that reason turns out to be.</summary>
@@ -96,10 +99,10 @@ public sealed class WorkFinder(Func<DateTimeOffset>? clock = null, TimeSpan? que
                 // row of the outcome table applies, and it stays flagged until the run has stopped. This is not a report owed,
                 // so it carries no check ID: the "reporting pending" alert times reports, not runs.
                 if (StaleRun.TestJob(jobs) is { } job
-                    && StaleRun.State(target, check, job, now, queueDeadline) is { Stage: not StaleStage.None } stale)
+                    && StaleRun.State(target, check, job, now, queueDeadline?.Invoke(repo)) is { Stage: not StaleStage.None } stale)
                     return new($"check {check.Id}: target run {runId} " + stale.Stage switch
                     {
-                        StaleStage.Queue => $"did not start within {(queueDeadline ?? StaleRun.DefaultQueueDeadline).TotalMinutes:0} minutes",
+                        StaleStage.Queue => $"did not start within {(queueDeadline?.Invoke(repo) ?? StaleRun.DefaultQueueDeadline).TotalMinutes:0} minutes",
                         StaleStage.Run => "has run past its deadline",
                         _ => "was asked to stop and has not stopped"
                     }, stale.Since);

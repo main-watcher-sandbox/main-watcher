@@ -1,0 +1,27 @@
+# Holds the sandbox-hold concurrency group for a given number of minutes (TS-S16 (g)). A test
+# run on the ts-s16-held-job workflow variant waits in that group, so its job starts only when
+# this one ends: a job that gets its runner late, without a runner of our own to withhold.
+name: sandbox-hold
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: How long to hold the group
+        default: "8"
+
+permissions: {}
+
+jobs:
+  hold:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: sandbox-hold-${{ github.repository }}
+    steps:
+      - env:
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          [[ "$MINUTES" =~ ^[0-9]+$ ]] && [ "$MINUTES" -le 25 ] || { echo "::error::minutes must be 0 to 25"; exit 1; }
+          echo "Holding sandbox-hold-$GITHUB_REPOSITORY for $MINUTES minute(s)"
+          sleep "$((MINUTES * 60))"

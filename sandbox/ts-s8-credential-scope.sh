@@ -221,15 +221,35 @@ done
 
 section "The worker's Secret and network (Kubernetes)"
 # Who can read the Secret. get names it; list and watch return every Secret's contents in the namespace, so
-# either gives the same access (Kubernetes RBAC good practices, "Listing Secrets"). Only an explicit "no" counts
-# as denied: an error from any query, or a namespace or service account list that cannot be read, fails the row.
-subjects=(system:anonymous)
+# either gives the same access (Kubernetes RBAC good practices, "Listing Secrets"). Each question is a
+# SubjectAccessReview made by the person running this script, not `kubectl auth can-i --as`: can-i asks as the
+# impersonated subject, and system:anonymous is not allowed to ask, so it can only ever answer with an error (third
+# TS-S8 run, #24). A review names the subject's groups itself, since nothing is impersonated to add them. Only
+# "allowed": false with no evaluationError counts as denied. An authorizer that could not evaluate the request
+# reports it in evaluationError, beside allowed: false, so a denial that carries one is an unanswered question, not
+# a no (PR #59 review). That, a review that fails, or a namespace or service account list that cannot be read,
+# fails the row.
+access_review() { # user, verb, resource name ("" for every Secret in the namespace), groups... -> allowed|evaluationError
+  local user="$1" verb="$2" name="$3" groups
+  shift 3
+  groups="$(printf '"%s",' "$@")"
+  kubectl create -o 'jsonpath={.status.allowed}{"|"}{.status.evaluationError}' -f - << REVIEW
+{"apiVersion": "authorization.k8s.io/v1", "kind": "SubjectAccessReview",
+ "spec": {"user": "$user", "groups": [${groups%,}],
+          "resourceAttributes": {"namespace": "$namespace", "verb": "$verb", "resource": "secrets", "name": "$name"}}}
+REVIEW
+}
+
+# Each subject is "user|group group ...". Anyone at all, anyone signed in, then every service account.
+subjects=("system:anonymous|system:unauthenticated" "ts-s8-any-user|system:authenticated")
 discovery=()
 if namespaces="$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' 2> "$work/err")"; then
   for namespace_name in $namespaces; do
     case "$namespace_name" in kube-*) continue ;; esac # the cluster's own controllers read every Secret
     if accounts="$(kubectl -n "$namespace_name" get serviceaccounts -o jsonpath='{.items[*].metadata.name}' 2> "$work/err")"; then
-      for account in $accounts; do subjects+=("system:serviceaccount:$namespace_name:$account"); done
+      for account in $accounts; do
+        subjects+=("system:serviceaccount:$namespace_name:$account|system:serviceaccounts system:serviceaccounts:$namespace_name system:authenticated")
+      done
     else
       discovery+=("service accounts in $namespace_name: $(head -1 "$work/err")")
     fi
@@ -237,26 +257,29 @@ if namespaces="$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' 
 else
   discovery+=("namespaces: $(head -1 "$work/err")")
 fi
-[[ " ${subjects[*]} " == *" system:serviceaccount:$namespace:default "* ]] ||
+[[ " ${subjects[*]} " == *" system:serviceaccount:$namespace:default|"* ]] ||
   discovery+=("system:serviceaccount:$namespace:default was not found")
 [ "${#discovery[@]}" -eq 0 ] &&
-  row PASS "Service accounts listed" "${#subjects[@]} subjects: system:anonymous and every service account outside kube-* namespaces" ||
+  row PASS "Service accounts listed" "${#subjects[@]} subjects: system:anonymous, any signed-in user, and every service account outside kube-* namespaces" ||
   row FAIL "Service accounts listed" "could not list ${discovery[*]}"
 
 readers=()
 errors=()
-for subject in "${subjects[@]}"; do
-  for query in "get secret/trigger-worker-keys" "list secrets" "watch secrets"; do
-    read -r verb resource <<< "$query"
-    answer="$(kubectl auth can-i "$verb" "$resource" -n "$namespace" --as="$subject" 2> "$work/err" || true)"
+for entry in "${subjects[@]}"; do
+  subject="${entry%%|*}"
+  read -r -a groups <<< "${entry#*|}"
+  for query in "get trigger-worker-keys" "list" "watch"; do
+    read -r verb name <<< "$query"
+    answer="$(access_review "$subject" "$verb" "${name:-}" "${groups[@]}" 2> "$work/err" || true)"
     case "$answer" in
-      no) ;;
-      yes) readers+=("$subject ($verb)") ;;
-      *) errors+=("$subject ($verb): ${answer:-$(head -1 "$work/err")}") ;;
+      "false|") ;;
+      true\|*) readers+=("$subject ($verb)") ;;
+      false\|?*) errors+=("$subject ($verb): evaluation error: ${answer#false|}") ;;
+      *) errors+=("$subject ($verb): ${answer:-$(grep -m1 . "$work/err" || echo no answer)}") ;;
     esac
   done
 done
-check="No service account can get, list or watch $namespace/trigger-worker-keys"
+check="No one outside kube-* can get, list or watch $namespace/trigger-worker-keys"
 if [ "${#readers[@]}" -gt 0 ]; then
   row FAIL "$check" "allowed: ${readers[*]}"
 elif [ "${#errors[@]}" -gt 0 ]; then
