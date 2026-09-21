@@ -74,7 +74,43 @@ public sealed class Replica(GitHub github, string repo)
         return await github.Text($"repos/{Repo}/actions/jobs/{leg.Id}/logs", ct);
     }
 
-    public Task EnableWatch(CancellationToken ct) => github.Put($"repos/{Repo}/actions/workflows/{WatchWorkflow}/enable", null, ct);
+    /// <summary>
+    /// Enables <c>watch.yml</c> and returns once GitHub reports it active, a few seconds later. A sweep dispatched a second after
+    /// the enable call was accepted and never queued (2026-09-21): it stayed <c>queued</c> with no jobs, and GitHub refused to
+    /// cancel it, "has not been queued yet".
+    /// </summary>
+    public async Task EnableWatch(CancellationToken ct)
+    {
+        await github.Put($"repos/{Repo}/actions/workflows/{WatchWorkflow}/enable", null, ct);
+        await Poll.True($"{WatchWorkflow} to be active", TimeSpan.FromMinutes(2), async () =>
+            (await github.Get($"repos/{Repo}/actions/workflows/{WatchWorkflow}", ct))!["state"]!.GetValue<string>() == "active",
+            ct, TimeSpan.FromSeconds(5));
+        await Task.Delay(TimeSpan.FromSeconds(10), ct);
+    }
+
+    /// <summary>
+    /// Dispatches until a run is really queued: one that has jobs or has left <c>queued</c> within 3 minutes. A run GitHub
+    /// accepted and never queued is left behind, since it cannot be cancelled, and dispatched again, up to 3 times.
+    /// </summary>
+    public async Task<long> Started(Func<Task<long>> dispatch, Log log, CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            var id = await dispatch();
+            try
+            {
+                await Poll.True($"watch run {id} to be queued", TimeSpan.FromMinutes(3), async () =>
+                    (await Run(id, ct)).Status != "queued"
+                    || (await github.Get($"repos/{Repo}/actions/runs/{id}/jobs", ct))!["total_count"]!.GetValue<int>() > 0,
+                    ct, TimeSpan.FromSeconds(10));
+                return id;
+            }
+            catch (ScenarioFailure) when (attempt < 3)
+            {
+                log.Warn($"watch run {id} was accepted but never queued; dispatching again");
+            }
+        }
+    }
     public Task DisableWatch(CancellationToken ct) => github.Put($"repos/{Repo}/actions/workflows/{WatchWorkflow}/disable", null, ct);
 
     // ---- sandbox switches ----

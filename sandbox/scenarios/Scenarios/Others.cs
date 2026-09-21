@@ -18,10 +18,21 @@ public sealed class CredentialScope : Scenario
     public override async Task Run(ScenarioContext ctx)
     {
         var root = Repository.Root();
+        // Every line is kept, so the table is saved whole even when the script exits non-zero, which it does on any FAIL row.
+        var lines = new List<string>();
+        var exited = "";
+        try
+        {
+            await Infra.Shell.Run(Infra.Shell.Bash, ["sandbox/ts-s8-credential-scope.sh"], ctx.Ct, root,
+                progress: line => { lock (lines) lines.Add(line); });
+        }
+        catch (InvalidOperationException) { exited = " It exited non-zero."; }
         string output;
-        try { output = await Infra.Shell.Run(Infra.Shell.Bash, ["sandbox/ts-s8-credential-scope.sh"], ctx.Ct, root); }
-        catch (InvalidOperationException e) { throw new ScenarioFailure($"ts-s8-credential-scope.sh failed: {e.Message}"); }
+        lock (lines) output = string.Join('\n', lines);
         await File.WriteAllTextAsync(Path.Combine(RunInfo.OutDir, "ts-s8.md"), output, ctx.Ct);
+        foreach (var fail in lines.Where(l => l.StartsWith("| FAIL |", StringComparison.Ordinal))) ctx.Log.Warn(fail);
+        if (exited.Length > 0 && !output.Contains("| FAIL |", StringComparison.Ordinal))
+            throw new ScenarioFailure($"ts-s8-credential-scope.sh failed before its table was complete (ts-s8.md).{exited}");
         var passes = output.Split('\n').Count(l => l.StartsWith("| PASS |", StringComparison.Ordinal));
         ctx.Require(output.Contains("TS-S8: every check passed.", StringComparison.Ordinal) && !output.Contains("| FAIL |", StringComparison.Ordinal)
             && !output.Contains("| SKIP |", StringComparison.Ordinal), $"the credential-scope script passed all {passes} checks, none skipped (ts-s8.md)");

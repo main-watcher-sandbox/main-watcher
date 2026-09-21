@@ -20,12 +20,14 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-22-validation.md` | TS-S13, check-run half: suite time, the change from the last green run, the 5 slowest tests and the retry flag, against the CTRF artifact, for #22 |
 | `issue-23-validation.md` | TS-S10: whether an App's team @-mention notifies, the organisation `Members: read` it needs, and the CODEOWNERS fallback, for #23 |
 | `issue-24-validation.md` | The TS-001 §6 checklist as tests, a target test run that inspects its own environment for Main Watcher keys, and how to run TS-S8, for #24 |
+| `issue-25-validation.md` | The scenario suite's first runs: what they found and how long they took, for #25 |
 | `issue-53-validation.md` | The replica's CI green on its own sandbox target list, once `CommittedTargetListParses` scoped its sandbox-target clause to this repo, for #53 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
 | `upload-switches.yml` | The `fail_upload`, `hang_upload` and `hang_upload_forever` steps that `publish-public.sh` inserts into the sandbox build of the test workflow |
 | `ts-s8-credential-scope.sh` | TS-S8: proves `mw-observer` and `mw-doorbell` are refused (403) outside their scope, and checks where the keys live, each App's installed repositories (R-11), who can read the worker's Secret and that nothing exposes the worker inbound |
+| `run-scenarios.sh`, `scenarios/` | The scenario suite: TS-S1 to TS-S18 from one entry point, which a release requires. See "The scenario suite" below |
 | `seed-target.sh` | Pushes the template and the gate and test workflows to a sandbox repo, creates the `main-broken` and `fixes-main` labels, and applies the ruleset. Re-run it to reset a repo |
 
 Seed or reset both targets (needs `gh` logged in as a sandbox org admin):
@@ -135,61 +137,146 @@ A negative `lease_hours` makes an expired lease, for the "LOCK LEASE EXPIRED" pa
 
 TS-S16 needs test workflows that differ from the published one. Each is a branch of
 `main-watcher-sandbox/gate`, made from its `main` with one change, and a target uses one by
-pointing its caller's `uses:` at that branch (and back to `@main` afterwards):
+pointing its caller's `uses:` at that branch (and back to `@main` afterwards).
+`publish-public.sh` publishes them with `main`, so they never fall behind it:
 
 | Branch | Change | Scenario |
 |---|---|---|
 | `ts-s16-renamed-step` | The test step is named `main-watcher-tests-renamed` | TS-S16 (c) |
 | `ts-s16-step-timeout` | The test step has `timeout-minutes: 1` | TS-S16 (e) |
 | `ts-s16-report-stuck` | The `report` job runs on `sandbox-no-such-runner`, which no runner has | TS-S16 (f) |
+| `ts-s16-held-job` | The test job waits in the concurrency group `sandbox-hold-<repo>`, which the target's `sandbox-hold` workflow holds for as many minutes as it is asked | TS-S16 (g) |
+| `ts-s16-long-timeout` | The test job has `timeout-minutes: 120`, so a job that never ends reaches Main Watcher's run deadline first | TS-S16 (h) |
 
-A run on `ts-s16-report-stuck` stays queued until it is cancelled. `publish-public.sh` does not
-update these branches; re-create them from `main` if the published workflow changes.
+A run on `ts-s16-report-stuck` stays queued until it is cancelled.
 
-## Stale-run switches
+## Sandbox switches
 
-For TS-S16 (g) and (h), two replica variables steer the ADR-013 stale-run lifecycle. Set both
-only for the scenario and delete them afterwards; `MW_QUEUE_DEADLINE_MINUTES` must also be set on
-the trigger worker, or it starts cycles for runs the Planner does not judge stale.
+Replica variables steer the watcher's fault injection, and the trigger worker's environment
+carries the one setting it shares. Production sets none of them. Each takes a comma-separated
+list. An entry written `owner/repo=value` applies to that target only; a bare one applies to
+every target (`SandboxSwitch`). That is what lets the scenario suite fault one target while
+others run.
+
+| Variable | Values | Effect | Scenario |
+|---|---|---|---|
+| `MW_SANDBOX_EXIT_AFTER` | Write names, below | The cycle exits right after the named write, leaving the rest for the next cycle | TS-S14, TS-S17 (b), TS-S18 |
+| `MW_SANDBOX_REFUSE_CANCEL` | `true` | Every cancel and force-cancel fails without asking GitHub | TS-S16 (h) |
+| `MW_QUEUE_DEADLINE_MINUTES` | 1 to 30 | Shortens the 30-minute ADR-013 queue deadline | TS-S16 (g) |
+| `MW_SANDBOX_READ_ONLY_ISSUES` | A plain list of targets | Their cycles get an App token that can only read issues, so every lock write fails with a real 403 | TS-S14 (c) |
 
 ```
-gh variable set MW_QUEUE_DEADLINE_MINUTES -R main-watcher-sandbox/main-watcher --body 5
-kubectl -n main-watcher-sandbox set env deploy/trigger-worker MW_QUEUE_DEADLINE_MINUTES=5
-gh variable set MW_SANDBOX_REFUSE_CANCEL -R main-watcher-sandbox/main-watcher --body true
+gh variable set MW_SANDBOX_EXIT_AFTER -R main-watcher-sandbox/main-watcher --body main-watcher-sandbox/sample-target=create
+gh variable delete MW_SANDBOX_EXIT_AFTER -R main-watcher-sandbox/main-watcher
 ```
 
-`MW_QUEUE_DEADLINE_MINUTES` shortens the 30-minute queue deadline to 1–30 minutes.
-`MW_SANDBOX_REFUSE_CANCEL=true` makes every cancel and force-cancel fail without asking GitHub,
-so the "target run could not be stopped" alert can be reached in 30 minutes rather than by
-finding a run GitHub genuinely cannot stop.
+`MW_QUEUE_DEADLINE_MINUTES` must be given to the trigger worker too, or it starts cycles for runs
+the Planner does not judge stale. The worker reads it only at start-up, so the sandbox overlay
+sets it once, for `sample-target-10` alone, and the scenario suite sets the replica variable to
+match.
 
-The run deadline has no switch: it is the job's `started_at` plus the target's `timeout`, the
-workflow's 20-minute margin and a 10-minute grace, so the shortest one a scenario can arrange is
-31 minutes after the job starts. GitHub's own job timeout normally ends a job first, so to reach
-the run deadline the target's `timeout` in the replica's `targets.yml` is lowered **after** the
-run has started: the running job keeps the `timeout-minutes` it was created with, and the watcher
-then judges it against the smaller one, which is the lost-runner case the grace exists for.
+**Write names.** The Reporter's issue writes are `create`, `comment`, `update`, `close` and
+`override`. The lease's are `renew`, `lapse` and `lapse_reported`, which is how TS-S17 (b) stops
+a cycle between a renewal and its queue sweep. The check run's completion has names too:
+`check:success`, `check:failure` and `check:neutral`. These stop the cycle after the report is
+finished, not part-way through it. So `check:neutral` kills a cycle at the exact moment ADR-017
+relies on: the neutral is written and nothing else has run (TS-S18).
+
+**`MW_SANDBOX_REFUSE_CANCEL`** lets the "target run could not be stopped" alert be reached in
+30 minutes. Otherwise it would need a run GitHub genuinely cannot stop.
+
+**The run deadline** has no switch. It is the job's `started_at`, plus the `timeout` the check
+run recorded when the run was dispatched, the workflow's 20-minute margin and a 10-minute grace.
+A scenario reaches it by using a 2-minute target timeout on the `ts-s16-long-timeout` variant,
+whose job GitHub would not end for two hours. The deadline then falls 32 minutes after the job
+starts.
 
 A job that never gets a runner is arranged by adding `runs-on: sandbox-no-such-runner` to the
 target caller's `with:` block. The caller validator checks only `test-command`, `results-glob`
 and `timeout-minutes`, so the extra input is accepted.
 
-## Reporter fault switch
+## The scenario suite
 
-For TS-S14, set the replica's `MW_SANDBOX_EXIT_AFTER` variable to the issue writes to
-stop after (`create`, `comment`, `update`, `close`, `override`, comma-separated). The cycle
-exits right after that write, leaving the check run `in_progress`; the next cycle replays
-the report. The lease's writes have names too — `renew`, `lapse` and `lapse_reported` — which is
-how TS-S17 (b) stops a cycle between a renewal and its queue sweep.
-
-The check run's own completion has names too: `check:success`, `check:failure` and
-`check:neutral`. These stop the cycle after the report is finished, not part-way through it, so
-`check:neutral` kills a cycle at the exact moment ADR-017 relies on — the neutral is written and
-nothing else has run (TS-S18).
-
-Delete the variable afterwards:
+`run-scenarios.sh` runs TS-S1 to TS-S18 against the sandbox from one entry point, and a release
+requires it (TS-001 §5, [docs/release.md](../docs/release.md)). Run it from a clean checkout of
+the commit under test, on the machine whose cluster runs the sandbox worker:
 
 ```
-gh variable set MW_SANDBOX_EXIT_AFTER -R main-watcher-sandbox/main-watcher --body create
-gh variable delete MW_SANDBOX_EXIT_AFTER -R main-watcher-sandbox/main-watcher
+sandbox/run-scenarios.sh                    # everything; a pass posts the scenario-suite status
+sandbox/run-scenarios.sh --only TS-S13      # one scenario; posts scenario-suite/ts-s13
+sandbox/run-scenarios.sh --list             # the units, their phase and rough length
 ```
+
+It first puts the commit into the sandbox:
+
+- it runs `publish-public.sh`;
+- it pushes the tree to the replica, as above;
+- it builds the worker image and rolls it out;
+- it runs `seed-target.sh` on every pool target.
+
+It then configures the sandbox for the run:
+
+- it writes the replica's `targets.yml` for the pool: `lock_lease: 10`, `poll_interval: 1`, and
+  `notify` set to the person running it;
+- it clears the switches;
+- it closes open alerts;
+- it resets every target to green.
+
+With `--no-deploy` it skips the first part and tests whatever the sandbox already runs.
+
+A full run takes about 1 h 45 min. The longest unit, TS-S16 (h)'s unstoppable run, starts first and sets that time: from
+its run deadline through the refused cancel and force-cancel to the alert is about 90 min of GitHub time.
+
+**The pool.** Scenarios run side by side, each on a target of its own: `sample-target` and
+`sample-target-2` to `sample-target-10`. A pool target needs three things:
+
+- it is seeded from the template;
+- `main-watcher` and `mw-observer` are installed on it;
+- the `sandbox-owners` team has write access (TS-S10).
+
+`--targets N` uses fewer targets.
+
+After each unit, its target is reset:
+
+- its pull requests are closed;
+- its switches and its `targets.yml` entry are cleared;
+- its files are put back as seeded;
+- its runs are stopped;
+- `main` is green and no lock is open;
+- its closed locks are reconciled;
+- the alerts about it are closed.
+
+**The outage.** TS-S7, TS-S11, TS-S15 and TS-S17 (b) need the watcher down. There is only one
+worker and one hourly schedule, so they share one outage:
+
+1. Each opens its lock while the worker runs.
+2. The worker is scaled to zero and `watch.yml` disabled, so GitHub's schedule cannot start a
+   sweep.
+3. Each does its part while the watcher is down.
+4. Once all are done, `watch.yml` is enabled. One sweep is dispatched and awaited: it is the
+   backup that should notice the worker is down.
+5. Only then is the worker started again.
+
+The two TS-S16 (h) units start at the same time as the outage units: their 32-minute wait for
+the run deadline needs no worker. Other units that need no worker run during the outage; the rest
+wait for it to end.
+
+**Output.** Everything goes to `sandbox/scenarios/out/<time>-<commit>/`:
+
+- `report.md`: what each unit checked and saw;
+- `results.json`;
+- the log of the suite, of each unit and of each target;
+- TS-S8's table.
+
+The exit code is 0 only if every unit passed.
+
+**Commit statuses.** A full run posts `scenario-suite` on the commit, `success` or `failure`. It
+does so only when the commit is pushed to GitHub and the working tree has no uncommitted changes.
+Any run that includes TS-S13 posts `scenario-suite/ts-s13`. `--no-status` posts neither.
+
+**What it cannot check.**
+
+- The CTRF job summary is not in the API. TS-S13's job-summary half is checked only as far as the
+  `report` job succeeding and saving its history artifact. Its check-run half is checked against
+  the CTRF reports and `timings.json`.
+- TS-S18's "once the feed is back" needs a new head, because the feed switch is a file.
