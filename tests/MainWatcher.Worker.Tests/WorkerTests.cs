@@ -70,6 +70,19 @@ public class WorkerTests
         Assert.Null(work.Check);
     }
 
+    // The sandbox shortens the queue deadline for the targets it names (TS-S16 (g), MainWatcher#25), and the reason says so.
+    [Theory]
+    [InlineData("owner/repo=10", true)]
+    [InlineData("owner/other=10", false)]
+    public async Task AShortenedQueueDeadlineAppliesToTheTargetItNames(string setting, bool expected)
+    {
+        var target = new FakeGitHub { CheckList = [Pending(age: 12)] };
+        target.JobsByRun[41] = [Job("tests / report", "completed"), Job("tests / main-watcher", "queued")];
+        var work = await new WorkFinder(() => Now, repo => StaleRun.ConfiguredQueueDeadline(setting, repo)).Work(Watched(), target, Ct);
+        Assert.Equal(expected, work is not null);
+        if (expected) Assert.Contains("did not start within 10 minutes", work!.Reason);
+    }
+
     // The target's 30-minute timeout, the workflow's 20-minute margin and the 10-minute grace: 60 minutes from the job's start.
     [Theory]
     [InlineData(59, false)]
@@ -109,7 +122,7 @@ public class WorkerTests
         var target = new FakeGitHub { CheckList = [Pending(age: 10)] };
         target.JobsByRun[41] = [Job("tests / main-watcher", "queued")];
         Assert.Null(await new WorkFinder(() => Now).Work(Watched(), target, Ct));
-        Assert.NotNull(await new WorkFinder(() => Now, TimeSpan.FromMinutes(10)).Work(Watched(), target, Ct));
+        Assert.NotNull(await new WorkFinder(() => Now, _ => TimeSpan.FromMinutes(10)).Work(Watched(), target, Ct));
     }
 
     [Fact]

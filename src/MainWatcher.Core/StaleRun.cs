@@ -65,6 +65,13 @@ public static class StaleRun
             && value is >= 1 and <= 30 ? TimeSpan.FromMinutes(value) : DefaultQueueDeadline;
 
     /// <summary>
+    /// The queue deadline a sandbox setting gives <paramref name="repo"/>: its last entry for that target, or a bare one
+    /// (<see cref="SandboxSwitch"/>), read as <see cref="ConfiguredQueueDeadline(string?)"/> reads a single value.
+    /// </summary>
+    public static TimeSpan ConfiguredQueueDeadline(string? setting, string repo) =>
+        ConfiguredQueueDeadline(SandboxSwitch.For(setting, repo).LastOrDefault());
+
+    /// <summary>
     /// Whether the job has left the queue. Judged on the status, not on <c>started_at</c>, which GitHub also fills in for a
     /// job that is still waiting for a runner. Any status other than these two is a state before the job runs.
     /// </summary>

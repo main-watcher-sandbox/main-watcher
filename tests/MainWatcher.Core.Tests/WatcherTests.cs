@@ -2415,6 +2415,26 @@ public class WatcherTests
     public void TheQueueDeadlineSettingTakesOneToThirtyMinutes(string? value, int minutes) =>
         Assert.Equal(TimeSpan.FromMinutes(minutes), StaleRun.ConfiguredQueueDeadline(value));
 
+    // A sandbox switch applies to every target, or to one when written owner/repo=value, so the scenario suite can fault one
+    // target while other scenarios run beside it (MainWatcher#25).
+    [Theory]
+    [InlineData(null, "")]
+    [InlineData("create", "create")]
+    [InlineData("comment, update", "comment|update")]
+    [InlineData("owner/repo=create,owner/other=close", "create")]
+    [InlineData("Owner/Repo=check:neutral , renew", "check:neutral|renew")]
+    [InlineData("owner/other=true", "")]
+    [InlineData("owner/repo=,=x", "")]
+    public void ASandboxSwitchAppliesToEveryTargetOrToTheOneItNames(string? setting, string expected) =>
+        Assert.Equal(expected, string.Join('|', SandboxSwitch.For(setting, "owner/repo")));
+
+    [Theory]
+    [InlineData("owner/other=5,owner/repo=10", 10)]
+    [InlineData("owner/other=5", 30)]
+    [InlineData("12", 12)]
+    public void TheQueueDeadlineSettingCanNameATarget(string setting, int minutes) =>
+        Assert.Equal(TimeSpan.FromMinutes(minutes), StaleRun.ConfiguredQueueDeadline(setting, "owner/repo"));
+
     [Fact]
     public void MarkersKeepTheOtherFieldsOfTheLastMarker()
     {
