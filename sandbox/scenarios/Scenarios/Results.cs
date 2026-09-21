@@ -334,7 +334,9 @@ public sealed class UnstoppableRun : Scenario
             await t.CancelRun(check.RunId!.Value, ctx.Ct);
             await Poll.True("the run to stop", TimeSpan.FromMinutes(10), async () => (await t.Run(check.RunId.Value, ctx.Ct)).Completed, ctx.Ct);
             await t.DeleteRun(check.RunId.Value, ctx.Ct);
-            await r.EditTarget(t, e => e with { Enabled = true }, ctx.Ct);
+            // Back to the default entry too: the newer head's caller has the default timeout, and a caller that does not
+            // match targets.yml is refused, so a 2-minute entry left here would keep it untested (first suite run, #25).
+            await r.EditTarget(t, _ => ctx.Sandbox.DefaultEntry(t), ctx.Ct);
             ctx.Step($"cancelled and deleted target run {check.RunId}");
             var unknown = await t.AwaitCompleted(check.Id, TimeSpan.FromMinutes(6), ctx.Ct);
             ctx.Require(unknown.Conclusion == "neutral" && unknown.Title == "Outcome unknown", "with the run deleted, the check run was neutral: outcome unknown", unknown.ToString());

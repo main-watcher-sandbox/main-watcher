@@ -83,7 +83,7 @@ public sealed class Outage(Replica replica, Worker worker)
 
     /// <summary>
     /// One cycle for one target during the outage, as a person would start it by hand. <c>watch.yml</c> is enabled just long
-    /// enough to dispatch it.
+    /// enough for the dispatched run to be queued.
     /// </summary>
     public async Task<long> Dispatch(Target target)
     {
@@ -91,7 +91,7 @@ public sealed class Outage(Replica replica, Worker worker)
         try
         {
             await replica.EnableWatch(ct);
-            try { return await replica.DispatchCycle(target, ct); }
+            try { return await replica.Started(() => replica.DispatchCycle(target, ct), log!, ct); }
             finally { await replica.DisableWatch(ct); }
         }
         finally { dispatches.Release(); }
@@ -142,7 +142,7 @@ public sealed class Outage(Replica replica, Worker worker)
             await replica.EnableWatch(ct);
             if (Failure is null)
             {
-                sweep = await replica.DispatchSweep(ct);
+                sweep = await replica.Started(() => replica.DispatchSweep(ct), log, ct);
                 SweepRun = sweep;
                 var run = await replica.AwaitRun(sweep, TimeSpan.FromMinutes(20), ct);
                 log.Info($"Outage: sweep {run}.");
