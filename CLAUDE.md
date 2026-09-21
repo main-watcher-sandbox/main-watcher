@@ -52,8 +52,9 @@ was needed. The check run shows a timing section — suite time, its change from
 run, the 5 slowest tests and the retry flag, converted from CTRF milliseconds by the watcher
 (MainWatcher#22); TS-S13's check-run half passed, so TS-S13 has passed as a whole. The TS-001 §6 workflow and deployment checklist is now a set of
 tests (`SecurityChecklistTests`), and a sandbox target test run found no Main Watcher key or GitHub token in its
-own environment (MainWatcher#24). TS-S8 passed on 2026-09-21: `sandbox/ts-s8-credential-scope.sh` showed every
-out-of-scope call refused with 403, beside a working control. Its first run found `mw-observer` installed on
+own environment (MainWatcher#24). TS-S8's second run on 2026-09-21 showed every out-of-scope call refused with
+403, beside a working control. The PR #59 review added `list` and `watch` to the Secret check, made failed
+queries fail, and added `main-watcher`'s installation (through `app-installations.yml`), so a third run is owed. The first run found `mw-observer` installed on
 `sample-target-slow`, which is not a target (R-11); that App was removed from it. The first run also showed that,
 on a public repo, GitHub validates a new issue's body before it checks permission, so issue writes are probed with
 an empty update instead.
@@ -105,8 +106,9 @@ an empty update instead.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
   `.github/workflows/run-integration-tests.yml`, whose `.github/actions/test-runner` builds
   `src/MainWatcher.TestRunner`.
-- `.github/workflows/` — `ci.yml` (`dotnet test` and actionlint on every PR) and
-  `sandbox-lock.yml` (hand-made App-authored locks, sandbox org only), and
+- `.github/workflows/` — `ci.yml` (`dotnet test` and actionlint on every PR),
+  `sandbox-lock.yml` (hand-made App-authored locks, sandbox org only),
+  `app-installations.yml` (lists `main-watcher`'s installed repositories for TS-S8), and
   `run-integration-tests.yml`, the reusable test workflow targets call;
   `watch.yml` runs a Planner/Reporter cycle for one dispatched target, or, on its hourly
   schedule or a dispatch with no target, sweeps every enabled one.
@@ -161,14 +163,15 @@ metrics store (PostgreSQL + Grafana) is deferred.
 
 ## Open items before building
 
-1. Run sandbox tests early. None of the scenarios named here is still open. Passed since:
+1. Run sandbox tests early. Of the scenarios named here, only TS-S8 is still open. Passed since:
    TS-S17 on 2026-09-18 (MainWatcher#21), which confirmed A-7 through the App and the watcher's
    own sweep; TS-S14 (a), (b) and (d) on 2026-09-17 (MainWatcher#12), TS-S16 (a) to (f) the same
    day (MainWatcher#13), TS-S14 (c) with the worker's alerts (MainWatcher#15), TS-S12 and TS-S18
    with the neutral retry cap (MainWatcher#17), TS-S16 (g) and (h) with the stale-run lifecycle
    (MainWatcher#18), TS-S7 with the lock lease (MainWatcher#19), whose reconciliation clause
    passed with TS-S9 and TS-S15 (MainWatcher#20), TS-S10 with the team mention
-   (MainWatcher#23), and TS-S8 with the credential-scope script (MainWatcher#24).
+   (MainWatcher#23). TS-S8 is still open: its last run predates the PR #59 review
+   (MainWatcher#24).
 2. Remaining `[assumption]` tag: worker resource sizing.
 
 ## Suggested next steps

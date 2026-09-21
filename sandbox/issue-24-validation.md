@@ -13,7 +13,7 @@ checklist, applied to every workflow and deployment file. The work has three par
 | --- | --- | --- |
 | The checklist, against the committed files | `SecurityChecklistTests` in `MainWatcher.Core.Tests`, on every PR | Passes |
 | A target test run inspects its own environment | `inspect_environment` switch, `EnvironmentTests.NoMainWatcherKey` in the sample target | Passed on 2026-09-21 |
-| Each App token is refused outside its scope, the keys are where §8 says, R-11 installations, the live cluster | `sandbox/ts-s8-credential-scope.sh` | Passed on 2026-09-21, on the second run. The first run's failures were two inconclusive issue probes, since replaced, and `mw-observer` installed on `sample-target-slow`, since removed |
+| Each App token is refused outside its scope, the keys are where §8 says, R-11 installations, the live cluster | `sandbox/ts-s8-credential-scope.sh`, and `app-installations.yml` for `main-watcher` | The second run passed on 2026-09-21. The PR #59 review then found two gaps, both now closed in the script: the Secret check read only `get` and counted a failed query as a denial, and `main-watcher`'s installation was not checked. **A third run is owed** |
 
 ## The checklist (TS-001 §6)
 
@@ -29,10 +29,10 @@ given `contents: write` and a secret, `watch.yml`'s checkout pointed at `inputs.
 | The reusable workflow requests no App tokens | `ReusableTestWorkflowRequestsNoAppToken`: `run-integration-tests.yml`, the test-runner action and the sandbox upload steps | No `create-github-app-token`, `access_tokens`, `app-id`, `private-key` or Main Watcher key name |
 | `watch.yml` runs no target code | `WatchRunsNoTargetCode` | Both checkouts take the watcher at its own commit, with no `repository` or `ref`, and `persist-credentials: false`. No job calls another workflow |
 | Third-party actions pinned by SHA | `ThirdPartyActionsArePinnedBySha`, across workflows, templates, composite actions, the sample target and `upload-switches.yml`; `OnlyThisRepoMayUseATag` for the rule itself | Every `actions/*` and `ctrf-io/*` reference is a 40-character SHA. Only this repo's own actions and workflow (and their public sandbox copy) use a tag |
-| Worker Secret RBAC restricted | `WorkerSecretHasRestrictedAccess` (manifests); the script (live cluster) | The manifests define no Role, binding or ServiceAccount. The pod runs as `default` with `automountServiceAccountToken: false`, and mounts `trigger-worker-keys` with mode `0440`. The live check, listing who can `get` the Secret, is in the script |
+| Worker Secret RBAC restricted | `WorkerSecretHasRestrictedAccess` (manifests); the script (live cluster) | The manifests define no Role, binding or ServiceAccount. The pod runs as `default` with `automountServiceAccountToken: false`, and mounts `trigger-worker-keys` with mode `0440`. The live check, who can `get`, `list` or `watch` Secrets in the namespace, is in the script |
 | No inbound Service or Ingress | `WorkerHasNoInboundServiceOrIngress` (manifests); the script (live namespace) | No Service, Ingress, Gateway API route, `hostPort`, `hostNetwork` or `nodePort`, including inside the kustomize patch text |
 | `report` job secret-free and read-only | `ReportJobIsSecretFreeAndReadOnly` | Permissions exactly `actions: read`, `contents: read`. No `secrets:` and no `secrets` in any expression. Its token is the job's own `github.token` |
-| `main-watcher` and `mw-observer` on selected repositories only (R-11) | The script | `mw-observer` is on exactly the watcher and `sample-target` (second run), after `sample-target-slow` was removed. `mw-doorbell` is on the watcher only. `main-watcher` is not checked by the script, because its key is not available outside `watch.yml` |
+| `main-watcher` and `mw-observer` on selected repositories only (R-11) | The script | `mw-observer` is on exactly the watcher and `sample-target` (second run), after `sample-target-slow` was removed. `mw-doorbell` is on the watcher only. `main-watcher`: not yet run. The script now starts `app-installations.yml`, which lists the App's installation from the `reporter` environment |
 
 Outside the checklist, one thing turned up. `ci.yml`'s `test` and `lint` jobs check out without
 `persist-credentials: false`. They run on `pull_request` with a `contents: read` token and hold no App key, so
@@ -95,7 +95,14 @@ It then checks:
   or organisation secret;
 - both Apps are installed on selected repositories only, `mw-observer` on exactly the watcher and the
   `targets.yml` targets and `mw-doorbell` on exactly the watcher (R-11);
-- no service account outside the `kube-*` namespaces, and not `system:anonymous`, can `get` the Secret;
+- the `main-watcher` App is installed on selected repositories only, exactly the `targets.yml` targets. The
+  script cannot mint that App's token, so it starts the watcher's `app-installations.yml`, waits for it and reads
+  its artifact. That workflow runs in the `reporter` environment, checks out no code, and asks for a
+  metadata-read token covering the App's whole installation;
+- no service account outside the `kube-*` namespaces, and not `system:anonymous`, can `get` the Secret, or
+  `list` or `watch` Secrets in its namespace, which returns their contents just the same. Only an explicit `no`
+  counts as denied: a query that errors, or a namespace or service account list that cannot be read, fails
+  the row;
 - the running Deployment has `automountServiceAccountToken: false`;
 - the namespace holds no Service or Ingress.
 
@@ -207,13 +214,36 @@ Every other row passed as in the first run:
 - **Kubernetes:** no service account can read the Secret, the pod gets no service account token, and there is no
   Service or Ingress.
 
+## PR #59 review
+
+The review found two gaps in what the second run could show.
+
+- **The Secret check could pass without evidence.** It asked `kubectl auth can-i get` only, and counted any
+  answer but `yes` as a denial, including an impersonation error or an API failure. A namespace or service
+  account list that could not be read was also silently empty. And `list` or `watch` on Secrets gives the same
+  access as `get`, since both return the contents. The script now asks all three verbs of every subject, and
+  fails the row unless every answer is an explicit `no` and every namespace's service accounts were listed. The
+  rewritten section was run against a fake `kubectl` in four cases:
+
+  | Fake `kubectl` | Result |
+  | --- | --- |
+  | Every query answers `no` | PASS, 9 queries |
+  | Every query errors (`impersonation forbidden`) | FAIL, "not every query was answered" |
+  | `list secrets` answers `yes` | FAIL, the three subjects allowed to `list` |
+  | Namespaces cannot be listed | FAIL twice: the discovery row, and the access row, since the subjects are incomplete |
+
+  The old code gave PASS in the second and fourth cases.
+- **`main-watcher`'s installation was not verified.** The script now dispatches `app-installations.yml` in the
+  watcher repo and compares the App's repositories with `targets.yml`, which should list them exactly: the App
+  is installed on targets only (ARCH-001 §8). A run that cannot be started, found, finished or downloaded fails
+  the row.
+
 ## TS-S8 status
 
-**Passed.** `mw-observer` can read but cannot write or dispatch anywhere. `mw-doorbell` can start `watch.yml`
-but cannot touch a target, and no target token can even be minted for it. Every refusal is a 403, beside a
-control call that shows the token works. A target test run found no Main Watcher key and no GitHub token in its
-environment. The TS-001 §6 checklist is enforced by `SecurityChecklistTests` on every PR.
+The second run passed every check it made. It is not yet a full pass, because it asked only `get` and did not
+cover `main-watcher`. What remains:
 
-One thing the script cannot reach: the `main-watcher` App's own installed repositories, because its key exists
-only in the `reporter` environment. Check them by hand against `targets.yml` under the organisation's installed
-GitHub Apps. The same applies at each onboarding and removal (ARCH-001 §10).
+1. Put this tree on the replica's `main` (sandbox/README.md), so that `app-installations.yml` exists there, and
+   set the replica's `targets.yml` back to the sandbox target.
+2. Re-run `sandbox/ts-s8-credential-scope.sh` and record the new rows: `main-watcher installed on selected
+   repositories`, `main-watcher repositories`, `Service accounts listed`, and the get, list and watch row.
