@@ -48,7 +48,9 @@ that had reported a merge, so it had been failing open for the rest of such a lo
 TS-S10 passed on 2026-09-18 (MainWatcher#23) and closed R-10: an App's team @-mention notifies
 the team only where the App holds organisation `Members: read`, through `notify` and through the
 CODEOWNERS fallback alike, so that permission is an install requirement and no Reporter change
-was needed.
+was needed. The check run shows a timing section — suite time, its change from the last green
+run, the 5 slowest tests and the retry flag, converted from CTRF milliseconds by the watcher
+(MainWatcher#22); TS-S13's check-run half passed, so TS-S13 has passed as a whole.
 
 ## Where things are
 
@@ -91,7 +93,7 @@ was needed.
   `sandbox/issue-16-validation.md`, `sandbox/issue-17-validation.md`,
   `sandbox/issue-18-validation.md`, `sandbox/issue-19-validation.md`,
   `sandbox/issue-20-validation.md`, `sandbox/issue-21-validation.md`,
-  `sandbox/issue-23-validation.md` and `sandbox/issue-53-validation.md`.
+  `sandbox/issue-22-validation.md`, `sandbox/issue-23-validation.md` and `sandbox/issue-53-validation.md`.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
@@ -161,10 +163,7 @@ metrics store (PostgreSQL + Grafana) is deferred.
    (MainWatcher#18), TS-S7 with the lock lease (MainWatcher#19), whose reconciliation clause
    passed with TS-S9 and TS-S15 (MainWatcher#20), and TS-S10 with the team mention
    (MainWatcher#23).
-2. TS-S13, check-run half: suite time, 5 slowest tests and retry flag, once the Reporter
-   exists. The job-summary half passed on 2026-09-16 (MainWatcher#8): reporter v1.3.0 shows
-   xUnit v3's millisecond durations in the right units (R-17).
-3. Remaining `[assumption]` tag: worker resource sizing.
+2. Remaining `[assumption]` tag: worker resource sizing.
 
 ## Suggested next steps
 

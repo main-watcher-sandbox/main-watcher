@@ -98,6 +98,15 @@ and validates and merges all JSON report files in `main-watcher-ctrf` (except
 Missing, malformed, oversized or undownloadable reports yield “failing tests
 unknown” but cannot turn a failed test step green or neutral.
 
+On a green or red result the check run also carries a timing section (ADR-011): the suite's
+wall-clock time and its summed per-test time, the change from the last green run, the run's 5
+slowest tests and whether any test was retried. The durations are the CTRF milliseconds,
+converted by the Reporter rather than taken from the reporter action (R-17). The wall-clock
+time is written in a hidden `suite_ms` marker in the check run's output, and the change is read
+from that marker on the newest earlier green check run; a green run with no marker, or check
+runs that cannot be read, leave the change unknown without holding the report back. The section
+comes before the lock details, so the output's length cap never cuts it off.
+
 A dispatch rejected with HTTP 4xx completes its check as neutral, allowing a retry
 after `poll_interval` under the neutral retry rule. A lost response or missing run ID
 leaves the check pending; the next cycle tries to link it without dispatching again.
