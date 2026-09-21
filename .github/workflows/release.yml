@@ -1,0 +1,127 @@
+# Releases what targets and the cluster run (TS-001 §5): the workflow tag, which carries the gate action, the reusable
+# test workflow and the templates that point at them, and the trigger worker image. Each needs the scenario suite
+# (TS-S1–S18) to have passed on the exact commit: its scenario-suite commit status, which only a full, passing run of
+# sandbox/run-scenarios.sh posts. No one overrides this gate. The release-tags ruleset (.github/rulesets/release-tags.json)
+# stops v* tags being moved any other way: only the main-watcher-release App may bypass it, and its key is held by this
+# workflow's release environment. GitHub Actions' own token cannot be a ruleset bypass actor, and the organisation allows
+# no deploy keys, so the tag is moved with that App's token. Setup: docs/release.md.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit on main to release (full SHA)
+        required: true
+      tag:
+        description: Workflow tag to move to it, the one the templates name
+        default: v1
+      workflow_tag:
+        description: Move the workflow tag (gate action, reusable test workflow, templates)
+        type: boolean
+        default: true
+      worker_image:
+        description: Build and push the trigger worker image
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency: release
+
+jobs:
+  # The gate: the commit is on main, and the scenario suite passed on it.
+  suite-passed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be a full 40-character commit SHA"; exit 1; }
+          [[ "$TAG" =~ ^v[0-9]+$ ]] || { echo "::error::tag must be a major version tag such as v1"; exit 1; }
+          # On main: the commit is main itself or behind it.
+          status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$SHA...main" --jq .status)"
+          case "$status" in identical|ahead) ;; *) echo "::error::$SHA is not on main (compare: $status)"; exit 1 ;; esac
+          # The newest scenario-suite status is the one that counts: a later failing run withdraws an earlier pass.
+          state="$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/statuses?per_page=100" \
+            --jq '[.[] | select(.context == "scenario-suite")][0].state // "missing"')"
+          if [ "$state" != success ]; then
+            echo "::error::The scenario suite has not passed on $SHA (scenario-suite: $state). Run sandbox/run-scenarios.sh on it (TS-001 §5)."
+            exit 1
+          fi
+          description="$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/statuses?per_page=100" \
+            --jq '[.[] | select(.context == "scenario-suite")][0].description')"
+          echo "The scenario suite passed on $SHA: $description" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  workflow-tag:
+    needs: suite-passed
+    if: inputs.workflow_tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release
+    permissions: {}
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      - env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SHA: ${{ inputs.sha }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" > /dev/null 2>&1; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$SHA" -F force=true > /dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" > /dev/null
+          fi
+          echo "Moved $TAG to $SHA." | tee -a "$GITHUB_STEP_SUMMARY"
+
+  worker-image:
+    needs: suite-passed
+    if: inputs.worker_image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      - name: Build the worker image
+        run: docker build --file src/MainWatcher.Worker/Dockerfile --tag main-watcher-worker:release .
+
+      - name: Smoke test
+        run: src/MainWatcher.Worker/smoke-test.sh main-watcher-worker:release
+
+      # Tagged with the commit, which is what the scenario suite tested, and with the workflow tag for convenience.
+      - name: Push to the GitHub container registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/main-watcher-worker"
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          for version in "$SHA" "$TAG"; do
+            docker tag main-watcher-worker:release "$image:$version"
+            docker push "$image:$version"
+          done
+          docker logout ghcr.io
+          echo "Pushed $image:$SHA and :$TAG." | tee -a "$GITHUB_STEP_SUMMARY"

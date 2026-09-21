@@ -56,8 +56,6 @@ public sealed class Preparation(SandboxOrg sandbox, string root, Log log)
         await sandbox.Replica.EnableWatch(ct);
         if (await sandbox.Worker.Replicas(ct) == 0) await sandbox.Worker.Scale(1, ct);
 
-        await CheckInstallations(ct);
-
         log.Info("Closing open alerts and resetting every target.");
         foreach (var alert in await sandbox.Replica.Alerts(ct))
         {
@@ -68,29 +66,14 @@ public sealed class Preparation(SandboxOrg sandbox, string root, Log log)
         await Task.WhenAll(sandbox.Pool.Select(async target =>
         {
             var targetLog = new Log(target.Name, Path.Combine(RunInfo.OutDir, $"{target.Name}.log"));
-            await sandbox.Reset(target, targetLog, ct);
+            try { await sandbox.Reset(target, targetLog, ct); }
+            catch (ScenarioFailure e)
+            {
+                // A target the Apps cannot see is never tested, so its reset waits for a result that never comes.
+                throw new ScenarioFailure($"{target.Repo} could not be reset: {e.Message}. Check that main-watcher and mw-observer " +
+                    "are installed on it (sandbox/README.md, \"The scenario suite\").");
+            }
             targetLog.Info("ready");
         }));
-    }
-
-    /// <summary>
-    /// Every pool target must be in both Apps' installations, or the watcher cannot test it and the worker cannot see it.
-    /// Installing is a person's job (sandbox/README.md), so this only reports what is missing.
-    /// </summary>
-    async Task CheckInstallations(CancellationToken ct)
-    {
-        var installations = (await sandbox.GitHub.Get($"orgs/{SandboxOrg.Org}/installations", ct))!["installations"]!.AsArray();
-        foreach (var slug in new[] { SandboxOrg.MainWatcherApp, "mw-observer" })
-        {
-            var installation = installations.FirstOrDefault(i => i!["app_slug"]!.GetValue<string>() == slug)
-                ?? throw new InvalidOperationException($"{slug} is not installed on {SandboxOrg.Org}.");
-            var id = installation["id"]!.GetValue<long>();
-            var repos = (await sandbox.GitHub.All($"user/installations/{id}/repositories", ct, "repositories"))
-                .Select(r => r["full_name"]!.GetValue<string>()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var missing = sandbox.Pool.Where(t => !repos.Contains(t.Repo)).Select(t => t.Repo).ToList();
-            if (missing.Count > 0)
-                throw new InvalidOperationException($"{slug} is not installed on {string.Join(", ", missing)}. Add them to its " +
-                    $"installation (https://github.com/organizations/{SandboxOrg.Org}/settings/installations/{id}) and run again.");
-        }
     }
 }
