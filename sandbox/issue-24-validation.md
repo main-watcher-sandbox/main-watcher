@@ -102,8 +102,9 @@ It then checks:
 - no one can `get` the Secret, or `list` or `watch` Secrets in its namespace, which returns their contents just
   the same. "No one" means `system:anonymous`, any signed-in user, and every service account outside the `kube-*`
   namespaces. Each question is a `SubjectAccessReview` made by the person running the script, naming the
-  subject's groups. Only `allowed: false` counts as denied: a review that fails, or a namespace or service account
-  list that cannot be read, fails the row;
+  subject's groups. Only `allowed: false` with no `evaluationError` counts as denied. A denial that carries an
+  evaluation error, a review that fails or returns nothing, or a namespace or service account list that cannot
+  be read, fails the row;
 - the running Deployment has `automountServiceAccountToken: false`;
 - the namespace holds no Service or Ingress.
 
@@ -276,6 +277,33 @@ this time: `app-installations.yml` was already there. **All 35 checks pass.**
 | Installations (R-11) | 6 | All pass: all three Apps on selected repositories only. `mw-observer` on the watcher and `sample-target`, `mw-doorbell` on the watcher, `main-watcher` on `sample-target` (`app-installations.yml` run [35625595801](https://github.com/main-watcher-sandbox/main-watcher/actions/runs/35625595801)) |
 | Where the keys live | 4 | All pass: `MAIN_WATCHER_PRIVATE_KEY` in the `reporter` environment; none in the watcher's repository secrets, the organisation's secrets or `sample-target`'s |
 | Kubernetes | 4 | All pass: 4 subjects listed. 12 access reviews, `get` on the Secret and `list` and `watch` on Secrets for each of `system:anonymous`, any signed-in user and the two `default` service accounts, each answered `allowed: false`. No service account token in the pod, and no Service or Ingress |
+
+## PR #59 follow-up review
+
+The follow-up review, at `41231db`, confirmed the `main-watcher` installation check and the `get`, `list` and
+`watch` coverage. It found one remaining gap. The script read only `status.allowed` from each
+`SubjectAccessReview`, but Kubernetes reports an authorizer that could not evaluate the request in
+`status.evaluationError`, and can do so beside `allowed: false`. Such an answer would have counted as a clean
+denial, when it is really an unanswered question.
+
+The review now returns `allowed|evaluationError`. Only `false` with an empty evaluation error is a denial. A
+`true` is a reader whatever else it carries. Anything else fails the row as unanswered, with the error text.
+`kubectl create --dry-run=client` with that jsonpath printed `false|`, `false|webhook: connection refused` and
+`true|` for the three status shapes, the forms the check matches. A fake `kubectl` confirmed each case:
+
+| Fake answer | Result |
+| --- | --- |
+| `false\|` for all 12 | PASS |
+| `false\|webhook authorizer: connection refused` | FAIL, "evaluation error: webhook authorizer: connection refused" |
+| `true\|one authorizer failed` | FAIL, each subject listed as allowed |
+| The review command fails | FAIL, its error |
+| An empty answer | FAIL, "no answer" |
+| `list` answers `true\|` | FAIL, the subjects allowed to `list` |
+| Namespaces cannot be listed | FAIL twice: discovery, and the incomplete subject list |
+
+The fourth run's 12 answers were `false` as read then. The error handling did not change what a clean denial
+looks like, so that run's pass stands. A fifth run would show the evaluation error field empty on the live cluster
+too.
 
 ## TS-S8 status
 

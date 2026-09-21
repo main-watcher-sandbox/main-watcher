@@ -225,13 +225,15 @@ section "The worker's Secret and network (Kubernetes)"
 # SubjectAccessReview made by the person running this script, not `kubectl auth can-i --as`: can-i asks as the
 # impersonated subject, and system:anonymous is not allowed to ask, so it can only ever answer with an error (third
 # TS-S8 run, #24). A review names the subject's groups itself, since nothing is impersonated to add them. Only
-# "allowed": false counts as denied: a review that fails, or a namespace or service account list that cannot be
-# read, fails the row.
-access_review() { # user, verb, resource name ("" for every Secret in the namespace), groups... -> true or false
+# "allowed": false with no evaluationError counts as denied. An authorizer that could not evaluate the request
+# reports it in evaluationError, beside allowed: false, so a denial that carries one is an unanswered question, not
+# a no (PR #59 review). That, a review that fails, or a namespace or service account list that cannot be read,
+# fails the row.
+access_review() { # user, verb, resource name ("" for every Secret in the namespace), groups... -> allowed|evaluationError
   local user="$1" verb="$2" name="$3" groups
   shift 3
   groups="$(printf '"%s",' "$@")"
-  kubectl create -o 'jsonpath={.status.allowed}' -f - << REVIEW
+  kubectl create -o 'jsonpath={.status.allowed}{"|"}{.status.evaluationError}' -f - << REVIEW
 {"apiVersion": "authorization.k8s.io/v1", "kind": "SubjectAccessReview",
  "spec": {"user": "$user", "groups": [${groups%,}],
           "resourceAttributes": {"namespace": "$namespace", "verb": "$verb", "resource": "secrets", "name": "$name"}}}
@@ -270,9 +272,10 @@ for entry in "${subjects[@]}"; do
     read -r verb name <<< "$query"
     answer="$(access_review "$subject" "$verb" "${name:-}" "${groups[@]}" 2> "$work/err" || true)"
     case "$answer" in
-      false) ;;
-      true) readers+=("$subject ($verb)") ;;
-      *) errors+=("$subject ($verb): ${answer:-$(head -1 "$work/err")}") ;;
+      "false|") ;;
+      true\|*) readers+=("$subject ($verb)") ;;
+      false\|?*) errors+=("$subject ($verb): evaluation error: ${answer#false|}") ;;
+      *) errors+=("$subject ($verb): ${answer:-$(grep -m1 . "$work/err" || echo no answer)}") ;;
     esac
   done
 done
