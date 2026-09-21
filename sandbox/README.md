@@ -17,12 +17,15 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-19-validation.md` | TS-S7: merges through a watcher outage with and without a lock, the "LOCK LEASE EXPIRED" gate, and the renewal, lapse record, comment and alert on recovery, for #19 |
 | `issue-20-validation.md` | TS-S9 and TS-S15: a gate failing open on a 401 and on an expired lease, unlabelled merges, a human close before recovery, and the reports the next cycle made, for #20 |
 | `issue-21-validation.md` | TS-S17: groups queued before a lock re-checked by the queue sweep, a gate still running, a crash right after a lease renewal, and the merge nothing could stop, for #21 |
+| `issue-22-validation.md` | TS-S13, check-run half: suite time, the change from the last green run, the 5 slowest tests and the retry flag, against the CTRF artifact, for #22 |
 | `issue-23-validation.md` | TS-S10: whether an App's team @-mention notifies, the organisation `Members: read` it needs, and the CODEOWNERS fallback, for #23 |
+| `issue-24-validation.md` | The TS-001 §6 checklist as tests, a target test run that inspects its own environment for Main Watcher keys, and how to run TS-S8, for #24 |
 | `issue-53-validation.md` | The replica's CI green on its own sandbox target list, once `CommittedTargetListParses` scoped its sandbox-target clause to this repo, for #53 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
 | `upload-switches.yml` | The `fail_upload`, `hang_upload` and `hang_upload_forever` steps that `publish-public.sh` inserts into the sandbox build of the test workflow |
+| `ts-s8-credential-scope.sh` | TS-S8: proves `mw-observer` and `mw-doorbell` are refused (403) outside their scope, and checks where the keys live, each App's installed repositories (R-11), who can read the worker's Secret and that nothing exposes the worker inbound |
 | `seed-target.sh` | Pushes the template and the gate and test workflows to a sandbox repo, creates the `main-broken` and `fixes-main` labels, and applies the ruleset. Re-run it to reset a repo |
 
 Seed or reset both targets (needs `gh` logged in as a sandbox org admin):

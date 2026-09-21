@@ -16,6 +16,7 @@ public sealed record SandboxSwitches
     [JsonPropertyName("slow_suite_minutes")] public double SlowSuiteMinutes { get; init; }
     [JsonPropertyName("hang_test")] public bool HangTest { get; init; }
     [JsonPropertyName("flaky_test")] public bool FlakyTest { get; init; }
+    [JsonPropertyName("inspect_environment")] public bool InspectEnvironment { get; init; }
 
     // Read by MSBuild (Directory.Build.props), not by tests.
     [JsonPropertyName("fail_restore")] public bool FailRestore { get; init; }
@@ -30,13 +31,16 @@ public sealed record SandboxSwitches
 
     public static SandboxSwitches Current { get; } = Load();
 
+    /// <summary>Where <c>sandbox.json</c> was found: the repo root.</summary>
+    public static string FilePath => Find(AppContext.BaseDirectory)
+        ?? throw new FileNotFoundException($"{FileName} not found above {AppContext.BaseDirectory}");
+
     public bool ShouldFail(string testName) =>
         FailingTests.Contains("*") || FailingTests.Contains(testName, StringComparer.OrdinalIgnoreCase);
 
     private static SandboxSwitches Load()
     {
-        var path = Find(AppContext.BaseDirectory)
-            ?? throw new FileNotFoundException($"{FileName} not found above {AppContext.BaseDirectory}");
+        var path = FilePath;
 
         return JsonSerializer.Deserialize<SandboxSwitches>(
                    File.ReadAllText(path),
