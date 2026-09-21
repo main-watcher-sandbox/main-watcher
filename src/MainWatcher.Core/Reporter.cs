@@ -165,6 +165,13 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     }
 
     /// <summary>
+    /// The locks <see cref="NoteOverrides"/> saw closed, whose closure it has therefore judged. Reconciliation completes only
+    /// these (<see cref="Planner.Reconcile"/>): a lock closed by hand later in the same cycle was reconciled and marked
+    /// complete, so no cycle was asked for and its override comment waited for an unrelated one (scenario suite, #25).
+    /// </summary>
+    public IReadOnlySet<int>? ClosedSeen { get; private set; }
+
+    /// <summary>
     /// Posts the ADR-004 comment, naming who closed it, on each App lock closed by someone other than the App and updated
     /// within <see cref="ReconcileLookback"/>, unless it already has one. A lock the App had started to close, after a green run
     /// or as a duplicate, still gets it, worded for that case. Returns the number of comments posted.
@@ -173,8 +180,13 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     {
         var repo = target.Repo;
         var posted = 0;
-        foreach (var issue in (await github.Issues(repo, LockLabel, Now - ReconcileLookback, ct))
-            .Where(i => IsApp(i) && i.State == "closed").OrderBy(i => i.Number))
+        var closed = (await github.Issues(repo, LockLabel, Now - ReconcileLookback, ct))
+            .Where(i => IsApp(i) && i.State == "closed").OrderBy(i => i.Number).ToArray();
+        ClosedSeen = closed.Select(i => i.Number).ToHashSet();
+        // A lock marked reconciled=complete has had its closure judged already: reconciliation completes only a lock this
+        // step had seen closed. Skipping it spares two calls per closed lock in the lookback on every cycle, which, with a
+        // few dozen closed locks, was most of a sandbox cycle's API use (#25, R-13).
+        foreach (var issue in closed.Where(i => !Reconciliation.IsComplete(i.Body)))
         {
             var closing = (await github.Comments(repo, issue.Number, null, ct)).Where(IsApp).Select(c => c.Body).ToArray();
             if (closing.Any(c => Field(c, "closed") == "override")) continue;

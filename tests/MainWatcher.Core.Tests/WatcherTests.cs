@@ -1996,6 +1996,35 @@ public class WatcherTests
         Assert.Equal(0, await reporter.NoteOverrides(Watched, ct));
     }
 
+    // A lock closed by hand between a cycle's override check and its reconciliation was marked complete, so the worker saw no
+    // work and the override comment waited for an unrelated cycle (TS-S14 in the scenario suite, #25).
+    [Fact]
+    public async Task ALockClosedDuringACycleIsCompletedOnlyOnceItsOverrideIsNoted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        SeedWindow(fake, 60);
+        var watcher = new FakeGitHub();
+        var reporter = new Reporter(fake, clock: () => Now);
+        Assert.Equal(0, await reporter.NoteOverrides(Locked, ct));
+        fake.CloseByHand("owner/repo", 1, "alice", Now);
+        await Reconciler(fake, watcher).Reconcile(Locked, ct, reporter.ClosedSeen);
+        Assert.Null(Markers.Field(fake.Find("owner/repo", 1).Body, Reconciliation.Complete));
+        Assert.Empty(fake.Comments);
+
+        // Still unreconciled, so the worker asks for another cycle, which notes the override and then completes the lock.
+        var next = new Reporter(fake, clock: () => Now);
+        Assert.Equal(1, await next.NoteOverrides(Locked, ct));
+        await Reconciler(fake, watcher).Reconcile(Locked, ct, next.ClosedSeen);
+        Assert.Equal(Reconciliation.CompleteValue, Markers.Field(fake.Find("owner/repo", 1).Body, Reconciliation.Complete));
+        Assert.StartsWith("`alice` closed this lock by hand", Assert.Single(fake.Comments));
+
+        // Once complete, the closure is never judged again: its closer is not asked for.
+        var closedByReads = fake.ClosedByReads;
+        Assert.Equal(0, await new Reporter(fake, clock: () => Now).NoteOverrides(Locked, ct));
+        Assert.Equal(closedByReads, fake.ClosedByReads);
+    }
+
     [Fact]
     public async Task AReplayOfAnInterruptedCreateStillRaisesTheNobodyMentionedAlert()
     {
