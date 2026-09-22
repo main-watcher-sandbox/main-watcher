@@ -1,6 +1,6 @@
 ---
 owner: platform-team
-reviewed: 2026-09-21
+reviewed: 2026-09-22
 review_by: 2027-03-15
 ---
 
@@ -614,6 +614,32 @@ lock, the check run or the testing the cycle does; the cycle logs it and exits n
 neutral-result alert leaves the check run `in_progress` for a replay, a failed "lock lease
 lapsed" alert leaves `lapse_reported` unwritten, and a failed "Merged while locked" alert leaves
 `last_reconciled` where it was, so a later cycle raises each of them.
+
+### API budget
+
+Every target's cycles share the `main-watcher` App installation's 5000 requests an hour (R-13).
+Each cycle ends by logging its requests by endpoint and the lowest budget GitHub reported to it:
+"API budget of this installation: N of M requests left, refilled at HH:MM:SSZ". Then, whether
+the cycle worked or not:
+
+- if GitHub refused any request on its rate limit, primary or secondary (a 429, or a 403 with
+  no budget left, a `retry-after`, or a message naming a rate limit), it raises "The
+  main-watcher App's API rate limit is refusing cycles", quoting the refusal;
+- otherwise, if less than 20% of the budget was left, it raises "The main-watcher App's API
+  budget is below 20%".
+
+Each carries a key naming the minute the budget refills. Cycles for different targets, and a
+sweep's legs, raise it at the same moment, and each checks before it writes, so the window is
+claimed before it is written: the cycle creates a label named `mw-claim-<digest>` in the watcher
+repository, where the digest is of the alert's title and that key and nothing else, and only the
+cycle GitHub lets create it writes. A label name is unique in a repository, so however many
+cycles see the same shortage, whenever each of them runs, one alert is written and one
+notification sent. A claim whose write then fails is deleted again, so the next cycle raises the
+alert; the label's description says when it was claimed, and claims older than a day are deleted
+by the next winner. The alerts use the
+workflow token, whose budget is separate, so they can be written once the App's is spent. A
+failed one is logged and fails the run. The measured cost of each kind of cycle is in the
+[issue #60 validation record](../sandbox/issue-60-validation.md).
 
 ## Validation
 
