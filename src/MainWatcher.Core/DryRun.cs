@@ -47,16 +47,59 @@ public sealed class DryRun(IGitHubGateway github, Func<DateTimeOffset>? clock = 
     readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
     readonly Func<TimeSpan, CancellationToken, Task> wait = delay ?? Task.Delay;
 
-    public async Task<DryRunReport> Run(Target target, CancellationToken ct)
+    /// <summary>
+    /// Checks a target's setup end to end. <paramref name="existingRun"/> judges a target run that already exists instead of
+    /// dispatching one: the same checks, with fresh credentials, for a suite that outlasted an earlier dry run's token. It is
+    /// how a target whose tests take longer than <see cref="TokenWindow"/> still gets its CTRF validated, and it starts no
+    /// second test.
+    /// </summary>
+    public async Task<DryRunReport> Run(Target target, long? existingRun, CancellationToken ct)
     {
         var repo = target.Repo;
         var head = "";
-        var runId = 0L;
+        var runId = existingRun ?? 0L;
         var callerPath = $".github/workflows/{GitHubGateway.Workflow}";
         var gatePath = $".github/workflows/{GitHubGateway.GateWorkflow}";
         var allowed = TimeSpan.FromMinutes(target.Timeout) + RunMargin;
         // From the start of the dry run, because the token was minted before that and every check spends some of the hour.
         var tokenExpiry = now() + TokenWindow;
+
+        // Either one test is dispatched, or the run given is adopted. A resumed dry run makes every other check again, so its
+        // report stands on its own rather than being read beside the one that ran out of token.
+        Func<CancellationToken, Task<(bool Passed, string Detail)>> testRun = existingRun is { } given
+            // Nothing verifies here that the run is a `main-watcher-tests` run: the two checks that follow do it properly,
+            // by the contract's own names, and an unrelated run fails them with exactly that complaint.
+            ? _ => Task.FromResult((true, $"Judging run {given} of `{repo}`, which was given rather than dispatched. "
+                + "No second test was started."))
+            : async token =>
+            {
+                head = await github.MainHead(repo, token);
+                // Two seconds of slack, as the Planner's own lookup allows, for clocks that disagree about when this happened.
+                var since = now() - TimeSpan.FromSeconds(2);
+                await github.DispatchWorkflow(repo, GitHubGateway.Workflow,
+                    new Dictionary<string, string> { ["sha"] = head, ["check_run_id"] = "" }, token);
+                // No run ID comes back: return_run_details belongs to the Planner's dispatch, which has a check run to record
+                // it in. The caller's run-name carries the tested commit, so the run is found as recovery finds one (R-14).
+                var deadline = now() + DispatchWindow;
+                while (true)
+                {
+                    var matches = (await github.Runs(repo, GitHubGateway.Workflow, since, token))
+                        .Where(r => r.Title == Planner.RunName(head) && r.CreatedAt >= since).ToArray();
+                    if (matches.Length == 1)
+                    {
+                        runId = matches[0].Id;
+                        return (true, $"`{GitHubGateway.Workflow}` dispatched for `{head}`: run {runId}.");
+                    }
+                    if (matches.Length > 1)
+                        return (false, $"{matches.Length} runs of `{GitHubGateway.Workflow}` name `{head}`. Let the other runs "
+                            + "of that commit finish, then dry-run again.");
+                    if (now() >= deadline)
+                        return (false, $"No run of `{GitHubGateway.Workflow}` named `{head}` appeared within "
+                            + $"{DispatchWindow.TotalMinutes:0} minutes. Check that the caller is on `main`, that its "
+                            + $"`run-name` is the template's, and that Actions is enabled in `{repo}`.");
+                    await wait(Poll, token);
+                }
+            };
 
         // The entry, then the two files it names, then one real test. Each check is what the next one needs, so the first
         // failure ends the run: there is nothing useful to say about a test that was never dispatched.
@@ -85,35 +128,7 @@ public sealed class DryRun(IGitHubGateway github, Func<DateTimeOffset>? clock = 
                     + "from here; TS-S5 confirms that.")
             }),
 
-            ("Test run", async token =>
-            {
-                head = await github.MainHead(repo, token);
-                // Two seconds of slack, as the Planner's own lookup allows, for clocks that disagree about when this happened.
-                var since = now() - TimeSpan.FromSeconds(2);
-                await github.DispatchWorkflow(repo, GitHubGateway.Workflow,
-                    new Dictionary<string, string> { ["sha"] = head, ["check_run_id"] = "" }, token);
-                // No run ID comes back: return_run_details belongs to the Planner's dispatch, which has a check run to record
-                // it in. The caller's run-name carries the tested commit, so the run is found as recovery finds one (R-14).
-                var deadline = now() + DispatchWindow;
-                while (true)
-                {
-                    var matches = (await github.Runs(repo, GitHubGateway.Workflow, since, token))
-                        .Where(r => r.Title == Planner.RunName(head) && r.CreatedAt >= since).ToArray();
-                    if (matches.Length == 1)
-                    {
-                        runId = matches[0].Id;
-                        return (true, $"`{GitHubGateway.Workflow}` dispatched for `{head}`: run {runId}.");
-                    }
-                    if (matches.Length > 1)
-                        return (false, $"{matches.Length} runs of `{GitHubGateway.Workflow}` name `{head}`. Let the other runs "
-                            + "of that commit finish, then dry-run again.");
-                    if (now() >= deadline)
-                        return (false, $"No run of `{GitHubGateway.Workflow}` named `{head}` appeared within "
-                            + $"{DispatchWindow.TotalMinutes:0} minutes. Check that the caller is on `main`, that its "
-                            + $"`run-name` is the template's, and that Actions is enabled in `{repo}`.");
-                    await wait(Poll, token);
-                }
-            }),
+            ("Test run", testRun),
 
             // The ADR-013 outcome table, read from the steps the Reporter reads, as soon as the main-watcher job has completed:
             // the separate report job is not part of the contract and is not waited for.
@@ -140,12 +155,13 @@ public sealed class DryRun(IGitHubGateway github, Func<DateTimeOffset>? clock = 
                         };
                     if (now() >= deadline)
                         return (false, deadline == tokenExpiry
-                            // Nothing is known to be wrong: the dry run simply cannot outlast its own token. The run is still
-                            // going, and is worth reading rather than re-dispatching.
+                            // Nothing is known to be wrong: the dry run simply cannot outlast its own token. So it says how to
+                            // finish the job — the same checks against this same run, with a token minted fresh, and no second
+                            // test. That is what makes a suite slower than the window testable at all.
                             ? $"Run {runId} was still going after {TokenWindow.TotalMinutes:0} minutes, which is as long as "
-                                + "this dry run's App token lasts. Read the run itself: if its `main-watcher` job passes and "
-                                + "uploads `main-watcher-ctrf`, the setup is sound. A suite this slow also costs the watcher "
-                                + $"detection time (A-2), so {target.Timeout} minutes of `timeout` may be worth revisiting."
+                                + "this dry run's App token lasts. Nothing is known to be wrong. Once the run has finished, "
+                                + "judge it and validate its CTRF with a fresh token, starting no new test:\n\n"
+                                + $"    gh workflow run dry-run.yml -f target={repo} -f run_id={runId}"
                             : $"The `main-watcher` job of run {runId} had not completed {allowed.TotalMinutes:0} minutes "
                                 + $"after the dispatch. Raise `timeout` if the suite needs longer than {target.Timeout} "
                                 + "minutes, in the entry and in the caller together.");

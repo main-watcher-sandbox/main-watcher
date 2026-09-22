@@ -2606,12 +2606,12 @@ public class WatcherTests
     const string GatePath = "owner/repo:.github/workflows/main-watcher-gate.yml";
     const string GateBody = "jobs:\n  gate:\n    steps:\n      - uses: Actium-Group-Corporation/MainWatcher/.github/actions/gate@v1\n";
 
-    static async Task<DryRunReport> Dry(FakeGitHub fake, Target? target = null)
+    static async Task<DryRunReport> Dry(FakeGitHub fake, Target? target = null, long? existingRun = null)
     {
         // The wait advances the clock, so a check that polls to its deadline reaches it in the test rather than spinning.
         var clock = Now;
         return await new DryRun(fake, () => clock, (d, _) => { clock += d; return Task.CompletedTask; })
-            .Run(target ?? new Target { Repo = "owner/repo" }, TestContext.Current.CancellationToken);
+            .Run(target ?? new Target { Repo = "owner/repo" }, existingRun, TestContext.Current.CancellationToken);
     }
 
     /// <summary>A target set up correctly, whose suite passes.</summary>
@@ -2764,8 +2764,43 @@ public class WatcherTests
         Assert.Equal("Test outcome", report.Steps[^1].Name);
         Assert.Contains("still going after 50 minutes", report.Steps[^1].Detail);
         Assert.Contains("App token", report.Steps[^1].Detail);
-        // Nothing is known to be wrong, so it says where to look rather than blaming the target's timeout.
+        // Nothing is known to be wrong, so it says how to finish rather than blaming the target's timeout.
         Assert.DoesNotContain("had not completed", report.Steps[^1].Detail);
+        Assert.Contains("-f run_id=77", report.Steps[^1].Detail);
+    }
+
+    [Fact]
+    public async Task DryRunResumesAGivenRunWithoutStartingASecondTest()
+    {
+        // What makes a suite slower than the token window testable at all: the same checks against the run that is already
+        // going, with the credentials of a later, bounded invocation.
+        var fake = GreenTarget();
+        var report = await Dry(fake, existingRun: 4242);
+
+        Assert.True(report.Passed);
+        // Every check again, so the resumed report stands on its own.
+        Assert.Equal(["Target entry", "Test caller", "Gate workflow", "Test run", "Test outcome", "CTRF reports"],
+            report.Steps.Select(s => s.Name));
+        Assert.Contains("Judging run 4242", report.Steps[3].Detail);
+        Assert.Contains("No second test was started", report.Steps[3].Detail);
+        Assert.Contains("Run 4242: the tests passed", report.Steps[4].Detail);
+        Assert.Contains("validates against the CTRF schema", report.Steps[5].Detail);
+        // The point of resuming: nothing is dispatched, and the target's head is never even read.
+        Assert.Empty(fake.Writes);
+    }
+
+    [Fact]
+    public async Task DryRunResumingAnUnrelatedRunSaysSoRatherThanPassing()
+    {
+        // A run ID is typed by hand, so the mistake to catch is judging something that is not a Main Watcher test run. The
+        // contract's own names do it: no `main-watcher` job means no outcome, whatever the run was.
+        var fake = new FakeGitHub { JobList = [new("some-other-job", "completed", [])] };
+        fake.Files[GatePath] = GateBody;
+        var report = await Dry(fake, existingRun: 4242);
+
+        Assert.False(report.Passed);
+        Assert.Equal("Test outcome", report.Steps[^1].Name);
+        Assert.Contains("no `main-watcher` job", report.Steps[^1].Detail);
     }
 
     [Fact]

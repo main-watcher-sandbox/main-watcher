@@ -76,9 +76,15 @@ async Task<int> Cycle()
             using var dryHttp = Client(Required("GH_TOKEN"));
             var dryGithub = new GitHubGateway(dryHttp, long.Parse(Required("MW_APP_ID")), log: Console.WriteLine);
             budget = dryGithub;
+            // MW_DRY_RUN_ID judges a target run that already exists, with this run's fresh token and no new test: how a suite
+            // that outlasted an earlier dry run's token still gets its CTRF validated.
+            var existing = Environment.GetEnvironmentVariable("MW_DRY_RUN_ID") is { Length: > 0 } id
+                ? long.TryParse(id, out var parsed) && parsed > 0 ? parsed
+                    : throw new ArgumentException($"MW_DRY_RUN_ID must be a target run's ID; got \"{id}\".")
+                : (long?)null;
             // The dry run stops itself within the hour its App token lasts, so this only catches a wait that is not waiting.
             using var dryTimeout = new CancellationTokenSource(DryRun.TokenWindow + TimeSpan.FromMinutes(5));
-            var report = await new DryRun(dryGithub, log: Console.WriteLine).Run(target, dryTimeout.Token);
+            var report = await new DryRun(dryGithub, log: Console.WriteLine).Run(target, existing, dryTimeout.Token);
             Summarise(target.Repo, report);
             Console.WriteLine(report.Passed
                 ? $"Dry run of {target.Repo} passed. Next: make the gate a required merge-queue check, run TS-S5 once, then set enabled: true."

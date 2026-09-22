@@ -140,8 +140,18 @@ It checks, in order, stopping at the first failure:
 The run's job summary lists every check with its detail. A dry run waits for the target's `timeout` plus 30
 minutes, or 50 minutes, whichever comes first — its App token lasts an hour and it cannot renew one — asking
 GitHub once every 30 seconds while it waits. So it costs tens of requests of the installation's hourly budget,
-worth knowing if you are dry-running several repositories in one afternoon (R-13). A suite slower than that is
-not a failure: the dry run says so and names the run to read the rest from.
+worth knowing if you are dry-running several repositories in one afternoon (R-13).
+
+**A suite slower than that window is not a failure, and needs no second test.** The dry run stops at the token,
+says nothing is known to be wrong, and gives you the command to finish the job once the run has ended:
+
+```bash
+gh workflow run dry-run.yml -f target=acme/checkout -f run_id=1234567890
+```
+
+That makes every check again — including the outcome and the CTRF schema validation, which are the two the first
+attempt could not reach — against the run that was already going, with a freshly minted token. It dispatches
+nothing. Repeat it if the run is still going.
 
 **A red suite still passes the dry run.** The contract is what is being tested, and a failing test proves more of
 it than a passing one; the outcome line says so, and says that a real cycle would open the lock for that commit.

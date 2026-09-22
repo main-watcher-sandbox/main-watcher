@@ -3,7 +3,7 @@
 # (ADR-007). It creates no check run, so nothing it does can open a lock: a target being onboarded is tested
 # without being watched.
 name: dry-run
-run-name: dry run ${{ inputs.target }}
+run-name: dry run ${{ inputs.target }}${{ inputs.run_id && format(' (run {0})', inputs.run_id) || '' }}
 on:
   workflow_dispatch:
     inputs:
@@ -11,6 +11,11 @@ on:
         description: Configured owner/repo in targets.yml; it may still be enabled:false
         required: true
         type: string
+      run_id:
+        description: Judge this target run instead of dispatching one, for a suite that outlasted an earlier dry run
+        required: false
+        type: string
+        default: ""
 permissions:
   contents: read
 jobs:
@@ -55,4 +60,6 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           MW_APP_ID: ${{ vars.MAIN_WATCHER_APP_ID }}
           MW_TARGET: ${{ inputs.target }}
+          # Empty dispatches a test; a run ID judges that run with this job's own fresh token and starts none.
+          MW_DRY_RUN_ID: ${{ inputs.run_id }}
         run: dotnet src/MainWatcher.Watcher/bin/Release/net10.0/MainWatcher.Watcher.dll --dry-run

@@ -162,9 +162,20 @@ the lock for that commit.
 It waits for the target's `timeout` plus 30 minutes, or 50 minutes, whichever is sooner. The App
 token the workflow mints lasts an hour and the dry run cannot renew one — the key stays in the
 `reporter` environment, where only the token action reads it — so waiting past the hour would fail
-authentication part-way through judging and report that instead of the setup. Stopping on the
-token rather than on the target's timeout is reported as what it is: nothing is known to be wrong,
-and the run itself is named to read the rest from.
+authentication part-way through judging and report that instead of the setup.
+
+A suite that outlasts the window is finished by **resuming**, which is what keeps a slow target
+testable rather than merely safe:
+
+```sh
+gh workflow run dry-run.yml -f target=owner/repo -f run_id=<the target run>
+```
+
+`run_id` (`MW_DRY_RUN_ID`) judges that run instead of dispatching one, so a later, separately
+authenticated job makes the outcome and CTRF checks the first could not reach, and starts no second
+test. A resumed dry run makes every other check again too, so its report stands on its own. Nothing
+verifies that the run given is a `main-watcher-tests` run: the outcome and artifact checks do that
+by the contract's own names, and an unrelated run fails them saying exactly that.
 
 ## Backup sweep
 
