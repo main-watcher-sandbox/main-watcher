@@ -226,8 +226,10 @@ It then configures the sandbox for the run:
 
 With `--no-deploy` it skips the first part and tests whatever the sandbox already runs.
 
-A full run takes about 1 h 45 min. The longest unit, TS-S16 (h)'s unstoppable run, starts first and sets that time: from
-its run deadline through the refused cancel and force-cancel to the alert is about 90 min of GitHub time.
+A full run takes about 2 h 15 min on six targets; one on ten took 100 minutes. The longest unit, TS-S16 (h)'s unstoppable
+run, starts first: from its run deadline through the refused cancel and force-cancel to the alert is about 90 min of
+GitHub time. A full run does not yet fit the `main-watcher` installation's API budget, below, so none has passed yet
+(#60).
 
 **The pool.** Scenarios run side by side, each on a target of its own. Ten targets are set up: `sample-target` and
 `sample-target-2` to `sample-target-10`. A pool target needs three things:

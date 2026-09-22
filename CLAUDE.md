@@ -59,7 +59,18 @@ but the Secret check. That check showed `kubectl auth can-i --as=system:anonymou
 now uses `SubjectAccessReview`s. TS-S8 passed on the fourth run, all 35 checks, and again on a fifth run that also rejects a denial carrying an `evaluationError`. The first run found `mw-observer` installed on
 `sample-target-slow`, which is not a target (R-11); that App was removed from it. The first run also showed that,
 on a public repo, GitHub validates a new issue's body before it checks permission, so issue writes are probed with
-an empty update instead.
+an empty update instead. The scenario suite now runs TS-S1 to TS-S18 from one entry point, `sandbox/run-scenarios.sh`, on a
+pool of sandbox targets (MainWatcher#25). A full pass posts the `scenario-suite` commit status, and `release.yml` releases
+the workflow tag or the worker image only for a commit on `main` that has it (`docs/release.md`). Every unit has passed,
+but no full run has yet: the suite needs about twice the sandbox `main-watcher` installation's 5000 API requests an hour,
+and cutting the watcher's API cost is MainWatcher#60. Its eight runs found two Main Watcher faults, both fixed:
+- two alerts with the same title raised 2 s apart opened two issues, because the issue list lags;
+- a lock closed by hand during a cycle was marked reconciled before its override was noted, so the override comment
+  waited for an unrelated cycle.
+
+The override check also no longer re-reads every closed lock on each cycle. Each `watch.yml` cycle now logs its request
+count and what its installation's budget has left. The sandbox watcher replica is public, since the Free plan's Actions
+minutes are for private repos only.
 
 ## Where things are
 
@@ -102,7 +113,10 @@ an empty update instead.
   `sandbox/issue-16-validation.md`, `sandbox/issue-17-validation.md`,
   `sandbox/issue-18-validation.md`, `sandbox/issue-19-validation.md`,
   `sandbox/issue-20-validation.md`, `sandbox/issue-21-validation.md`,
-  `sandbox/issue-22-validation.md`, `sandbox/issue-23-validation.md`, `sandbox/issue-24-validation.md` and `sandbox/issue-53-validation.md`.
+  `sandbox/issue-22-validation.md`, `sandbox/issue-23-validation.md`, `sandbox/issue-24-validation.md`,
+  `sandbox/issue-25-validation.md` and `sandbox/issue-53-validation.md`.
+- `sandbox/run-scenarios.sh` runs the scenario suite (`sandbox/scenarios/`, a .NET console app), which a release requires.
+  Read `docs/release.md` for releasing and the release App's one-time setup.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
   `.github/actions/gate`, which builds and runs `src/MainWatcher.Gate`.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
@@ -110,7 +124,8 @@ an empty update instead.
   `src/MainWatcher.TestRunner`.
 - `.github/workflows/` — `ci.yml` (`dotnet test` and actionlint on every PR),
   `sandbox-lock.yml` (hand-made App-authored locks, sandbox org only),
-  `app-installations.yml` (lists `main-watcher`'s installed repositories for TS-S8), and
+  `app-installations.yml` (lists `main-watcher`'s installed repositories for TS-S8), `release.yml` (moves the workflow
+  tag and pushes the worker image, only for a commit with a passing `scenario-suite` status), and
   `run-integration-tests.yml`, the reusable test workflow targets call;
   `watch.yml` runs a Planner/Reporter cycle for one dispatched target, or, on its hourly
   schedule or a dispatch with no target, sweeps every enabled one.

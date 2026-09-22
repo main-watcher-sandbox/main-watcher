@@ -29,6 +29,12 @@ withdraws an earlier pass: `release.yml` reads only the newest `scenario-suite` 
 or a working tree with uncommitted changes posts no `scenario-suite` status, because the sandbox did not run exactly that
 commit's full suite. See [sandbox/README.md](../sandbox/README.md), "The scenario suite".
 
+**Not yet possible (2026-09-22).** No full run has passed. Every unit has passed on its own, but the suite needs about twice
+the sandbox `main-watcher` App installation's 5000 API requests an hour, so part-way through a run the watcher's cycles are
+refused. Until [MainWatcher#60](https://github.com/Actium-Group-Corporation/MainWatcher/issues/60) cuts the watcher's API
+cost, no commit carries `scenario-suite` = `success`, and `release.yml` releases nothing
+([sandbox/issue-25-validation.md](../sandbox/issue-25-validation.md)).
+
 ## Releasing
 
 Run the `release` workflow with the commit's full SHA. Its first job, `suite-passed`, fails unless the commit is on `main`
