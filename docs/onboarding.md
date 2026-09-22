@@ -137,9 +137,11 @@ It checks, in order, stopping at the first failure:
 | Test outcome | That run's `main-watcher` job satisfies the ADR-013 step contract |
 | CTRF reports | The `main-watcher-ctrf` artifact validates against the CTRF schema (ADR-007) |
 
-The run's job summary lists every check with its detail. A dry run waits up to the target's `timeout` plus 30
-minutes, asking GitHub once every 30 seconds while it waits, so it costs tens of requests of the installation's
-hourly budget — worth knowing if you are dry-running several repositories in one afternoon (R-13).
+The run's job summary lists every check with its detail. A dry run waits for the target's `timeout` plus 30
+minutes, or 50 minutes, whichever comes first — its App token lasts an hour and it cannot renew one — asking
+GitHub once every 30 seconds while it waits. So it costs tens of requests of the installation's hourly budget,
+worth knowing if you are dry-running several repositories in one afternoon (R-13). A suite slower than that is
+not a failure: the dry run says so and names the run to read the rest from.
 
 **A red suite still passes the dry run.** The contract is what is being tested, and a failing test proves more of
 it than a passing one; the outcome line says so, and says that a real cycle would open the lock for that commit.
@@ -152,7 +154,7 @@ What the failures mean:
 | Test caller | The file is not on `main` yet, or `test-command` / `results-glob` / `timeout-minutes` differ from the entry, or one of them is an expression rather than a literal |
 | Gate workflow | The gate was not copied, or was edited until it no longer runs the gate action |
 | Test run | Actions is disabled in the target, the caller is not on `main`, or its `run-name` was changed |
-| Test outcome | A neutral result: setup failed before the tests, or they did not finish. The detail lists the job's steps |
+| Test outcome | A neutral result: setup failed before the tests, or they did not finish. The detail lists the job's steps. A completed run with no `main-watcher` job is a renamed job in the caller |
 | CTRF reports | `results_glob` does not match what the suite writes, or the reports are not CTRF |
 
 Fix and dry-run again; it is repeatable and leaves nothing behind.
@@ -171,9 +173,33 @@ sandbox's ruleset, [`sandbox/rulesets/main-merge-queue.json`](../sandbox/ruleset
 worked example. The watcher cannot read a ruleset, so this is the one step nothing here verifies for you — which
 is why the next one exists.
 
-Run **TS-S5** once against this repository (TS-001 §6): with the merge limit at 2, queue a `fixes-main` pull
-request and an unlabelled one together, and confirm the batched group fails the gate. It is what confirms A-5 —
-that the gate can identify every pull request in a merge group — for this repository's queue settings.
+Then run **TS-S5** once against this repository (TS-001 §6). It confirms A-5 — that the gate can identify every
+pull request in a merge group — for this repository's own queue settings, which is the one thing the sandbox
+cannot confirm on its behalf.
+
+**The gate passes every merge group while no lock is open**, so the test needs one first. Open a hand-made,
+App-authored lock with a short lease, from the watcher repository:
+
+```bash
+gh workflow run sandbox-lock.yml -f target=acme/checkout -f action=open -f lease_hours=1
+```
+
+It refuses any repository that is neither a sandbox target nor listed in `targets.yml`. The lease is what bounds
+a lock you forget: after an hour the gate stops enforcing it and merges resume by themselves (ADR-014). Do this
+while the entry is still `enabled: false`, so no cycle is running that could close the lock or reconcile against
+it.
+
+With the lock open and the merge limit at 2, queue a `fixes-main` pull request and an unlabelled one together.
+The batched group must **fail** the gate, and the queue must drop the unlabelled entry. A group that passes means
+the gate could not see both pull requests: stop and raise it, because A-5 does not hold for these queue settings.
+
+Then close the lock, which the App does itself, so nothing is recorded as a human override:
+
+```bash
+gh workflow run sandbox-lock.yml -f target=acme/checkout -f action=close
+```
+
+Confirm the `main-broken` issue is closed and the queue is moving again before step 8.
 
 ## 8. Enable it
 

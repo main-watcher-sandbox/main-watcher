@@ -34,6 +34,13 @@ public sealed class DryRun(IGitHubGateway github, Func<DateTimeOffset>? clock = 
     public static readonly TimeSpan RunMargin = TimeSpan.FromMinutes(30);
     /// <summary>How often GitHub is asked again while waiting. A dry run is rare and manual, but it shares R-13's budget.</summary>
     public static readonly TimeSpan Poll = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// How long the dry run waits in total, whatever the target's <c>timeout</c> would allow. The App token the workflow mints
+    /// lasts an hour, and the dry run cannot renew it: the key stays in the <c>reporter</c> environment, where only the
+    /// token action reads it (ARCH-001 §8). Waiting past the hour would fail authentication part-way through judging the run
+    /// and report that instead of the setup, so the wait stops with ten minutes to spare and says what it was waiting for.
+    /// </summary>
+    public static readonly TimeSpan TokenWindow = TimeSpan.FromMinutes(50);
     /// <summary>What the gate workflow must run, whatever else the target's copy says.</summary>
     public const string GateAction = "/.github/actions/gate@";
 
@@ -48,6 +55,8 @@ public sealed class DryRun(IGitHubGateway github, Func<DateTimeOffset>? clock = 
         var callerPath = $".github/workflows/{GitHubGateway.Workflow}";
         var gatePath = $".github/workflows/{GitHubGateway.GateWorkflow}";
         var allowed = TimeSpan.FromMinutes(target.Timeout) + RunMargin;
+        // From the start of the dry run, because the token was minted before that and every check spends some of the hour.
+        var tokenExpiry = now() + TokenWindow;
 
         // The entry, then the two files it names, then one real test. Each check is what the next one needs, so the first
         // failure ends the run: there is nothing useful to say about a test that was never dispatched.
@@ -110,14 +119,15 @@ public sealed class DryRun(IGitHubGateway github, Func<DateTimeOffset>? clock = 
             // the separate report job is not part of the contract and is not waited for.
             ("Test outcome", async token =>
             {
-                var deadline = now() + allowed;
+                // Whichever comes first: what the target's own timeout allows, or what this token has left.
+                var runDeadline = now() + allowed;
+                var deadline = runDeadline < tokenExpiry ? runDeadline : tokenExpiry;
                 while (true)
                 {
-                    var jobs = await github.Jobs(repo, runId, token);
-                    // In the seconds after a dispatch GitHub can answer with no jobs at all. That is a run whose job has not
-                    // been created yet, not a broken contract, so it is waited out rather than judged. A null list is a
-                    // deleted run, which is judged.
-                    if (jobs is not { Count: 0 } && Outcomes.Read(jobs) is { } outcome)
+                    // An empty list is a completed run with no `main-watcher` job, which the gateway distinguishes from a run
+                    // whose job GitHub has not created yet: that one comes back as a queued job. So it is judged at once, as
+                    // the broken contract it is, rather than waited out.
+                    if (Outcomes.Read(await github.Jobs(repo, runId, token)) is { } outcome)
                         return outcome.Kind switch
                         {
                             OutcomeKind.Passed => (true, $"Run {runId}: the tests passed."),
@@ -129,9 +139,16 @@ public sealed class DryRun(IGitHubGateway github, Func<DateTimeOffset>? clock = 
                             _ => (false, $"Run {runId}: {outcome.Description}")
                         };
                     if (now() >= deadline)
-                        return (false, $"The `main-watcher` job of run {runId} had not completed {allowed.TotalMinutes:0} "
-                            + $"minutes after the dispatch. Raise `timeout` if the suite needs longer than {target.Timeout} "
-                            + "minutes, in the entry and in the caller together.");
+                        return (false, deadline == tokenExpiry
+                            // Nothing is known to be wrong: the dry run simply cannot outlast its own token. The run is still
+                            // going, and is worth reading rather than re-dispatching.
+                            ? $"Run {runId} was still going after {TokenWindow.TotalMinutes:0} minutes, which is as long as "
+                                + "this dry run's App token lasts. Read the run itself: if its `main-watcher` job passes and "
+                                + "uploads `main-watcher-ctrf`, the setup is sound. A suite this slow also costs the watcher "
+                                + $"detection time (A-2), so {target.Timeout} minutes of `timeout` may be worth revisiting."
+                            : $"The `main-watcher` job of run {runId} had not completed {allowed.TotalMinutes:0} minutes "
+                                + $"after the dispatch. Raise `timeout` if the suite needs longer than {target.Timeout} "
+                                + "minutes, in the entry and in the caller together.");
                     await wait(Poll, token);
                 }
             }),

@@ -1,13 +1,19 @@
-# Sandbox only: opens or closes a hand-made, App-authored lock on a sandbox target, for
-# scenario tests that need a lock before watch.yml exists (TS-S4, TS-S5, TS-S7). Runs only in
-# the main-watcher-sandbox organisation.
+# Opens or closes a hand-made, App-authored lock on a target. It began as sandbox-only, for the
+# scenario tests that need a lock before watch.yml exists (TS-S4, TS-S5, TS-S7), and keeps that
+# name and its inputs; it also opens the lock TS-S5 needs when a repository is onboarded, since
+# the gate passes every merge group while no lock is open (docs/onboarding.md).
+#
+# A lock blocks a repository's merge queue, so only two kinds of target may be given one by hand:
+# a main-watcher-sandbox target, and a repository this watcher already watches, which it could
+# lock through a cycle anyway. Anything else is refused. The lease bounds what a forgotten lock
+# can do: once it has passed, the gate stops enforcing the lock (ADR-014).
 name: sandbox-lock
 
 on:
   workflow_dispatch:
     inputs:
       target:
-        description: Sandbox target repo in main-watcher-sandbox
+        description: owner/repo listed in targets.yml, or a bare name in main-watcher-sandbox
         default: sample-target
       action:
         description: Open a lock, or close every open App-authored lock
@@ -17,29 +23,58 @@ on:
         description: lease_until is now plus this many hours. Negative gives an expired lease
         default: "4"
 
-permissions: {}
+permissions:
+  # Only to read targets.yml, which says which repositories may be locked by hand.
+  contents: read
 
 concurrency: sandbox-lock-${{ inputs.target }}
 
 jobs:
   lock:
-    if: github.repository_owner == 'main-watcher-sandbox'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: reporter
     steps:
+      # Only the watcher's own targets.yml is read. No target code runs here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: target
+        name: Resolve the target and check it may be locked
+        env:
+          MW_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          sandbox=main-watcher-sandbox
+          repo="$MW_TARGET"
+          case "$repo" in */*) ;; *) repo="$sandbox/$repo" ;; esac
+          owner="${repo%%/*}"
+          name="${repo##*/}"
+          listed=no
+          if grep -qE "^[[:space:]]*-[[:space:]]*repo:[[:space:]]*[\"']?${repo}[\"']?[[:space:]]*$" targets.yml; then
+            listed=yes
+          fi
+          if [ "$owner" != "$sandbox" ] && [ "$listed" = no ]; then
+            echo "::error::$repo is neither a $sandbox target nor listed in targets.yml, so it may not be locked by hand."
+            exit 1
+          fi
+          printf 'repo=%s\n' "$repo" >> "$GITHUB_OUTPUT"
+          printf 'owner=%s\n' "$owner" >> "$GITHUB_OUTPUT"
+          printf 'name=%s\n' "$name" >> "$GITHUB_OUTPUT"
+
       - id: token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ vars.MAIN_WATCHER_APP_ID }}
           private-key: ${{ secrets.MAIN_WATCHER_PRIVATE_KEY }}
-          owner: main-watcher-sandbox
-          repositories: ${{ inputs.target }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
           permission-issues: write
 
       - env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
-          REPO: main-watcher-sandbox/${{ inputs.target }}
+          REPO: ${{ steps.target.outputs.repo }}
           ACTION: ${{ inputs.action }}
           LEASE_HOURS: ${{ inputs.lease_hours }}
         run: |
@@ -48,9 +83,9 @@ jobs:
             [[ "$LEASE_HOURS" =~ ^-?[0-9]+$ ]] || { echo "::error::lease_hours must be a whole number"; exit 1; }
             lease_until="$(date -u -d "${LEASE_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)"
             gh label create main-broken -R "$REPO" --color b60205 --description "Main Watcher lock" --force
-            body="$(printf 'Hand-made sandbox lock from %s.\n\n<!-- main-watcher lease_until=%s -->' \
+            body="$(printf 'Hand-made lock from %s. No test produced it; close it when the check that needed it is done.\n\n<!-- main-watcher lease_until=%s -->' \
               "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$lease_until")"
-            gh issue create -R "$REPO" --title "main is broken (sandbox lock)" --label main-broken --body "$body"
+            gh issue create -R "$REPO" --title "main is broken (hand-made lock)" --label main-broken --body "$body"
           else
             gh issue list -R "$REPO" --state open --label main-broken --author 'app/main-watcher' --json number --jq '.[].number' |
               while read -r number; do gh issue close "$number" -R "$REPO" --comment "Closed by sandbox-lock."; done

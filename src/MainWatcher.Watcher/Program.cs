@@ -76,9 +76,8 @@ async Task<int> Cycle()
             using var dryHttp = Client(Required("GH_TOKEN"));
             var dryGithub = new GitHubGateway(dryHttp, long.Parse(Required("MW_APP_ID")), log: Console.WriteLine);
             budget = dryGithub;
-            // The dispatched run's own allowance, plus the ten minutes it has to appear and a margin for the reads themselves.
-            using var dryTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(target.Timeout)
-                + DryRun.RunMargin + DryRun.DispatchWindow + TimeSpan.FromMinutes(5));
+            // The dry run stops itself within the hour its App token lasts, so this only catches a wait that is not waiting.
+            using var dryTimeout = new CancellationTokenSource(DryRun.TokenWindow + TimeSpan.FromMinutes(5));
             var report = await new DryRun(dryGithub, log: Console.WriteLine).Run(target, dryTimeout.Token);
             Summarise(target.Repo, report);
             Console.WriteLine(report.Passed

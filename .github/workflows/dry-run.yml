@@ -16,9 +16,9 @@ permissions:
 jobs:
   dry-run:
     runs-on: ubuntu-latest
-    # The target's own timeout, the reusable workflow's 20-minute margin, the queue and the build. A target whose
-    # `timeout` is near the 340-minute maximum needs its dry run run by hand instead; GitHub caps a job at 6 hours.
-    timeout-minutes: 360
+    # The dry run waits at most 50 minutes, which is what its App token lasts (DryRun.TokenWindow), plus the build and
+    # a margin. A suite that needs longer than that is read from the target run itself; the dry run says so.
+    timeout-minutes: 70
     environment: reporter
     concurrency:
       # The group watch.yml uses for this target, so a dry run and a cycle never test the same repository at once.

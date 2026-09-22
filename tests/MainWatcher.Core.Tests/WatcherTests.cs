@@ -2732,23 +2732,40 @@ public class WatcherTests
 
         Assert.False(report.Passed);
         Assert.Equal("Test outcome", report.Steps[^1].Name);
-        // The target's own timeout, plus the reusable workflow's margin and the queue's.
+        // The target's own timeout, plus the reusable workflow's margin and the queue's — well inside the token's hour.
         Assert.Contains("had not completed 40 minutes", report.Steps[^1].Detail);
     }
 
     [Fact]
-    public async Task DryRunWaitsOutARunWhoseJobGitHubHasNotCreatedYet()
+    public async Task DryRunJudgesACompletedRunWithNoTestJobAtOnce()
     {
-        // GitHub answers with no jobs at all in the seconds after a dispatch. Judging that would call every correct target's
-        // contract broken, and a dry run polls from the moment the run appears.
+        // The gateway answers a run whose job GitHub has not created yet with a queued job, so an empty list is only ever a
+        // completed run with no `main-watcher` job. Waiting that out would spend the whole timeout and then blame the timeout.
         var fake = new FakeGitHub { JobList = [] };
         fake.Files[GatePath] = GateBody;
         var report = await Dry(fake, new Target { Repo = "owner/repo", Timeout = 10 });
 
         Assert.False(report.Passed);
         Assert.Equal("Test outcome", report.Steps[^1].Name);
-        Assert.Contains("had not completed 40 minutes", report.Steps[^1].Detail);
-        Assert.DoesNotContain("contract broken", report.Steps[^1].Detail);
+        Assert.Contains("no `main-watcher` job", report.Steps[^1].Detail);
+        Assert.DoesNotContain("had not completed", report.Steps[^1].Detail);
+    }
+
+    [Fact]
+    public async Task DryRunStopsWithinItsTokensHourRatherThanOutlastingIt()
+    {
+        // A 340-minute target would otherwise be waited on for hours with a token that dies after one, failing authentication
+        // part-way through judging and reporting that instead of the setup.
+        var fake = new FakeGitHub { JobList = [new("main-watcher", "in_progress", [])] };
+        fake.Files[GatePath] = GateBody;
+        var report = await Dry(fake, new Target { Repo = "owner/repo", Timeout = 340 });
+
+        Assert.False(report.Passed);
+        Assert.Equal("Test outcome", report.Steps[^1].Name);
+        Assert.Contains("still going after 50 minutes", report.Steps[^1].Detail);
+        Assert.Contains("App token", report.Steps[^1].Detail);
+        // Nothing is known to be wrong, so it says where to look rather than blaming the target's timeout.
+        Assert.DoesNotContain("had not completed", report.Steps[^1].Detail);
     }
 
     [Fact]

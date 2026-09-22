@@ -66,11 +66,13 @@ public partial class SecurityChecklistTests
     /// <summary>
     /// The workflows that hold the main App key check out only the watcher repo at its own commit and call no other
     /// workflow: target code runs only in the target's own run (ARCH-001 §8). <c>watch.yml</c> runs the cycles;
-    /// <c>dry-run.yml</c> holds the same key to dispatch one test at onboarding.
+    /// <c>dry-run.yml</c> holds the same key to dispatch one test at onboarding, and <c>sandbox-lock.yml</c> to open
+    /// the lock TS-S5 needs there.
     /// </summary>
     [Theory]
     [InlineData("watch.yml")]
     [InlineData("dry-run.yml")]
+    [InlineData("sandbox-lock.yml")]
     public void WorkflowsHoldingTheAppKeyRunNoTargetCode(string workflow)
     {
         var jobs = (YamlMappingNode)Load(Path.Combine(Root, ".github/workflows", workflow))["jobs"];

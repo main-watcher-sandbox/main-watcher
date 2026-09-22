@@ -159,6 +159,13 @@ A red suite still passes: the contract is what is being tested, and a failing te
 of it than a passing one. The outcome line says the suite failed and that a real cycle would open
 the lock for that commit.
 
+It waits for the target's `timeout` plus 30 minutes, or 50 minutes, whichever is sooner. The App
+token the workflow mints lasts an hour and the dry run cannot renew one — the key stays in the
+`reporter` environment, where only the token action reads it — so waiting past the hour would fail
+authentication part-way through judging and report that instead of the setup. Stopping on the
+token rather than on the target's timeout is reported as what it is: nothing is known to be wrong,
+and the run itself is named to read the rest from.
+
 ## Backup sweep
 
 GitHub's scheduler is delayed and sometimes drops events, so it is only a backup (C-7,

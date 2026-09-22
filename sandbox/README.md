@@ -135,6 +135,11 @@ gh workflow run sandbox-lock.yml -R main-watcher-sandbox/main-watcher -f target=
 
 A negative `lease_hours` makes an expired lease, for the "LOCK LEASE EXPIRED" path.
 
+The workflow is no longer sandbox-only: it also opens the lock TS-S5 needs when a repository is
+onboarded ([onboarding.md](../docs/onboarding.md)). A bare `target` still means a
+`main-watcher-sandbox` repository, which is how the suite dispatches it; anything else must be an
+`owner/repo` listed in `targets.yml`, and any other repository is refused.
+
 ## Workflow variants
 
 TS-S16 needs test workflows that differ from the published one. Each is a branch of
