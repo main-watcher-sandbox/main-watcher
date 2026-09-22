@@ -226,10 +226,10 @@ It then configures the sandbox for the run:
 
 With `--no-deploy` it skips the first part and tests whatever the sandbox already runs.
 
-A full run takes about 2 h 15 min on six targets; one on ten took 100 minutes. The longest unit, TS-S16 (h)'s unstoppable
+A full run takes about 2 h on six targets; one on ten took 100 minutes. The longest unit, TS-S16 (h)'s unstoppable
 run, starts first: from its run deadline through the refused cancel and force-cancel to the alert is about 90 min of
-GitHub time. A full run does not yet fit the `main-watcher` installation's API budget, below, so none has passed yet
-(#60).
+GitHub time. The first full pass was on 2026-09-22: 25 units in 115 min, within the `main-watcher` installation's API
+budget, which #60 brought a cycle down to about 20 requests.
 
 **The pool.** Scenarios run side by side, each on a target of its own. Ten targets are set up: `sample-target` and
 `sample-target-2` to `sample-target-10`. A pool target needs three things:
@@ -241,7 +241,8 @@ GitHub time. A full run does not yet fit the `main-watcher` installation's API b
 A run uses six of them by default: `sample-target`, `sample-target-2` to `-5`, and `sample-target-10`, the one the worker
 gives a short queue deadline. `--targets N` uses N, from 2 to 10. More is not faster in practice. Every target's cycles
 share the `main-watcher` App installation's 5000 API requests an hour. With ten targets, the fourth run spent the whole
-budget in 39 minutes, and every cycle then failed with 403 until it refilled (#25). Each cycle's log ends with its requests
+budget in 39 minutes, and every cycle then failed with 403 until it refilled (#25). Since #60 the passing run used about
+2,400 an hour on six targets, and never left less than 3113 of the 5000. Each cycle's log ends with its requests
 by endpoint and the lowest budget it saw: "API budget of this installation: … requests left". Since #60, a cycle's first read
 of the check runs stops at the last green run instead of reading every commit, and a low or spent budget raises a
 `watcher-infra` alert (`docs/watcher.md`).
