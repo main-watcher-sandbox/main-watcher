@@ -1,6 +1,4 @@
-# Validation of MainWatcher#26. acme/checkout does not exist: it is listed, disabled, only to show
-# that the lock workflow's guard admits a repository because targets.yml names it, not because of
-# its owner. Removed straight after.
+# Validation of MainWatcher#26: sample-target listed but not enabled, as at onboarding.
 lock_lease: 10
 targets:
   - repo: main-watcher-sandbox/sample-target
@@ -9,11 +7,4 @@ targets:
     timeout: 30
     poll_interval: 1
     notify: [pat-actium]
-    enabled: false
-  - repo: acme/checkout
-    test_command: dotnet test --no-restore
-    results_glob: '**/TestResults/*.ctrf.json'
-    timeout: 30
-    poll_interval: 15
-    notify: []
     enabled: false
