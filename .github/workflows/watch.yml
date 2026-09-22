@@ -100,7 +100,9 @@ jobs:
           permission-checks: write
           permission-actions: write
           permission-contents: read
-          permission-issues: write
+          # Sandbox only (TS-S14 (c)): the targets listed, comma-separated, get a token that can only read issues, so every
+          # lock write fails with a real 403 while other targets carry on. Unset in production, which always gets write.
+          permission-issues: ${{ contains(format(',{0},', vars.MW_SANDBOX_READ_ONLY_ISSUES), format(',{0},', matrix.target)) && 'read' || 'write' }}
       - name: Plan and report
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
@@ -113,7 +115,8 @@ jobs:
           MW_FORCE: ${{ inputs.force }}
           # A run with no target is the backup sweep: it also judges waiting work and gate fail-opens.
           MW_SWEEP: ${{ inputs.target == '' }}
-          # Sandbox only (TS-S14): a comma-separated list of Reporter writes to exit after. Unset in production.
+          # Sandbox only (TS-S14): a comma-separated list of Reporter writes to exit after. Unset in production. This and the
+          # two switches below apply to every target, or to one when an entry is written owner/repo=value (SandboxSwitch).
           MW_SANDBOX_EXIT_AFTER: ${{ vars.MW_SANDBOX_EXIT_AFTER }}
           # Sandbox only (TS-S16 (g)): a shorter ADR-013 queue deadline, 1 to 30 minutes. The trigger worker reads the same
           # variable and must be given the same value, or it starts cycles for runs the Planner does not judge stale.

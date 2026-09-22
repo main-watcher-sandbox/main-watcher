@@ -1868,6 +1868,27 @@ public class WatcherTests
         Assert.Equal("again", fake.Comments.Single());
     }
 
+    [Fact]
+    public async Task AnAlertJustOpenedTakesTheNextOneAlthoughTheListLags()
+    {
+        // The issue list does not hold an issue created a second earlier: two merges reported 2 s apart opened two alerts (#25).
+        var fake = new FakeGitHub { ListLags = true };
+        var at = Now;
+        var alerts = new Alerts(fake, "owner/watcher", () => at);
+        var ct = TestContext.Current.CancellationToken;
+        await alerts.Raise("Merged while locked on owner/repo", "#6 merged", ct, "<!-- pr=6 -->");
+        await alerts.Raise("Merged while locked on owner/repo", "#7 merged", ct, "<!-- pr=7 -->");
+        await alerts.Raise("Merged while locked on owner/repo", "#6 merged", ct, "<!-- pr=6 -->");
+        var alert = Assert.Single(fake.Issues["owner/watcher"]);
+        Assert.Contains("<!-- pr=6 -->", alert.Issue.Body);
+        Assert.Equal(new[] { "#7 merged\n\n<!-- pr=7 -->" }, fake.Comments);
+
+        // Trusted only briefly: past the window, an alert the list still does not show, as when a person has closed it, is not used.
+        at += Alerts.Remembered + TimeSpan.FromSeconds(1);
+        await alerts.Raise("Merged while locked on owner/repo", "#8 merged", ct, "<!-- pr=8 -->");
+        Assert.Equal(2, fake.Issues["owner/watcher"].Count);
+    }
+
     [Theory]
     [InlineData("user", true)]
     [InlineData("@org/team-name", true)]
@@ -1973,6 +1994,35 @@ public class WatcherTests
         Assert.Equal(1, await reporter.NoteOverrides(Watched, ct));
         Assert.StartsWith("`alice` closed this lock by hand. That is an override", Assert.Single(fake.Comments));
         Assert.Equal(0, await reporter.NoteOverrides(Watched, ct));
+    }
+
+    // A lock closed by hand between a cycle's override check and its reconciliation was marked complete, so the worker saw no
+    // work and the override comment waited for an unrelated cycle (TS-S14 in the scenario suite, #25).
+    [Fact]
+    public async Task ALockClosedDuringACycleIsCompletedOnlyOnceItsOverrideIsNoted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub();
+        SeedWindow(fake, 60);
+        var watcher = new FakeGitHub();
+        var reporter = new Reporter(fake, clock: () => Now);
+        Assert.Equal(0, await reporter.NoteOverrides(Locked, ct));
+        fake.CloseByHand("owner/repo", 1, "alice", Now);
+        await Reconciler(fake, watcher).Reconcile(Locked, ct, reporter.ClosedSeen);
+        Assert.Null(Markers.Field(fake.Find("owner/repo", 1).Body, Reconciliation.Complete));
+        Assert.Empty(fake.Comments);
+
+        // Still unreconciled, so the worker asks for another cycle, which notes the override and then completes the lock.
+        var next = new Reporter(fake, clock: () => Now);
+        Assert.Equal(1, await next.NoteOverrides(Locked, ct));
+        await Reconciler(fake, watcher).Reconcile(Locked, ct, next.ClosedSeen);
+        Assert.Equal(Reconciliation.CompleteValue, Markers.Field(fake.Find("owner/repo", 1).Body, Reconciliation.Complete));
+        Assert.StartsWith("`alice` closed this lock by hand", Assert.Single(fake.Comments));
+
+        // Once complete, the closure is never judged again: its closer is not asked for.
+        var closedByReads = fake.ClosedByReads;
+        Assert.Equal(0, await new Reporter(fake, clock: () => Now).NoteOverrides(Locked, ct));
+        Assert.Equal(closedByReads, fake.ClosedByReads);
     }
 
     [Fact]
@@ -2415,6 +2465,26 @@ public class WatcherTests
     public void TheQueueDeadlineSettingTakesOneToThirtyMinutes(string? value, int minutes) =>
         Assert.Equal(TimeSpan.FromMinutes(minutes), StaleRun.ConfiguredQueueDeadline(value));
 
+    // A sandbox switch applies to every target, or to one when written owner/repo=value, so the scenario suite can fault one
+    // target while other scenarios run beside it (MainWatcher#25).
+    [Theory]
+    [InlineData(null, "")]
+    [InlineData("create", "create")]
+    [InlineData("comment, update", "comment|update")]
+    [InlineData("owner/repo=create,owner/other=close", "create")]
+    [InlineData("Owner/Repo=check:neutral , renew", "check:neutral|renew")]
+    [InlineData("owner/other=true", "")]
+    [InlineData("owner/repo=,=x", "")]
+    public void ASandboxSwitchAppliesToEveryTargetOrToTheOneItNames(string? setting, string expected) =>
+        Assert.Equal(expected, string.Join('|', SandboxSwitch.For(setting, "owner/repo")));
+
+    [Theory]
+    [InlineData("owner/other=5,owner/repo=10", 10)]
+    [InlineData("owner/other=5", 30)]
+    [InlineData("12", 12)]
+    public void TheQueueDeadlineSettingCanNameATarget(string setting, int minutes) =>
+        Assert.Equal(TimeSpan.FromMinutes(minutes), StaleRun.ConfiguredQueueDeadline(setting, "owner/repo"));
+
     [Fact]
     public void MarkersKeepTheOtherFieldsOfTheLastMarker()
     {
@@ -2447,6 +2517,10 @@ public class WatcherTests
         public List<string> Order { get; } = [];
         public List<string> Comments { get; } = [];
         public bool IssueError { get; init; }
+        /// <summary>The issue list lags, as GitHub's does: an issue this fake creates is not listed until <see cref="Catch"/>.</summary>
+        public bool ListLags { get; set; }
+        readonly HashSet<int> unlisted = [];
+        public void Catch() => unlisted.Clear();
         public string JobConclusion { get; init; } = "failure";
         /// <summary>Stops the report, as a crash would, right after this many issue writes succeed.</summary>
         public int? StopAfterWrites { get; set; }
@@ -2481,7 +2555,8 @@ public class WatcherTests
 
         public Task<string?> File(string repo, string path, CancellationToken ct) => Task.FromResult(Files.GetValueOrDefault($"{repo}:{path}"));
         public Task<IReadOnlyList<Issue>> OpenIssues(string repo, string label, CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<Issue>>(Issues.GetValueOrDefault(repo, []).Where(i => i.Label == label && i.Open).Select(i => i.Issue).ToArray());
+            Task.FromResult<IReadOnlyList<Issue>>(Issues.GetValueOrDefault(repo, [])
+                .Where(i => i.Label == label && i.Open && !unlisted.Contains(i.Issue.Number)).Select(i => i.Issue).ToArray());
         Task<IReadOnlyList<Issue>> IGitHubGateway.Issues(string repo, string label, DateTimeOffset since, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<Issue>>(Issues.GetValueOrDefault(repo, [])
                 .Where(i => i.Label == label && (i.Issue.UpdatedAt is null || i.Issue.UpdatedAt >= since)).Select(i => i.Issue).ToArray());
@@ -2496,6 +2571,7 @@ public class WatcherTests
         {
             if (IssueError) throw new HttpRequestException("issues unavailable");
             var issue = Seed(repo, label, title, "main-watcher[bot]", "Bot", body);
+            if (ListLags) unlisted.Add(issue.Issue.Number);
             Wrote($"create:{repo}");
             return Task.FromResult(issue.Issue);
         }

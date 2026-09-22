@@ -33,10 +33,14 @@ public sealed record WorkerSettings(
     public TimeSpan VerifyTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// The ADR-013 queue deadline, from <c>MW_QUEUE_DEADLINE_MINUTES</c>. Only the sandbox sets it, and <c>watch.yml</c> must
-    /// read the same variable, so that the worker starts a cycle for exactly the runs the Planner would then cancel.
+    /// The ADR-013 queue deadline setting, from <c>MW_QUEUE_DEADLINE_MINUTES</c>: minutes for every target, or per target as
+    /// <see cref="SandboxSwitch"/> reads it. Only the sandbox sets it, and <c>watch.yml</c> must read the same value, so that the
+    /// worker starts a cycle for exactly the runs the Planner would then cancel.
     /// </summary>
-    public TimeSpan QueueDeadline { get; init; } = StaleRun.DefaultQueueDeadline;
+    public string? QueueDeadlineSetting { get; init; }
+
+    /// <summary>The queue deadline <see cref="QueueDeadlineSetting"/> gives a target.</summary>
+    public TimeSpan QueueDeadline(string repo) => StaleRun.ConfiguredQueueDeadline(QueueDeadlineSetting, repo);
 
     /// <summary>
     /// The App whose lock issues carry a lease, from <c>MW_BOT_LOGIN</c>: <c>watch.yml</c> resolves the same name from its
@@ -93,7 +97,7 @@ public sealed record WorkerSettings(
         if (errors.Count > 0) throw new WorkerConfigurationException(string.Join(" ", errors));
         return new(watcherRepo, mainWatcher, observer, doorbell, period, targets, api!)
         {
-            QueueDeadline = StaleRun.ConfiguredQueueDeadline(env("MW_QUEUE_DEADLINE_MINUTES")),
+            QueueDeadlineSetting = env("MW_QUEUE_DEADLINE_MINUTES"),
             BotLogin = env("MW_BOT_LOGIN")?.Trim() is { Length: > 0 } login ? login : Reporter.DefaultBotLogin
         };
     }

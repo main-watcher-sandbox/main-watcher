@@ -1,6 +1,8 @@
 using System.Net.Http.Headers;
 using MainWatcher.Core;
 
+// The App installation's rate-limit budget is shared by every target, so each cycle says what it left (R-13).
+GitHubGateway? budget = null;
 try
 {
     var config = TargetConfiguration.Parse(File.ReadAllText(Environment.GetEnvironmentVariable("MW_TARGETS_FILE") ?? "targets.yml"));
@@ -32,29 +34,32 @@ try
     using var alertHttp = Client(Required("MW_ALERT_TOKEN"));
     var appId = long.Parse(Required("MW_APP_ID"));
     var github = new GitHubGateway(http, appId, log: Console.WriteLine);
+    budget = github;
     var alertRepo = Required("MW_ALERT_REPO");
     var watcherGithub = new GitHubGateway(alertHttp, appId);
     var alerts = new Alerts(watcherGithub, alertRepo);
     var botLogin = Environment.GetEnvironmentVariable("MW_BOT_LOGIN") is { Length: > 0 } app ? app : Reporter.DefaultBotLogin;
     // Sandbox fault injection (TS-S16 (g) and (h)): a shorter queue deadline, so a job that will never get a runner is
-    // cancelled in minutes, and a switch that makes every cancel fail. The worker must be given the same deadline.
-    var queueDeadline = StaleRun.ConfiguredQueueDeadline(Environment.GetEnvironmentVariable("MW_QUEUE_DEADLINE_MINUTES"));
+    // cancelled in minutes, and a switch that makes every cancel fail. The worker must be given the same deadline. Each
+    // switch applies to every target or, written owner/repo=value, to one (SandboxSwitch).
+    var queueDeadline = StaleRun.ConfiguredQueueDeadline(Environment.GetEnvironmentVariable("MW_QUEUE_DEADLINE_MINUTES"), repo);
     // Sandbox fault injection (TS-S14, TS-S17 (b)): exit right after the named issue write, so the next cycle replays it.
-    var exitAfter = Environment.GetEnvironmentVariable("MW_SANDBOX_EXIT_AFTER") ?? "";
+    var exitAfter = SandboxSwitch.For(Environment.GetEnvironmentVariable("MW_SANDBOX_EXIT_AFTER"), repo);
     void ExitAfter(string write)
     {
-        if (!exitAfter.Split(',', StringSplitOptions.TrimEntries).Contains(write)) return;
+        if (!exitAfter.Contains(write)) return;
         Console.WriteLine($"MW_SANDBOX_EXIT_AFTER: exiting after the {write} write.");
         Environment.Exit(3);
     }
     var planner = new Planner(github, alerts: alerts, botLogin: botLogin, queueDeadline: queueDeadline,
-        cancelsRuns: Environment.GetEnvironmentVariable("MW_SANDBOX_REFUSE_CANCEL") != "true", afterWrite: ExitAfter);
+        cancelsRuns: !SandboxSwitch.For(Environment.GetEnvironmentVariable("MW_SANDBOX_REFUSE_CANCEL"), repo).Contains("true"),
+        afterWrite: ExitAfter);
     var reporter = new Reporter(github, alerts, botLogin, afterWrite: ExitAfter);
     using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
     // The hourly backup sweep (C-7, ADR-010): every enabled target gets a cycle, and this one also reports what only the
     // sweep looks for. A dispatch with no target sweeps too, which is how the scenario is run by hand.
     var sweep = Environment.GetEnvironmentVariable("MW_SWEEP") == "true"
-        ? new Sweep(github, watcherGithub, alertRepo, alerts, new WorkFinder(queueDeadline: queueDeadline, botLogin: botLogin)) : null;
+        ? new Sweep(github, watcherGithub, alertRepo, alerts, new WorkFinder(queueDeadline: _ => queueDeadline, botLogin: botLogin)) : null;
     var sweepFailed = false;
     if (sweep is not null)
     {
@@ -132,7 +137,7 @@ try
     // Reconciliation (ADR-008, ADR-015) runs after planning for the same reason: it is a reporting obligation, not a testing
     // one, and it makes the most API calls of anything in a cycle. A failure fails the run, so the worker asks again.
     var reconcileFailed = false;
-    try { foreach (var line in await planner.Reconcile(target, timeout.Token)) Console.WriteLine(line); }
+    try { foreach (var line in await planner.Reconcile(target, timeout.Token, reporter.ClosedSeen)) Console.WriteLine(line); }
     catch (Exception e) when (!timeout.IsCancellationRequested)
     {
         reconcileFailed = true;
@@ -160,6 +165,13 @@ catch (Exception e)
 {
     Console.Error.WriteLine($"Watcher failed: {e.Message}");
     return 1;
+}
+finally
+{
+    if (budget?.Budget is { } left) Console.WriteLine($"API budget of this installation: {left}.");
+    if (budget?.Requests is { Count: > 0 } sent)
+        Console.WriteLine($"API requests this cycle: {sent.Sum(r => r.Count)}; most: "
+            + string.Join(", ", sent.Take(6).Select(r => $"{r.Count} {r.Endpoint}")) + ".");
 }
 
 static HttpClient Client(string token)

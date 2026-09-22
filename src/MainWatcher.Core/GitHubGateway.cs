@@ -29,6 +29,29 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     readonly Dictionary<string, (string Head, List<CheckRun> Checks)> snapshots = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// The rate-limit budget GitHub reported on the latest response: what the token's installation has left of its hourly
+    /// requests, and when it refills (R-13). Every target shares one installation's budget, and the scenario suite's fourth
+    /// run spent it all (#25).
+    /// </summary>
+    public string? Budget { get; private set; }
+
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> requests = new();
+
+    /// <summary>
+    /// How many requests this gateway has sent, by endpoint with its numbers and SHAs generalised, most first: what a cycle
+    /// costs the installation's shared budget, and where (R-13, #60).
+    /// </summary>
+    public IReadOnlyList<(string Endpoint, int Count)> Requests =>
+        requests.OrderByDescending(r => r.Value).ThenBy(r => r.Key, StringComparer.Ordinal).Select(r => (r.Key, r.Value)).ToArray();
+
+    void Count(HttpMethod method, string path)
+    {
+        var resource = path.Split('?')[0].Replace("https://api.github.com/", "").TrimStart('/');
+        resource = System.Text.RegularExpressions.Regex.Replace(resource, "(?<=/)([0-9a-f]{40}|[0-9]+)(?=/|$)", "{n}");
+        requests.AddOrUpdate($"{method} {resource}", 1, (_, n) => n + 1);
+    }
+
+    /// <summary>
     /// An installation token for the App this gateway authenticates as (a JWT client), limited to <paramref name="repo"/>.
     /// </summary>
     public async Task<InstallationToken> InstallationToken(string repo, CancellationToken ct)
@@ -55,13 +78,15 @@ public sealed class GitHubGateway(HttpClient http, long appId,
             {
                 using var request = new HttpRequestMessage(method, path);
                 if (body is not null) request.Content = JsonContent.Create(body);
+                Count(method, path);
                 using var response = await http.SendAsync(request, ct);
+                Note(response);
                 if (method == HttpMethod.Get && attempt < 3 && IsTransient(response))
                 {
                     await (delay ?? Task.Delay)(TimeSpan.FromSeconds(2 * Math.Pow(2, attempt)), ct);
                     continue;
                 }
-                response.EnsureSuccessStatusCode();
+                await Ensure(response, method, path, ct);
                 var text = await response.Content.ReadAsStringAsync(ct);
                 nextPage?.Invoke(NextPage(response));
                 if (string.IsNullOrWhiteSpace(text)) return default;
@@ -72,6 +97,38 @@ public sealed class GitHubGateway(HttpClient http, long appId,
             catch (TaskCanceledException) when (method == HttpMethod.Get && attempt < 3 && !ct.IsCancellationRequested) { }
             await (delay ?? Task.Delay)(TimeSpan.FromSeconds(2 * Math.Pow(2, attempt)), ct);
         }
+    }
+
+    /// <summary>
+    /// Throws for a refused request, naming it and saying what GitHub said, with its rate-limit headers. A bare "403
+    /// (Forbidden)" could not tell a missing permission from an exhausted or secondary rate limit: the scenario suite saw
+    /// every cycle fail with only that (#25).
+    /// </summary>
+    static async Task Ensure(HttpResponseMessage response, HttpMethod method, string path, CancellationToken ct)
+    {
+        if (response.IsSuccessStatusCode) return;
+        string? message = null;
+        try
+        {
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            message = json.RootElement.ValueKind == JsonValueKind.Object ? Text(json.RootElement, "message") : null;
+        }
+        catch (JsonException) { }
+        var limits = string.Join(", ", new[] { "x-ratelimit-resource", "x-ratelimit-remaining", "x-ratelimit-reset", "retry-after" }
+            .Select(name => response.Headers.TryGetValues(name, out var values) ? $"{name}: {values.First()}" : null).OfType<string>());
+        // The path without its query: the resource is what matters, and a page link's query is long.
+        var resource = "/" + path.Split('?')[0].Replace("https://api.github.com/", "").TrimStart('/');
+        throw new HttpRequestException(
+            $"GitHub answered {(int)response.StatusCode} ({response.ReasonPhrase}) to {method} {resource}"
+            + (message is null ? "" : $": {message}") + (limits.Length == 0 ? "" : $" [{limits}]"), null, response.StatusCode);
+    }
+
+    void Note(HttpResponseMessage response)
+    {
+        string? Header(string name) => response.Headers.TryGetValues(name, out var values) ? values.First() : null;
+        if (Header("x-ratelimit-remaining") is { } remaining && Header("x-ratelimit-limit") is { } limit
+            && long.TryParse(Header("x-ratelimit-reset"), out var reset))
+            Budget = $"{remaining} of {limit} requests left, refilled at {DateTimeOffset.FromUnixTimeSeconds(reset):HH:mm:ss}Z";
     }
 
     static bool IsTransient(HttpResponseMessage response) => (int)response.StatusCode >= 500
@@ -449,6 +506,7 @@ public sealed class GitHubGateway(HttpClient http, long appId,
                 .Where(a => Text(a, "name") == "main-watcher-ctrf" && !a.GetProperty("expired").GetBoolean()).ToArray();
             if (artifacts.Length != 1) return CtrfResult.Unknown;
             var id = artifacts[0].GetProperty("id").GetInt64();
+            Count(HttpMethod.Get, $"repos/{repo}/actions/artifacts/{id}/zip");
             using var response = await http.GetAsync($"repos/{repo}/actions/artifacts/{id}/zip", HttpCompletionOption.ResponseHeadersRead, ct);
             response.EnsureSuccessStatusCode();
             if (response.Content.Headers.ContentLength > CtrfReader.MaxReportBytes) return CtrfResult.Unknown;

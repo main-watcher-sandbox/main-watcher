@@ -57,6 +57,56 @@ public class GatewayTests
         else await Assert.ThrowsAsync<HttpRequestException>(() => gateway.Jobs("owner/repo", 1, TestContext.Current.CancellationToken));
     }
 
+    // A bare "403 (Forbidden)" hid whether a permission or a rate limit refused every cycle (#25).
+    [Fact]
+    public async Task ARefusedRequestSaysWhatAndWhyWithTheRateLimit()
+    {
+        using var http = Client(new Handler(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Forbidden)
+            {
+                Content = new StringContent("{\"message\":\"You have exceeded a secondary rate limit.\"}", Encoding.UTF8, "application/json")
+            };
+            response.Headers.Add("x-ratelimit-remaining", "4211");
+            response.Headers.Add("retry-after", "60");
+            return Task.FromResult(response);
+        }));
+        var e = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            new GitHubGateway(http, 1, (_, _) => Task.CompletedTask).Jobs("owner/repo", 1, TestContext.Current.CancellationToken));
+        Assert.Equal(HttpStatusCode.Forbidden, e.StatusCode);
+        Assert.Equal("GitHub answered 403 (Forbidden) to GET /repos/owner/repo/actions/runs/1/jobs: You have exceeded a secondary rate limit. "
+            + "[x-ratelimit-remaining: 4211, retry-after: 60]", e.Message);
+    }
+
+    [Fact]
+    public async Task TheBudgetIsTheLatestResponsesRateLimit()
+    {
+        using var http = Client(new Handler(_ =>
+        {
+            var response = Response("{\"jobs\":[]}");
+            response.Headers.Add("x-ratelimit-limit", "5000");
+            response.Headers.Add("x-ratelimit-remaining", "1234");
+            response.Headers.Add("x-ratelimit-reset", DateTimeOffset.Parse("2026-09-21T22:15:29Z").ToUnixTimeSeconds().ToString());
+            return Task.FromResult(response);
+        }));
+        var gateway = new GitHubGateway(http, 1);
+        Assert.Null(gateway.Budget);
+        await gateway.Jobs("owner/repo", 1, TestContext.Current.CancellationToken);
+        Assert.Equal("1234 of 5000 requests left, refilled at 22:15:29Z", gateway.Budget);
+    }
+
+    [Fact]
+    public async Task RequestsAreCountedByEndpoint()
+    {
+        using var http = Client(new Handler(_ => Task.FromResult(Response("{\"jobs\":[]}"))));
+        var gateway = new GitHubGateway(http, 1);
+        await gateway.Jobs("owner/repo", 1, TestContext.Current.CancellationToken);
+        await gateway.Jobs("owner/repo", 2, TestContext.Current.CancellationToken);
+        // An empty jobs list also reads the run, so both endpoints are counted, each once per call, with the run ID generalised.
+        Assert.Contains(("GET repos/owner/repo/actions/runs/{n}/jobs", 2), gateway.Requests);
+        Assert.Contains(("GET repos/owner/repo/actions/runs/{n}", 2), gateway.Requests);
+    }
+
     [Fact]
     public async Task UndownloadableArtifactIsUnknown()
     {

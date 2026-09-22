@@ -277,8 +277,13 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
     /// the ones that would have said something; the other locks are reconciled all the same, and the cycle then fails.
     /// </para>
     /// </summary>
+    /// <param name="closedSeen">
+    /// The closed locks whose closure this cycle has already judged (<see cref="Reporter.ClosedSeen"/>). A lock closed since is
+    /// reconciled but not marked complete, so the worker asks for another cycle, which notes the override first. Null judges
+    /// every closed lock as seen.
+    /// </param>
     /// <returns>A line per lock examined, for the log.</returns>
-    public async Task<IReadOnlyList<string>> Reconcile(Target target, CancellationToken ct)
+    public async Task<IReadOnlyList<string>> Reconcile(Target target, CancellationToken ct, IReadOnlySet<int>? closedSeen = null)
     {
         var repo = target.Repo;
         var now = Now;
@@ -296,7 +301,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         {
             // One lock whose writes fail must not stop the others: each keeps its own cursor, and this one has already had
             // its "reconciliation failing" alert judged before the failure reached here.
-            try { lines.Add(await ReconcileLock(target, issue, activity, now, ct)); }
+            try { lines.Add(await ReconcileLock(target, issue, activity, now, closedSeen, ct)); }
             catch (Exception e) when (!ct.IsCancellationRequested && e is not InvalidOperationException)
             {
                 failures.Add($"#{issue.Number}: {e.Message}");
@@ -308,7 +313,8 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
         return lines;
     }
 
-    async Task<string> ReconcileLock(Target target, Issue issue, IReadOnlyList<Push> activity, DateTimeOffset now, CancellationToken ct)
+    async Task<string> ReconcileLock(Target target, Issue issue, IReadOnlyList<Push> activity, DateTimeOffset now,
+        IReadOnlySet<int>? closedSeen, CancellationToken ct)
     {
         var repo = target.Repo;
         var cursor = Markers.Time(issue.Body, Reconciliation.Cursor);
@@ -414,7 +420,7 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
                     + "which is after this lock's window began, so merges older than that could not be checked. "
                     + Reconciliation.Truncated);
             // Complete only once the whole window has been checked: a pass that stopped part-way is retried on the next run.
-            complete = stopped is null && issue.State == "closed";
+            complete = stopped is null && issue.State == "closed" && (closedSeen is null || closedSeen.Contains(issue.Number));
             var written = Reconciliation.Field(progress);
             (string Name, string Value)[] fields = [
                 .. reached is { } mark && mark != cursor ? new[] { (Reconciliation.Cursor, Markers.Stamp(mark)) } : [],

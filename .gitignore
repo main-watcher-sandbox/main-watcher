@@ -2,3 +2,6 @@ __pycache__/
 bin/
 obj/
 TestResults/
+
+# Scenario suite run output (sandbox/run-scenarios.sh)
+sandbox/scenarios/out/

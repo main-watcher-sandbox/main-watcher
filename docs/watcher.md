@@ -35,7 +35,7 @@ malformed or disabled targets fail this step without requesting a token.
 `targets.yml` is a mapping with a `targets` array. Unknown fields and duplicate
 keys or repositories are rejected. An empty array is valid, and is what this repo ships:
 no target is watched from here, so the hourly sweep does nothing and the trigger worker starts
-no cycles. The scenario-test target belongs to the private sandbox replica, which holds the App
+no cycles. The scenario-test target belongs to the sandbox replica, which holds the App
 credentials; two watchers on one target would race for its check runs. A regression test parses
 the committed file, so one the sweep could not read fails the build rather than a cycle an hour
 later.
@@ -619,7 +619,7 @@ lapsed" alert leaves `lapse_reported` unwritten, and a failed "Merged while lock
 
 Run `dotnet test` and the CI-pinned actionlint. The core suite includes real xUnit
 reports and a GitHub reusable-caller jobs response, with provenance in its fixtures
-directory. Sandbox execution uses the private watcher replica described in
+directory. Sandbox execution uses the watcher replica described in
 `sandbox/README.md`. The [issue #9 validation record](../sandbox/issue-9-validation.md)
 links the passing and failing checks, their Planner and Reporter cycles, and
 the target restoration evidence. The [issue #10 validation record](../sandbox/issue-10-validation.md)

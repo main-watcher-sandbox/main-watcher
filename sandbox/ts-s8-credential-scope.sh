@@ -81,7 +81,16 @@ probe() { # app, token, expected status, method, path, [body]
 
 some_issue() { # repo -> the number of its newest issue, read with mw-observer
   call "$observer" GET "/repos/$1/issues?state=all&per_page=1" > /dev/null
-  first number
+  local number
+  number="$(first number)"
+  # A newly seeded target has no issue at all, which would probe issues/ and get a 404 (scenario suite, #25). The
+  # operator opens one and closes it at once; it has no main-broken label, so Main Watcher ignores it.
+  if [ -z "$number" ]; then
+    number="$(gh api -X POST "repos/$1/issues" -f title='TS-S8 probe' \
+      -f body='Opened so the credential-scope script can probe issue writes; see sandbox/ts-s8-credential-scope.sh.' --jq .number)"
+    gh api -X PATCH "repos/$1/issues/$number" -f state=closed > /dev/null
+  fi
+  printf '%s' "$number"
 }
 
 installation_token() { # jwt -> token for the App's installation on the watcher repo
