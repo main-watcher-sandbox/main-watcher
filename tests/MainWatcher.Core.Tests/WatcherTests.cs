@@ -2506,7 +2506,7 @@ public class WatcherTests
     {
         var ct = TestContext.Current.CancellationToken;
         var watcher = new FakeGitHub();
-        var alerts = new Alerts(watcher, "owner/watcher");
+        var alerts = new Alerts(watcher, "owner/watcher", () => Now);
         var reset = DateTimeOffset.Parse("2026-09-22T14:35:41Z");
         Assert.Null(await InstallationBudget.Judge("owner/repo", new("core", 1000, 5000, reset), null, alerts, Now, ct));
         Assert.Null(await InstallationBudget.Judge("owner/repo", null, null, alerts, Now, ct));
@@ -2534,12 +2534,70 @@ public class WatcherTests
         var watcher = new FakeGitHub();
         var refused = "GitHub answered 403 (Forbidden) to GET /repos/owner/repo/commits/main: API rate limit exceeded for installation ID 1";
         Assert.Equal(InstallationBudget.RefusedTitle, await InstallationBudget.Judge("owner/repo",
-            new("core", 0, 5000, DateTimeOffset.Parse("2026-09-21T22:15:29Z")), refused, new Alerts(watcher, "owner/watcher"), Now, ct));
+            new("core", 0, 5000, DateTimeOffset.Parse("2026-09-21T22:15:29Z")), refused,
+            new Alerts(watcher, "owner/watcher", () => Now), Now, ct));
         var alert = Assert.Single(watcher.Issues["owner/watcher"]);
         Assert.Equal(InstallationBudget.RefusedTitle, alert.Issue.Title);
         Assert.Contains($"A cycle for `owner/repo` was refused by GitHub's rate limit:\n\n> {refused}", alert.Issue.Body);
         Assert.Contains("The lowest budget it saw was 0 of 5000 requests left, refilled at 22:15:29Z.", alert.Issue.Body);
         Assert.Equal(Alerts.Label, alert.Label);
+    }
+
+    // Cycles for different targets, and a sweep's legs, run at once, and each checks before it writes, so every one of them
+    // can find nothing written (PR #62 review). Here the issue and comment lists lag, so none of the three sees another's
+    // write at all: only the claim decides, and only one alert is ever written, so only one is ever notified. They also run
+    // either side of a minute boundary, which a claim named after the claiming cycle's own minute let through (PR #62 review).
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConcurrentCyclesWriteTheBudgetAlertOnce(bool alreadyOpen)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var watcher = new FakeGitHub { ListLags = true };
+        if (alreadyOpen) watcher.Seed("owner/watcher", Alerts.Label, InstallationBudget.LowTitle, "github-actions[bot]", "Bot", "earlier window");
+        var reset = DateTimeOffset.Parse("2026-09-22T14:35:41Z");
+        // One second before a minute ends, and two and three seconds after it.
+        var minute = Now.AddSeconds(-Now.Second).AddSeconds(59);
+        var cycles = new[] { minute, minute.AddSeconds(3), minute.AddSeconds(4) }.Select((at, i) =>
+            InstallationBudget.Judge($"owner/target-{i}", new("core", 900, 5000, reset), null,
+                new Alerts(watcher, "owner/watcher", () => at), at, ct)).ToArray();
+        await Task.WhenAll(cycles);
+
+        var alert = Assert.Single(watcher.Issues["owner/watcher"]);
+        Assert.True(alert.Open);
+        Assert.Equal(alreadyOpen ? 1 : 0, alert.Comments.Count);
+        Assert.Equal(1, watcher.Order.Count(o => o.StartsWith("create:", StringComparison.Ordinal) || o.StartsWith("comment:", StringComparison.Ordinal)));
+        Assert.NotEqual(minute.Minute, minute.AddSeconds(3).Minute); // The cycles did straddle a minute boundary.
+        var claim = Assert.Single(watcher.CreatedLabels["owner/watcher"]);
+        Assert.StartsWith($"{Alerts.ClaimedAt}{Markers.Stamp(minute)}", claim.Description);
+
+        // An hour later the list has caught up, as GitHub's does in seconds. The claim names the alert and its window, so the
+        // next window is raised, on the same alert, and claims older than a day are deleted.
+        watcher.Catch();
+        await watcher.Claim("owner/watcher", $"{Alerts.ClaimPrefix}0badcafe", $"{Alerts.ClaimedAt}{Markers.Stamp(Now - Alerts.ClaimKept - TimeSpan.FromMinutes(1))}.", ct);
+        await InstallationBudget.Judge("owner/later", new("core", 900, 5000, reset.AddHours(1)), null,
+            new Alerts(watcher, "owner/watcher", () => Now), Now, ct);
+        Assert.Equal(alreadyOpen ? 2 : 1, Assert.Single(watcher.Issues["owner/watcher"]).Comments.Count);
+        Assert.Contains(watcher.CreatedLabels["owner/watcher"], l => l.Name == claim.Name);
+        Assert.DoesNotContain(watcher.CreatedLabels["owner/watcher"], l => l.Name == $"{Alerts.ClaimPrefix}0badcafe");
+        Assert.Equal(2, watcher.CreatedLabels["owner/watcher"].Count(l => l.Name.StartsWith(Alerts.ClaimPrefix, StringComparison.Ordinal)));
+    }
+
+    // A claim stands for an alert that was written, so one whose write fails is given back (PR #62 review).
+    [Fact]
+    public async Task AClaimWhoseWriteFailsIsGivenBack()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var watcher = new FakeGitHub { IssueError = true };
+        var budget = new RateLimit("core", 900, 5000, DateTimeOffset.Parse("2026-09-22T14:35:41Z"));
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            InstallationBudget.Judge("owner/repo", budget, null, new Alerts(watcher, "owner/watcher", () => Now), Now, ct));
+        Assert.Empty(watcher.CreatedLabels["owner/watcher"]);
+        Assert.False(watcher.Issues.ContainsKey("owner/watcher"));
+        // The next cycle claims the same window again and writes the alert.
+        watcher.IssueError = false;
+        await InstallationBudget.Judge("owner/repo", budget, null, new Alerts(watcher, "owner/watcher", () => Now), Now, ct);
+        Assert.Equal(InstallationBudget.LowTitle, Assert.Single(watcher.Issues["owner/watcher"]).Issue.Title);
     }
 
     sealed class FakeIssue(Issue issue, string label)
@@ -2559,17 +2617,25 @@ public class WatcherTests
         public Dictionary<string, string> Files { get; } = [];
         public List<string> Order { get; } = [];
         public List<string> Comments { get; } = [];
-        public bool IssueError { get; init; }
-        /// <summary>The issue list lags, as GitHub's does: an issue this fake creates is not listed until <see cref="Catch"/>.</summary>
+        public bool IssueError { get; set; }
+        /// <summary>
+        /// The issue list lags, as GitHub's does: an issue or comment this fake creates is not listed until <see cref="Catch"/>.
+        /// </summary>
         public bool ListLags { get; set; }
         readonly HashSet<int> unlisted = [];
-        public void Catch() => unlisted.Clear();
+        readonly HashSet<long> unlistedComments = [];
+        public void Catch()
+        {
+            unlisted.Clear();
+            unlistedComments.Clear();
+        }
         public string JobConclusion { get; init; } = "failure";
         /// <summary>Stops the report, as a crash would, right after this many issue writes succeed.</summary>
         public int? StopAfterWrites { get; set; }
         public int ClosedByReads { get; private set; }
         int next;
         int writes;
+        long commentIds;
 
         void Wrote(string entry)
         {
@@ -2604,7 +2670,7 @@ public class WatcherTests
             Task.FromResult<IReadOnlyList<Issue>>(Issues.GetValueOrDefault(repo, [])
                 .Where(i => i.Label == label && (i.Issue.UpdatedAt is null || i.Issue.UpdatedAt >= since)).Select(i => i.Issue).ToArray());
         Task<IReadOnlyList<IssueComment>> IGitHubGateway.Comments(string repo, int number, DateTimeOffset? since, CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<IssueComment>>(Find(repo, number).Comments.ToArray());
+            Task.FromResult<IReadOnlyList<IssueComment>>(Find(repo, number).Comments.Where(c => !unlistedComments.Contains(c.Id)).ToArray());
         public Task<Account?> ClosedBy(string repo, int number, CancellationToken ct)
         {
             ClosedByReads++;
@@ -2622,7 +2688,8 @@ public class WatcherTests
         {
             if (IssueError) throw new HttpRequestException("issues unavailable");
             if (Issues.TryGetValue(repo, out var list) && list.FirstOrDefault(i => i.Issue.Number == number) is { } issue)
-                issue.Comments.Add(new(body, "main-watcher[bot]", "Bot"));
+                issue.Comments.Add(new(body, "main-watcher[bot]", "Bot", ++commentIds));
+            if (ListLags) unlistedComments.Add(commentIds);
             Comments.Add(body);
             Wrote($"comment:{number}");
             return Task.CompletedTask;
@@ -2642,6 +2709,26 @@ public class WatcherTests
             issue.Issue = issue.Issue with { State = "closed", StateReason = reason };
             issue.ClosedBy = new("main-watcher[bot]", "Bot");
             Wrote($"close:{number}" + (reason == "completed" ? "" : $":{reason}") + (duplicateOf is null ? "" : $":{duplicateOf}"));
+            return Task.CompletedTask;
+        }
+        /// <summary>The labels of the repository, as the claim of a shared alert creates them.</summary>
+        public Dictionary<string, List<RepoLabel>> CreatedLabels { get; } = [];
+        public Task<bool> Claim(string repo, string name, string description, CancellationToken ct)
+        {
+            CreatedLabels.TryAdd(repo, []);
+            // A label name is unique in a repository: GitHub refuses the second creation, whoever sends it.
+            if (CreatedLabels[repo].Any(l => l.Name == name)) return Task.FromResult(false);
+            CreatedLabels[repo].Add(new(name, description));
+            Wrote($"claim:{name}");
+            return Task.FromResult(true);
+        }
+        public Task<IReadOnlyList<RepoLabel>> RepoLabels(string repo, string prefix, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<RepoLabel>>(CreatedLabels.GetValueOrDefault(repo, [])
+                .Where(l => l.Name.StartsWith(prefix, StringComparison.Ordinal)).ToArray());
+        public Task DeleteLabel(string repo, string name, CancellationToken ct)
+        {
+            CreatedLabels.GetValueOrDefault(repo, []).RemoveAll(l => l.Name == name);
+            Wrote($"delete-label:{name}");
             return Task.CompletedTask;
         }
 

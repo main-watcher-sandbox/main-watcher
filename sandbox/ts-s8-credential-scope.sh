@@ -6,7 +6,7 @@
 # allows. A call it must not make has to return 403, and a positive control beside it proves the token itself
 # works, so a 403 is the permission and not a dead token. Every refused write is sent with a body GitHub would
 # reject anyway (a branch that does not exist, a check run with no name), so a call that is wrongly allowed gets a
-# 422 and changes nothing. Issue writes on a target are the exception: on a public repository GitHub validates an
+# 422 and changes nothing. Issue writes are the exception: on a public repository GitHub validates an
 # issue's body before it checks the caller's permission, so an empty new issue gets a 422 even from a token with no
 # access to the repository at all (first TS-S8 run, #24). They are probed with an empty update to an existing
 # issue instead, which a token allowed to write would apply as a no-op.
@@ -21,6 +21,9 @@
 #
 # Usage: sandbox/ts-s8-credential-scope.sh
 #   MW_WATCHER_REPO     default main-watcher-sandbox/main-watcher; its targets.yml names the targets
+#   MW_INSTALLED_TARGETS  space-separated repositories main-watcher and mw-observer are installed on besides the
+#                       watcher; default the targets. The scenario suite passes its whole pool, since a run writes
+#                       targets.yml for only the targets it uses
 #   MW_NAMESPACE        default main-watcher-sandbox; holds the Secret trigger-worker-keys
 #   MW_OBSERVER_APP_ID, MW_DOORBELL_APP_ID   default the sandbox Apps (deploy/worker/sandbox)
 #
@@ -116,6 +119,7 @@ done
 mapfile -t targets < <(gh api "repos/$watcher/contents/targets.yml" -H 'Accept: application/vnd.github.raw' |
   sed -n 's/^ *- *repo: *\([^ #]*\).*/\1/p')
 [ "${#targets[@]}" -gt 0 ] || { echo "$watcher's targets.yml lists no targets" >&2; exit 1; }
+read -r -a installed <<< "${MW_INSTALLED_TARGETS:-${targets[*]}}"
 
 observer_jwt="$(jwt "$observer_id" "$work/observer.pem")"
 doorbell_jwt="$(jwt "$doorbell_id" "$work/doorbell.pem")"
@@ -129,7 +133,8 @@ section "mw-observer: reads, never writes or dispatches"
 probe mw-observer "$observer" 200 GET "/repos/$watcher/actions/workflows/watch.yml/runs?per_page=1"
 probe mw-observer "$observer" 200 GET "/repos/$watcher/issues?per_page=1"
 probe mw-observer "$observer" 403 POST "/repos/$watcher/actions/workflows/watch.yml/dispatches" "$none"
-probe mw-observer "$observer" 403 POST "/repos/$watcher/issues" '{}'
+# An update, not a new issue: the replica is public (#25), and GitHub answers an empty new issue there with 422.
+probe mw-observer "$observer" 403 PATCH "/repos/$watcher/issues/$(some_issue "$watcher")" '{}'
 for target in "${targets[@]}"; do
   probe mw-observer "$observer" 200 GET "/repos/$target/commits/main/check-runs?per_page=1"
   probe mw-observer "$observer" 200 GET "/repos/$target/actions/runs?per_page=1"
@@ -169,7 +174,7 @@ check_installation() { # app, jwt, token, expected repos...
   [ "${actual,,}" = "${expected,,}" ] && row PASS "$app repositories" "$actual" ||
     row FAIL "$app repositories" "expected $expected, got $actual"
 }
-check_installation mw-observer "$observer_jwt" "$observer" "$watcher" "${targets[@]}"
+check_installation mw-observer "$observer_jwt" "$observer" "$watcher" "${installed[@]}"
 check_installation mw-doorbell "$doorbell_jwt" "$doorbell" "$watcher"
 
 # main-watcher's key exists only in the watcher's reporter environment, so its installation is read there, by
@@ -200,7 +205,7 @@ check_main_watcher() {
   [ "${actual,,}" = "${expected,,}" ] && row PASS "main-watcher repositories" "$actual" ||
     row FAIL "main-watcher repositories" "expected $expected, got $actual"
 }
-check_main_watcher "${targets[@]}"
+check_main_watcher "${installed[@]}"
 
 section "Where the keys live"
 key_names='MAIN_WATCHER|MW_OBSERVER|MW_DOORBELL|PRIVATE_KEY'

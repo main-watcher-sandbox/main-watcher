@@ -90,4 +90,13 @@ public interface IGitHubGateway
     /// <paramref name="duplicateOf"/> is the canonical issue's database ID (<see cref="Issue.Id"/>).
     /// </summary>
     Task Close(string repo, int number, string reason, long? duplicateOf, CancellationToken ct);
+    /// <summary>
+    /// Creates a label, and says whether this call created it. Label names are unique in a repository, so two callers racing
+    /// to create one get one true and one false, which is how a shared alert is written once (<see cref="Alerts"/>).
+    /// </summary>
+    Task<bool> Claim(string repo, string name, string description, CancellationToken ct);
+    /// <summary>The repository's labels whose name starts with <paramref name="prefix"/>.</summary>
+    Task<IReadOnlyList<RepoLabel>> RepoLabels(string repo, string prefix, CancellationToken ct);
+    /// <summary>Deletes a label; one already deleted is not an error.</summary>
+    Task DeleteLabel(string repo, string name, CancellationToken ct);
 }

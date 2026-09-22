@@ -127,7 +127,7 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         var resource = "/" + path.Split('?')[0].Replace("https://api.github.com/", "").TrimStart('/');
         var error = $"GitHub answered {(int)response.StatusCode} ({response.ReasonPhrase}) to {method} {resource}"
             + (message is null ? "" : $": {message}") + (limits.Length == 0 ? "" : $" [{limits}]");
-        if (RateLimit.Refused(response)) RateLimited ??= error;
+        if (RateLimit.Refused(response, message)) RateLimited ??= error;
         throw new HttpRequestException(error, null, response.StatusCode);
     }
 
@@ -181,11 +181,14 @@ public sealed class GitHubGateway(HttpClient http, long appId,
 
     /// <summary>
     /// This App's check runs on <c>main</c>'s history, as far back as the rules that read them need: the newest ones, any
-    /// pending, and the last green run. A first read walks back from the head only until it reaches a commit with a green run,
-    /// or for <see cref="ChecksLimit"/> commits. Only the Planner creates check runs, on the head, and never while one is
-    /// pending (ADR-017), so every check run on an older commit is older than those on a newer one, and a pending one is always
-    /// the newest. What the limit leaves out is a last green run further back, which only the timing comparison reads (the push
-    /// list walks back on its own), and a pending run with more than that many pushes after it.
+    /// pending, and the last green run. A first read walks back from the head until it reaches a commit with a green run, or
+    /// until it has read <see cref="ChecksLimit"/> commits. Only the Planner creates check runs, on the head, and never while
+    /// one is pending (ADR-017), so every check run on an older commit is older than those on a newer one, and a pending one is
+    /// always the newest: finding the newest check run is what finds every pending one, however many pushes came after it, so
+    /// recovery and reporting never lose one (ADR-013, PR #62 review). When those commits hold no check run at all,
+    /// <see cref="NewestCheckedCommit"/> searches the rest of the history with no limit, which no cap may bound: a cap would
+    /// hide exactly the pending run this must find. What the limit does leave out is only a last green run further back, which
+    /// only the timing comparison reads; the push list walks back on its own.
     /// </summary>
     public async Task<IReadOnlyList<CheckRun>> Checks(string repo, CancellationToken ct)
     {
@@ -201,6 +204,7 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         if (!hasSnapshot || snapshot.Head != head)
         {
             var walked = 0;
+            var found = false;
             await foreach (var commit in Items($"repos/{repo}/commits?sha={head}", null, ct))
             {
                 var sha = commit.GetProperty("sha").GetString()!;
@@ -211,8 +215,13 @@ public sealed class GitHubGateway(HttpClient http, long appId,
                     continue;
                 }
                 var checks = read[sha] = await CommitChecks(repo, sha, ct);
-                if (checks.Any(c => c is { Status: "completed", Conclusion: "success" }) || ++walked >= ChecksLimit) break;
+                found |= checks.Count > 0;
+                walked++;
+                if (checks.Any(c => c is { Status: "completed", Conclusion: "success" }) || walked >= ChecksLimit) break;
             }
+            // The limit was reached with nothing found, so the newest check run, and with it any pending one, is further back.
+            if (!found && walked >= ChecksLimit && await NewestCheckedCommit(repo, head, ct) is { } checkedSha)
+                read[checkedSha] = await CommitChecks(repo, checkedSha, ct);
         }
         foreach (var sha in refresh.Concat(read.Keys).Distinct(StringComparer.Ordinal))
         {
@@ -223,6 +232,49 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         // Publish only a fully refreshed snapshot; failed reads never make partial state authoritative.
         snapshots[repo] = (head, result);
         return result;
+    }
+
+    /// <summary>
+    /// The newest commit reachable from <paramref name="sha"/> that carries one of this App's <c>main-watcher</c> check runs,
+    /// or null when the history holds none. It reads 100 commits per request through GraphQL, whose budget is separate from the
+    /// REST one the cycles spend, so searching a long history costs the installation's hourly requests nothing (R-13, #60).
+    /// </summary>
+    public async Task<string?> NewestCheckedCommit(string repo, string sha, CancellationToken ct)
+    {
+        const string Query = """
+            query($owner:String!,$name:String!,$sha:GitObjectID!,$after:String,$app:Int!){
+              repository(owner:$owner,name:$name){
+                object(oid:$sha){
+                  ... on Commit{
+                    history(first:100,after:$after){
+                      pageInfo{hasNextPage endCursor}
+                      nodes{oid checkSuites(first:5,filterBy:{appId:$app}){nodes{checkRuns(first:1,filterBy:{checkName:"main-watcher",checkType:ALL}){totalCount}}}}
+                    }
+                  }
+                }
+              }
+            }
+            """;
+        var parts = repo.Split('/');
+        string? after = null;
+        while (true)
+        {
+            var json = await Send(HttpMethod.Post, "graphql",
+                new { query = Query, variables = new { owner = parts[0], name = parts[1], sha, after, app = appId } }, ct);
+            // A GraphQL error comes back with HTTP 200. Treating it as "no check run" would hide a pending one, so it throws.
+            if (json.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array && errors.GetArrayLength() > 0)
+                throw new InvalidDataException($"GitHub answered the commit history query with errors: {errors}");
+            if (!json.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object
+                || !data.GetProperty("repository").GetProperty("object").TryGetProperty("history", out var history))
+                throw new InvalidDataException("GitHub answered the commit history query without a history.");
+            foreach (var commit in history.GetProperty("nodes").EnumerateArray())
+                if (commit.GetProperty("checkSuites").GetProperty("nodes").EnumerateArray()
+                    .Any(suite => suite.GetProperty("checkRuns").GetProperty("totalCount").GetInt32() > 0))
+                    return commit.GetProperty("oid").GetString();
+            var page = history.GetProperty("pageInfo");
+            if (!page.GetProperty("hasNextPage").GetBoolean()) return null;
+            after = page.GetProperty("endCursor").GetString();
+        }
     }
 
     public async Task<IReadOnlyList<CheckRun>> CommitChecks(string repo, string sha, CancellationToken ct) =>
@@ -606,8 +658,35 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     public async Task<IReadOnlyList<IssueComment>> Comments(string repo, int number, DateTimeOffset? since, CancellationToken ct) =>
         (await Pages($"repos/{repo}/issues/{number}/comments" + (since is { } time ? $"?since={Since(time)}" : ""), null, ct))
         .Select(c => c.TryGetProperty("user", out var user) && user.ValueKind == JsonValueKind.Object
-            ? new IssueComment(Text(c, "body") ?? "", Text(user, "login") ?? "", Text(user, "type") ?? "")
-            : new IssueComment(Text(c, "body") ?? "", "", "")).ToArray();
+            ? new IssueComment(Text(c, "body") ?? "", Text(user, "login") ?? "", Text(user, "type") ?? "", Id(c))
+            : new IssueComment(Text(c, "body") ?? "", "", "", Id(c))).ToArray();
+
+    static long Id(JsonElement json) => json.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number ? id.GetInt64() : 0;
+
+    /// <summary>
+    /// Creates the label <paramref name="name"/>, and says whether this call was the one that created it. A label name is
+    /// unique in a repository, so GitHub refuses the second creation with 422: that is the only write in the Issues API that
+    /// decides a race between cycles, and it is what makes a shared alert's write happen once (<see cref="Alerts"/>).
+    /// </summary>
+    public async Task<bool> Claim(string repo, string name, string description, CancellationToken ct)
+    {
+        try
+        {
+            await Send(HttpMethod.Post, $"repos/{repo}/labels", new { name, color = "ededed", description }, ct);
+            return true;
+        }
+        catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.UnprocessableEntity) { return false; }
+    }
+
+    public async Task<IReadOnlyList<RepoLabel>> RepoLabels(string repo, string prefix, CancellationToken ct) =>
+        (await Pages($"repos/{repo}/labels", null, ct)).Select(l => new RepoLabel(Text(l, "name") ?? "", Text(l, "description")))
+        .Where(l => l.Name.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
+
+    public async Task DeleteLabel(string repo, string name, CancellationToken ct)
+    {
+        try { await Send(HttpMethod.Delete, $"repos/{repo}/labels/{Uri.EscapeDataString(name)}", null, ct); }
+        catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.NotFound) { }
+    }
 
     public async Task<Account?> ClosedBy(string repo, int number, CancellationToken ct)
     {

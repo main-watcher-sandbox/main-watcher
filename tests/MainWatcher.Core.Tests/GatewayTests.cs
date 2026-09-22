@@ -103,19 +103,23 @@ public class GatewayTests
         Assert.Equal("4999 of 5000 requests left, refilled at 23:15:29Z", gateway.Budget?.ToString());
     }
 
+    const string PrimaryLimit = "API rate limit exceeded for installation ID 162224105.";
+
     [Theory]
-    [InlineData(HttpStatusCode.Forbidden, "0", null, true)]
-    [InlineData(HttpStatusCode.Forbidden, "4211", "60", true)]
-    [InlineData(HttpStatusCode.TooManyRequests, "4211", null, true)]
-    [InlineData(HttpStatusCode.Forbidden, "4211", null, false)]
+    [InlineData(HttpStatusCode.Forbidden, "0", null, PrimaryLimit, true)]
+    [InlineData(HttpStatusCode.Forbidden, "4211", "60", PrimaryLimit, true)]
+    [InlineData(HttpStatusCode.TooManyRequests, "4211", null, PrimaryLimit, true)]
+    // A secondary limit leaves the primary budget, and GitHub documents retry-after as optional on it (PR #62 review).
+    [InlineData(HttpStatusCode.Forbidden, "4211", null, "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.", true)]
+    [InlineData(HttpStatusCode.Forbidden, "4211", null, "Resource not accessible by integration", false)]
     public async Task ARateLimitRefusalIsRecordedWhereverTheCycleCaughtIt(HttpStatusCode status, string remaining, string? retryAfter,
-        bool limited)
+        string message, bool limited)
     {
         using var http = Client(new Handler(_ =>
         {
             var response = new HttpResponseMessage(status)
             {
-                Content = new StringContent("{\"message\":\"API rate limit exceeded for installation ID 162224105.\"}", Encoding.UTF8, "application/json")
+                Content = new StringContent(new JsonObject { ["message"] = message }.ToJsonString(), Encoding.UTF8, "application/json")
             };
             response.Headers.Add("x-ratelimit-remaining", remaining);
             if (retryAfter is not null) response.Headers.Add("retry-after", retryAfter);
@@ -124,6 +128,52 @@ public class GatewayTests
         var gateway = new GitHubGateway(http, 1, (_, _) => Task.CompletedTask);
         var e = await Assert.ThrowsAsync<HttpRequestException>(() => gateway.MainHead("owner/repo", TestContext.Current.CancellationToken));
         Assert.Equal(limited ? e.Message : null, gateway.RateLimited);
+    }
+
+    // A pending check run is always the newest, so when ChecksLimit commits hold none, the history is searched with no limit:
+    // recovery must not lose a test however many pushes followed it, and a cap would hide exactly that run (PR #62 review).
+    [Theory]
+    [InlineData(1100)]
+    [InlineData(null)]
+    public async Task AFirstReadOfTheChecksFindsAPendingRunBehindAnyNumberOfCommits(int? pending)
+    {
+        var requests = new List<string>();
+        var commits = Enumerable.Range(0, 3000).Select(i => $"c{i}").ToArray();
+        using var http = Client(new Handler(async request =>
+        {
+            var path = request.RequestUri!.PathAndQuery;
+            requests.Add(path);
+            if (path.EndsWith("/graphql"))
+            {
+                // One page of 100 commits, from the cursor, each saying whether it carries a check run of this App.
+                var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync(TestContext.Current.CancellationToken))!;
+                Assert.Equal(7, body["variables"]!["app"]!.GetValue<long>());
+                var from = body["variables"]!["after"]?.GetValue<string>() is { } cursor ? int.Parse(cursor) : 0;
+                var page = commits.Skip(from).Take(100).Select(c => new JsonObject
+                {
+                    ["oid"] = c,
+                    ["checkSuites"] = new JsonObject { ["nodes"] = new JsonArray(new JsonObject { ["checkRuns"] =
+                        new JsonObject { ["totalCount"] = Array.IndexOf(commits, c) == pending ? 1 : 0 } }) },
+                }).ToArray();
+                return Response(new JsonObject { ["data"] = new JsonObject { ["repository"] = new JsonObject {
+                    ["object"] = new JsonObject { ["history"] = new JsonObject {
+                        ["pageInfo"] = new JsonObject { ["hasNextPage"] = from + 100 < commits.Length, ["endCursor"] = $"{from + 100}" },
+                        ["nodes"] = new JsonArray(page) } } } } }.ToJsonString());
+            }
+            if (path.EndsWith("/commits/main")) return Response("{\"sha\":\"c0\"}");
+            if (path.Contains("/commits?"))
+                return Response("[" + string.Join(",", commits.Select(c => $"{{\"sha\":\"{c}\"}}")) + "]");
+            var sha = path.Split('/')[5];
+            return Response(Array.IndexOf(commits, sha) == pending ? $$$"""
+                {"check_runs":[{"id":1,"head_sha":"{{{sha}}}","status":"in_progress","conclusion":null,"started_at":"2026-09-16T18:00:00Z","app":{"id":7}}]}
+                """ : "{\"check_runs\":[]}");
+        }));
+        var checks = await new GitHubGateway(http, 7).Checks("owner/repo", TestContext.Current.CancellationToken);
+        // The search itself costs no REST request: GraphQL has a budget of its own, which the cycles do not spend.
+        Assert.Equal(GitHubGateway.ChecksLimit + (pending is null ? 0 : 1), requests.Count(p => p.Contains("/check-runs")));
+        Assert.Equal(pending is null ? 30 : 12, requests.Count(p => p.EndsWith("/graphql")));
+        if (pending is not null) Assert.Equal(("c1100", "in_progress"), (Assert.Single(checks).Sha, checks[0].Status));
+        else Assert.Empty(checks);
     }
 
     // Reading every commit's check runs cost each cycle about 195 of its 210 requests on a 195-commit target (#60).

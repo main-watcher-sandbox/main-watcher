@@ -37,7 +37,7 @@ kinds: a test dispatch for a new head, then the report of that test.
 | 35736804335 | Report | 215 | 197 | 4855 |
 
 The rest of a dispatch cycle:
-- 6 lock-issue reads, for recovery, renewal, the queue sweep, planning and the override check;
+- 6 reads of the lock issues;
 - 3 reads of the head;
 - 2 pages of commits;
 - the caller file;
@@ -74,30 +74,47 @@ latest one.
 ## What changed
 
 - **A first `Checks` read stops at the last green run.** It walks back from the head and reads each commit's check runs
-  until it finds a green one, and never more than 50 commits (`GitHubGateway.ChecksLimit`). This is exact for pending
-  runs, the newest runs and the neutral-retry count: only the Planner creates check runs, on the head, and never while
-  one is pending (ADR-017). So a pending run is always the newest run, and runs on older commits are older. What the limit
-  can miss:
-  - a green run more than 50 commits back, which only the timing comparison reads (the push list walks back on its own);
-  - a pending run with more than 50 pushes after it.
+  until it finds a green one, or until it has read 50 commits (`GitHubGateway.ChecksLimit`). Only the Planner creates check
+  runs, on the head, and never while one is pending (ADR-017). So a pending run is always the newest run, and runs on older
+  commits are older. Finding the newest check run finds every pending one, however many pushes followed it. What the limit
+  leaves out is a green run further back, which only the timing comparison reads (the push list walks back on its own).
+
+  **When those 50 commits hold no check run at all, the rest of the history is searched with no limit**
+  (`NewestCheckedCommit`), through GraphQL, 100 commits a request. The PR #62 review rejected two earlier versions: the
+  first stopped at 50 commits whatever it had found, and the second at 1000, each of which could hide the pending run this
+  has to find. GraphQL has a budget of its own, separate from the REST requests the cycles spend, and a page of 100 commits
+  costs 2 of its 5000 points an hour: measured against `sample-target`, where the query also returned the commits in the
+  same order as the REST list. So even a first cycle on a repository with a long history and no check run costs the
+  installation's hourly requests nothing.
 
   Estimated from the logs above:
   - a dispatch cycle drops from 208 to about 17 requests: 2 check-runs reads to reach the previous green commit, 1 more
     for planning, and one page of commits instead of two;
   - a report cycle drops to about 21.
 
-  The next suite run is to confirm both figures.
+  The full suite run below confirmed both.
 - **A low budget alerts.** After every cycle, including one that failed, `InstallationBudget.Judge` raises "The
   main-watcher App's API budget is below 20%" when the lowest budget the cycle saw had less than 20% left.
 - **A refused cycle alerts.** The gateway records the first request GitHub refused on its rate limit:
   - a 429;
   - a 403 with `x-ratelimit-remaining: 0`, the primary limit;
-  - a 403 with `retry-after`, the secondary limit.
+  - a 403 with `retry-after`, or with a message naming a rate limit, the secondary limit. GitHub documents `retry-after`
+    as optional there, and a secondary limit leaves the primary budget untouched (PR #62 review).
 
   The cycle then raises "The main-watcher App's API rate limit is refusing cycles", quoting the refusal. The record is
   made wherever the refusal was caught, since the cycle can fail on it at any step.
-- **One alert per window.** Both alerts carry a key naming the minute the budget refills. However many cycles and targets
-  see one shortage, it is one issue, with at most one comment an hour.
+- **One alert per window, written once.** Both alerts carry a key naming the minute the budget refills. Cycles for
+  different targets, and a sweep's legs, run at the same moment, and each checks before it writes, so each can find nothing
+  written. Both alerts are therefore raised as `shared`, which claims the window before writing it: the cycle creates the
+  label `mw-claim-<digest>` in the watcher repository, the digest being of the alert's title and its window key, and only
+  the cycle GitHub lets create it writes. A label name is unique in a repository, so exactly one cycle wins, and no
+  duplicate issue or comment is created — and so none is notified. The PR #62 review rejected two earlier versions: the
+  first wrote and then tidied up, by which time the duplicate notifications had gone out; the second named the claim after
+  the claiming cycle's own minute as well, so two cycles either side of a minute boundary claimed different labels for one
+  window and both wrote. The name now depends on nothing but the alert and its window. A claim whose write fails is deleted
+  again, so the next cycle raises the alert; the description records when it was claimed, and claims older than a day are
+  deleted by the next winner. Creating and deleting labels needs no permission beyond the `issues: write` the alerts
+  already use.
 - **The alerts can always be written.** They use the workflow's `GITHUB_TOKEN`, whose budget is separate from the App's.
 - **ETags were considered and deferred.** After the fix, a cycle's reads are about 20, and most of them are expected to
   change between cycles: the head, the issues, the jobs.
@@ -109,12 +126,48 @@ Unit tests:
 - `WatcherTests.ALowInstallationBudgetRaisesOneAlertPerWindow`
 - `WatcherTests.ACycleRefusedByTheRateLimitRaisesAnAlertNamingIt`
 
-## Still to do in the sandbox
+## The first full suite run with the fix
 
-This change has not yet run in the sandbox. A scenario suite run was using the replica while it was written, so it was
-not deployed there. After merging, the next suite run should show two things:
-- the per-cycle request counts falling to about 20;
-- no cycle refused on the budget.
+Run 9 of the scenario suite was on 2026-09-22, 14:35 to 16:32, at `22ffc39`, on six targets.
 
-At about 20 requests a cycle, the busy phase of runs 6 to 8 (56 cycles in 23 minutes, about 150 an hour) would cost about
-3,000 requests an hour, inside the 5000.
+- **Result:** 23 of 25 units passed in 116 minutes.
+- **The two failures were in the suite, not Main Watcher.** Both are fixed in `0636e51`:
+  - **TS-S15:** it read #30 in `sample-target-3` as open, unmerged and out of the queue, in the second when the queue
+    removed and merged it (both 14:57:42Z). It failed on "left the merge queue without merging", though #30 had merged.
+    A queue state that says so is now read again after 10 s, in both queue waits.
+  - **TS-S8:** three checks failed:
+    - `mw-observer`'s refused issue write on the replica was an empty new issue. The replica has been public since #25,
+      and there GitHub answers that with 422, from validation, before its 403. It is now probed with an empty update to
+      an existing issue, as on the targets.
+    - The two installation checks expected the Apps on the six targets the run used. Both Apps are installed on all ten
+      pool targets. The suite now passes the whole pool as `MW_INSTALLED_TARGETS`.
+- **The budget held.** 209 cycles sent 4603 requests, about 2,400 an hour:
+  - no request was refused;
+  - no budget alert was raised;
+  - the lowest budget any cycle logged was 3016 of 5000.
+
+  Runs 6 to 8 spent the budget in this phase.
+
+Requests per cycle, by what the cycle did:
+
+| Cycle | Cycles | Median | Range |
+|---|---|---|---|
+| Test dispatch | 47 | 17 | 17–21 |
+| Test dispatch, with reconciliation or an override | 27 | 22 | 20–42 |
+| Report | 35 | 21 | 16–36 |
+| Report, with reconciliation or an override | 33 | 31 | 21–35 |
+| Stale run (cancel, force-cancel, waiting for either) | 33 | 17 | 16–22 |
+| Idle: no eligible head | 11 | 15 | 14–19 |
+| Sweep leg | 6 | 30 | 22–40 |
+| Other, or a pending check with nothing to report | 17 | 21 | 20–21 |
+
+The dispatch and report figures are the 17 and 21 estimated above. Check-runs reads fell from about 195 a cycle to 3 to 5.
+
+Across all 209 cycles, the endpoints that dominate now are all per-cycle reads, none of which grows with history:
+- 1379 issue reads, the largest single cost, about 7 a cycle;
+- 974 check-runs reads;
+- 695 reads of the head.
+
+Most of a cycle's issue reads list the same lock issues again: renewal, the queue sweep, the report, the override check and
+reconciliation each read them for themselves. Reading them once a cycle is the next saving, if the budget needs one.
+

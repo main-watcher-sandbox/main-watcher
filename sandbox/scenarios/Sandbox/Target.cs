@@ -208,11 +208,24 @@ public sealed class Target(GitHub github, string repo, Templates templates)
             CheckRun.Time(node["mergedAt"]), node["state"]!.GetValue<string>());
     }
 
+    /// <summary>
+    /// <see cref="QueueState"/>, read again when it says the pull request is open, unmerged and out of the queue. The queue
+    /// removes an entry in the same second as it merges it, and one read fell between the two: #30 in sample-target-3 had
+    /// merged, but TS-S15 failed on "left the merge queue without merging" (#60).
+    /// </summary>
+    async Task<(bool Merged, bool Queued, DateTimeOffset? MergedAt, string State)> SettledQueueState(PullRequest pr, CancellationToken ct)
+    {
+        var state = await QueueState(pr, ct);
+        if (state.Merged || state.Queued || state.State != "OPEN") return state;
+        await Task.Delay(TimeSpan.FromSeconds(10), ct);
+        return await QueueState(pr, ct);
+    }
+
     /// <summary>Waits for a queued pull request to merge, and returns when it did.</summary>
     public Task<DateTimeOffset> AwaitMerged(PullRequest pr, TimeSpan timeout, CancellationToken ct) =>
         Poll.Value($"#{pr.Number} in {Repo} to merge", timeout, async () =>
         {
-            var state = await QueueState(pr, ct);
+            var state = await SettledQueueState(pr, ct);
             if (!state.Merged && !state.Queued && state.State == "OPEN")
                 throw new ScenarioFailure($"#{pr.Number} in {Repo} left the merge queue without merging");
             return state.Merged ? state.MergedAt : null;
@@ -222,7 +235,7 @@ public sealed class Target(GitHub github, string repo, Templates templates)
     public Task AwaitRemovedFromQueue(PullRequest pr, TimeSpan timeout, CancellationToken ct) =>
         Poll.True($"#{pr.Number} in {Repo} to leave the merge queue unmerged", timeout, async () =>
         {
-            var state = await QueueState(pr, ct);
+            var state = await SettledQueueState(pr, ct);
             if (state.Merged) throw new ScenarioFailure($"#{pr.Number} in {Repo} merged, but the gate should have removed it");
             return !state.Queued;
         }, ct, TimeSpan.FromSeconds(15));

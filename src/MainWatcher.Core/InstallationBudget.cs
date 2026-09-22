@@ -17,7 +17,8 @@ public static class InstallationBudget
     /// <summary>
     /// Raises the alert this cycle's budget calls for, if any: <see cref="RefusedTitle"/> when GitHub refused a request on its
     /// rate limit, otherwise <see cref="LowTitle"/> when less than <see cref="Floor"/> of the budget was left. Each is one
-    /// issue, commented on at most once per budget window, however many cycles and targets see it.
+    /// issue, commented on at most once per budget window, however many cycles and targets see it: cycles for different
+    /// targets, and a sweep's legs, run at the same time, so the alert is <c>shared</c> (<see cref="Alerts.Raise"/>).
     /// </summary>
     /// <returns>The title raised, or null when the budget needed no alert.</returns>
     public static async Task<string?> Judge(string repo, RateLimit? budget, string? refused, Alerts alerts, DateTimeOffset now,
@@ -33,12 +34,12 @@ public static class InstallationBudget
         if (refused is not null)
         {
             await alerts.Raise(RefusedTitle, $"A cycle for `{repo}` was refused by GitHub's rate limit:\n\n> {refused}\n\n"
-                + (budget is null ? "" : $"The lowest budget it saw was {budget}.") + refill + "\n\n" + Advice, ct, key);
+                + (budget is null ? "" : $"The lowest budget it saw was {budget}.") + refill + "\n\n" + Advice, ct, key, shared: true);
             return RefusedTitle;
         }
         if (budget is null || budget.Left >= Floor) return null;
         await alerts.Raise(LowTitle, $"A cycle for `{repo}` left {budget.Remaining} of {budget.Limit} `{budget.Resource}` "
-            + $"requests ({budget.Left * 100:0}%).{refill}\n\n{Advice}", ct, key);
+            + $"requests ({budget.Left * 100:0}%).{refill}\n\n{Advice}", ct, key, shared: true);
         return LowTitle;
     }
 }
