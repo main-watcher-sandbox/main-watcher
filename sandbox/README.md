@@ -125,20 +125,22 @@ kubectl -n main-watcher-sandbox scale deploy/trigger-worker --replicas=0
 ## Hand-made locks
 
 Scenario tests that need a hand-made lock (TS-S4, TS-S5) open one with the
-`sandbox-lock` workflow. It creates a `main-broken` issue authored by `main-watcher[bot]`
+`lock` workflow. It creates a `main-broken` issue authored by `main-watcher[bot]`
 with a `lease_until` marker, or closes the open ones:
 
 ```
-gh workflow run sandbox-lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=open -f lease_hours=4
-gh workflow run sandbox-lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=close
+gh workflow run lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=open -f lease_hours=4
+gh workflow run lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=close
 ```
 
 A negative `lease_hours` makes an expired lease, for the "LOCK LEASE EXPIRED" path.
 
-The workflow is no longer sandbox-only: it also opens the lock TS-S5 needs when a repository is
-onboarded ([onboarding.md](../docs/onboarding.md)). A bare `target` still means a
-`main-watcher-sandbox` repository, which is how the suite dispatches it; anything else must be an
-`owner/repo` listed in `targets.yml`, and any other repository is refused.
+The workflow is no longer sandbox-only, and was `sandbox-lock.yml` until MainWatcher#26: it also
+opens the lock TS-S5 needs when a repository is onboarded
+([onboarding.md](../docs/onboarding.md)). A bare `target` still means a `main-watcher-sandbox`
+repository, which is how the suite dispatches it; anything else must be an `owner/repo` listed in
+`targets.yml`, and any other repository is refused. The validation records of #16 and #20 name it
+by its old filename, which is what ran at the time.
 
 ## Workflow variants
 

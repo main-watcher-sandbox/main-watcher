@@ -133,7 +133,7 @@ so nothing it does can lock a repository still being onboarded. Rollback is docu
   `src/MainWatcher.TestRunner`.
 - `src/MainWatcher.Core/DryRun.cs` is the onboarding dry run; `.github/workflows/dry-run.yml` runs it.
 - `.github/workflows/` — `ci.yml` (`dotnet test`, `targets.yml` validation and actionlint on every PR),
-  `sandbox-lock.yml` (hand-made App-authored locks, for a sandbox target or one listed in
+  `lock.yml` (hand-made App-authored locks, for a sandbox target or one listed in
   `targets.yml`; it opens the lock TS-S5 needs at onboarding),
   `app-installations.yml` (lists `main-watcher`'s installed repositories for TS-S8), `release.yml` (moves the workflow
   tag and pushes the worker image, only for a commit with a passing `scenario-suite` status), and

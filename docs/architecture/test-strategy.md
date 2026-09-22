@@ -62,7 +62,7 @@ confidence: assumed
 | TS-S2: three quick pushes during a running test lead to exactly one further test, of the newest commit; the issue lists all pushes | FR-2, FR-3, ADR-009 | Slow suite; push 3 failing commits | Release |
 | TS-S3: a green run closes the lock; an override lifts the gate; a failure on a newer commit opens a new issue | ADR-004 | Scripted sequence | Release |
 | TS-S4: while locked, an unlabelled PR is removed from the queue and a `fixes-main` PR merges | FR-4, C-2 | Queue both | Release |
-| TS-S5: a batched group mixing a fix and a non-fix PR fails the gate | R-3, A-5 | Merge limit 2, with a lock open: `sandbox-lock.yml` opens an App-authored one with a short lease for a sandbox target or one listed in `targets.yml`, and closes it as the App afterwards | Release, and at onboarding |
+| TS-S5: a batched group mixing a fix and a non-fix PR fails the gate | R-3, A-5 | Merge limit 2, with a lock open: `lock.yml` opens an App-authored one with a short lease for a sandbox target or one listed in `targets.yml`, and closes it as the App afterwards | Release, and at onboarding |
 | TS-S6: a hand-made `main-broken` issue does not lock | R-2 | Issue created by a user | Release |
 | TS-S7: with the worker scaled to 0 and the sweep disabled, merges still proceed: (a) with no lock open, at once; (b) starting from an open lock, once `lock_lease` has passed, with the gate warning "LOCK LEASE EXPIRED". After the watcher is restored, the lease is renewed, the lock is enforced again, a "lock lapsed" alert is raised, and the merge from (b) is reported | NFR-3, ADR-014 | Queue a PR in each case; sandbox `lock_lease` of 10 min | Release |
 | TS-S8: credential scope. `mw-observer` cannot write or dispatch; `mw-doorbell` cannot touch targets; a target test run has no access to any Main Watcher key | ADR-009, ADR-010 | API calls with each token must return 403, with a working call beside each as control (`sandbox/ts-s8-credential-scope.sh`); the test run inspects its own environment (`inspect_environment` switch) | Release |
@@ -96,7 +96,7 @@ confidence: assumed
 **Workflow and deployment review checklist:** each item is also a test in `SecurityChecklistTests` (watcher CI), except the App installations, which `sandbox/ts-s8-credential-scope.sh` checks against the live Apps.
 - no `pull_request_target`;
 - the reusable workflow requests no App tokens;
-- the workflows holding the main App key (`watch.yml`, `dry-run.yml`, `sandbox-lock.yml`) never check out or run target code, and the dry run's token asks for neither Checks nor Issues;
+- the workflows holding the main App key (`watch.yml`, `dry-run.yml`, `lock.yml`) never check out or run target code, and the dry run's token asks for neither Checks nor Issues;
 - third-party actions pinned by commit SHA;
 - the worker's Kubernetes Secret has restricted RBAC;
 - `main-watcher` and `mw-observer` are installed on selected repositories only, matching

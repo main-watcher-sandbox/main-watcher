@@ -1,13 +1,13 @@
-# Opens or closes a hand-made, App-authored lock on a target. It began as sandbox-only, for the
-# scenario tests that need a lock before watch.yml exists (TS-S4, TS-S5, TS-S7), and keeps that
-# name and its inputs; it also opens the lock TS-S5 needs when a repository is onboarded, since
-# the gate passes every merge group while no lock is open (docs/onboarding.md).
+# Opens or closes a hand-made, App-authored lock on a target. It serves the scenario tests that
+# need a lock before watch.yml exists (TS-S4, TS-S5, TS-S7), and the lock TS-S5 needs when a
+# repository is onboarded, since the gate passes every merge group while no lock is open
+# (docs/onboarding.md). It was sandbox-lock.yml until #26, when onboarding started using it.
 #
 # A lock blocks a repository's merge queue, so only two kinds of target may be given one by hand:
 # a main-watcher-sandbox target, and a repository this watcher already watches, which it could
 # lock through a cycle anyway. Anything else is refused. The lease bounds what a forgotten lock
 # can do: once it has passed, the gate stops enforcing the lock (ADR-014).
-name: sandbox-lock
+name: lock
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ permissions:
   # Only to read targets.yml, which says which repositories may be locked by hand.
   contents: read
 
-concurrency: sandbox-lock-${{ inputs.target }}
+concurrency: lock-${{ inputs.target }}
 
 jobs:
   lock:
@@ -59,9 +59,11 @@ jobs:
             echo "::error::$repo is neither a $sandbox target nor listed in targets.yml, so it may not be locked by hand."
             exit 1
           fi
-          printf 'repo=%s\n' "$repo" >> "$GITHUB_OUTPUT"
-          printf 'owner=%s\n' "$owner" >> "$GITHUB_OUTPUT"
-          printf 'name=%s\n' "$name" >> "$GITHUB_OUTPUT"
+          {
+            printf 'repo=%s\n' "$repo"
+            printf 'owner=%s\n' "$owner"
+            printf 'name=%s\n' "$name"
+          } >> "$GITHUB_OUTPUT"
 
       - id: token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -88,5 +90,5 @@ jobs:
             gh issue create -R "$REPO" --title "main is broken (hand-made lock)" --label main-broken --body "$body"
           else
             gh issue list -R "$REPO" --state open --label main-broken --author 'app/main-watcher' --json number --jq '.[].number' |
-              while read -r number; do gh issue close "$number" -R "$REPO" --comment "Closed by sandbox-lock."; done
+              while read -r number; do gh issue close "$number" -R "$REPO" --comment "Closed by the lock workflow."; done
           fi

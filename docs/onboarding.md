@@ -181,7 +181,7 @@ cannot confirm on its behalf.
 App-authored lock with a short lease, from the watcher repository:
 
 ```bash
-gh workflow run sandbox-lock.yml -f target=acme/checkout -f action=open -f lease_hours=1
+gh workflow run lock.yml -f target=acme/checkout -f action=open -f lease_hours=1
 ```
 
 It refuses any repository that is neither a sandbox target nor listed in `targets.yml`. The lease is what bounds
@@ -196,7 +196,7 @@ the gate could not see both pull requests: stop and raise it, because A-5 does n
 Then close the lock, which the App does itself, so nothing is recorded as a human override:
 
 ```bash
-gh workflow run sandbox-lock.yml -f target=acme/checkout -f action=close
+gh workflow run lock.yml -f target=acme/checkout -f action=close
 ```
 
 Confirm the `main-broken` issue is closed and the queue is moving again before step 8.
