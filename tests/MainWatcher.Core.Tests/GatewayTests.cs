@@ -96,6 +96,18 @@ public class GatewayTests
     }
 
     [Fact]
+    public async Task RequestsAreCountedByEndpoint()
+    {
+        using var http = Client(new Handler(_ => Task.FromResult(Response("{\"jobs\":[]}"))));
+        var gateway = new GitHubGateway(http, 1);
+        await gateway.Jobs("owner/repo", 1, TestContext.Current.CancellationToken);
+        await gateway.Jobs("owner/repo", 2, TestContext.Current.CancellationToken);
+        // An empty jobs list also reads the run, so both endpoints are counted, each once per call, with the run ID generalised.
+        Assert.Contains(("GET repos/owner/repo/actions/runs/{n}/jobs", 2), gateway.Requests);
+        Assert.Contains(("GET repos/owner/repo/actions/runs/{n}", 2), gateway.Requests);
+    }
+
+    [Fact]
     public async Task UndownloadableArtifactIsUnknown()
     {
         using var http = Client(new Handler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden))));
