@@ -21,6 +21,13 @@ public sealed class SandboxOrg(GitHub github, Templates templates, Replica repli
     /// <summary>The queue deadline the target <see cref="QueueDeadlineTarget"/> is given (TS-S16 (g)).</summary>
     public const int ShortQueueDeadline = 10;
 
+    /// <summary>
+    /// Every pool target set up in the sandbox, whichever of them a run uses. Each has <c>main-watcher</c> and
+    /// <c>mw-observer</c> installed, so TS-S8 expects the Apps on all of them.
+    /// </summary>
+    public static IReadOnlyList<string> PoolRepos { get; } =
+        Enumerable.Range(1, 10).Select(n => $"{Org}/sample-target{(n == 1 ? "" : $"-{n}")}").ToArray();
+
     public GitHub GitHub { get; } = github;
     public Templates Templates { get; } = templates;
     public Replica Replica { get; } = replica;

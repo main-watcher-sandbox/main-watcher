@@ -23,7 +23,9 @@ public sealed class CredentialScope : Scenario
         var exited = "";
         try
         {
+            // A run uses some of the pool, and writes targets.yml for those alone; the Apps are installed on all of it.
             await Infra.Shell.Run(Infra.Shell.Bash, ["sandbox/ts-s8-credential-scope.sh"], ctx.Ct, root,
+                env: new Dictionary<string, string> { ["MW_INSTALLED_TARGETS"] = string.Join(' ', Sandbox.SandboxOrg.PoolRepos) },
                 progress: line => { lock (lines) lines.Add(line); });
         }
         catch (InvalidOperationException) { exited = " It exited non-zero."; }
