@@ -1,6 +1,6 @@
-# Validation of MainWatcher#26: the onboarding dry run and the hand-made lock workflow.
-# sample-target is listed but NOT enabled, which is the state an entry has while it is being
-# onboarded: the dry run accepts it, and no cycle can run against it.
+# Validation of MainWatcher#26. acme/checkout does not exist: it is listed, disabled, only to show
+# that the lock workflow's guard admits a repository because targets.yml names it, not because of
+# its owner. Removed straight after.
 lock_lease: 10
 targets:
   - repo: main-watcher-sandbox/sample-target
@@ -9,4 +9,11 @@ targets:
     timeout: 30
     poll_interval: 1
     notify: [pat-actium]
+    enabled: false
+  - repo: acme/checkout
+    test_command: dotnet test --no-restore
+    results_glob: '**/TestResults/*.ctrf.json'
+    timeout: 30
+    poll_interval: 15
+    notify: []
     enabled: false
