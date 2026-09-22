@@ -112,8 +112,12 @@ public sealed class Timings : Scenario
                 $"target run {runId}: the job summary lists {name} at {row?.AverageText} average and {row?.P95Text} p95, "
                 + $"in scale with CTRF's {duration} ms", row?.ToString());
         }
-        ctx.Require(slowest[0].Name.EndsWith(JobSummary.TimedTests[0], StringComparison.Ordinal),
-            $"target run {runId}: the job summary ranks the 20-second test slowest", slowest[0].ToString());
+        // Only the timed tests' order is known: a target's history can hold slower tests from other scenarios, such as the
+        // hanging ones, and the reporter ranks those above them (first TS-S13 run with this check, #25).
+        var ranks = JobSummary.TimedTests.Select(test => slowest.FindIndex(r => r.Name.EndsWith(test, StringComparison.Ordinal))).ToArray();
+        ctx.Require(ranks.All(rank => rank >= 0) && ranks.SequenceEqual(ranks.Order()),
+            $"target run {runId}: the job summary ranks the 20-second test above the 2-second one, and that above the 50-millisecond one",
+            string.Join(", ", slowest.Select(r => $"{r.Name} {r.P95Text}")));
     }
 }
 
