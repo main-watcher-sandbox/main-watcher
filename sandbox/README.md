@@ -241,8 +241,10 @@ GitHub time. A full run does not yet fit the `main-watcher` installation's API b
 A run uses six of them by default: `sample-target`, `sample-target-2` to `-5`, and `sample-target-10`, the one the worker
 gives a short queue deadline. `--targets N` uses N, from 2 to 10. More is not faster in practice. Every target's cycles
 share the `main-watcher` App installation's 5000 API requests an hour. With ten targets, the fourth run spent the whole
-budget in 39 minutes, and every cycle then failed with 403 until it refilled (#25). Each cycle's log ends with the budget
-it left: "API budget of this installation: … requests left".
+budget in 39 minutes, and every cycle then failed with 403 until it refilled (#25). Each cycle's log ends with its requests
+by endpoint and the lowest budget it saw: "API budget of this installation: … requests left". Since #60, a cycle's first read
+of the check runs stops at the last green run instead of reading every commit, and a low or spent budget raises a
+`watcher-infra` alert (`docs/watcher.md`).
 
 After each unit, its target is reset:
 
