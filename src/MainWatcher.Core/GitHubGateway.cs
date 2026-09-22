@@ -678,9 +678,9 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.UnprocessableEntity) { return false; }
     }
 
-    public async Task<IReadOnlyList<string>> LabelNames(string repo, string prefix, CancellationToken ct) =>
-        (await Pages($"repos/{repo}/labels", null, ct)).Select(l => Text(l, "name") ?? "")
-        .Where(n => n.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
+    public async Task<IReadOnlyList<RepoLabel>> RepoLabels(string repo, string prefix, CancellationToken ct) =>
+        (await Pages($"repos/{repo}/labels", null, ct)).Select(l => new RepoLabel(Text(l, "name") ?? "", Text(l, "description")))
+        .Where(l => l.Name.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
 
     public async Task DeleteLabel(string repo, string name, CancellationToken ct)
     {

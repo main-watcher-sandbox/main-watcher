@@ -8,6 +8,9 @@ public sealed class Alerts(IGitHubGateway github, string repo, Func<DateTimeOffs
     /// <summary>The prefix of the labels a <c>shared</c> alert claims a window with.</summary>
     public const string ClaimPrefix = "mw-claim-";
 
+    /// <summary>What a claim label's description says before the time it was created.</summary>
+    public const string ClaimedAt = "Main Watcher: this alert has been raised at ";
+
     /// <summary>How long a claim label is kept before the next winner deletes it.</summary>
     public static readonly TimeSpan ClaimKept = TimeSpan.FromDays(1);
 
@@ -70,23 +73,22 @@ public sealed class Alerts(IGitHubGateway github, string repo, Func<DateTimeOffs
     async Task<string?> Claim(string title, string? key, CancellationToken ct)
     {
         var at = clock();
-        // The time is in the name, so a claim can be cleaned up by its age alone; the digest keeps the name unique and short.
-        var digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes($"{title}\n{key}")))[..8].ToLowerInvariant();
-        var name = $"{ClaimPrefix}{at.UtcDateTime:yyyyMMddHHmm}-{digest}";
-        if (!await github.Claim(repo, name, $"Main Watcher: this alert has been raised. Deleted after {ClaimKept.TotalHours:0} h.", ct))
+        // The name is the alert and its window, and nothing else. It carried the claiming cycle's own minute until the PR #62
+        // review: two cycles either side of a minute boundary then claimed different labels for the same window, and both
+        // wrote. When the claim was made is kept in the description instead, which is all the cleanup below needs.
+        var name = ClaimPrefix + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"{title}\n{key}")))[..16].ToLowerInvariant();
+        if (!await github.Claim(repo, name, $"{ClaimedAt}{Markers.Stamp(at)}. Deleted after {ClaimKept.TotalHours:0} h.", ct))
             return null;
-        foreach (var old in await github.LabelNames(repo, ClaimPrefix, ct))
-            if (old != name && Claimed(old) is { } made && at - made > ClaimKept) await github.DeleteLabel(repo, old, ct);
+        foreach (var old in await github.RepoLabels(repo, ClaimPrefix, ct))
+            if (old.Name != name && Claimed(old) is { } made && at - made > ClaimKept) await github.DeleteLabel(repo, old.Name, ct);
         return name;
     }
 
-    /// <summary>When a claim label was created, from its name; null when the name does not carry a time.</summary>
-    static DateTimeOffset? Claimed(string label) =>
-        DateTimeOffset.TryParseExact(label.AsSpan(ClaimPrefix.Length, Math.Min(12, Math.Max(0, label.Length - ClaimPrefix.Length))),
-            "yyyyMMddHHmm", System.Globalization.CultureInfo.InvariantCulture,
-            System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var made)
-            ? made : null;
+    /// <summary>When a claim was made, from its description; null when the description does not say, so it is left alone.</summary>
+    static DateTimeOffset? Claimed(RepoLabel label) => label.Description is { } said
+        && said.StartsWith(ClaimedAt, StringComparison.Ordinal)
+        ? Markers.Read(said[ClaimedAt.Length..].Split('.')[0]) : null;
 
     /// <summary>The alert with this title that this instance opened within <see cref="Remembered"/>, if any.</summary>
     Issue? Recent(string title)

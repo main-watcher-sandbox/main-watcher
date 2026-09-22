@@ -106,12 +106,15 @@ latest one.
 - **One alert per window, written once.** Both alerts carry a key naming the minute the budget refills. Cycles for
   different targets, and a sweep's legs, run at the same moment, and each checks before it writes, so each can find nothing
   written. Both alerts are therefore raised as `shared`, which claims the window before writing it: the cycle creates the
-  label `mw-claim-<minute>-<digest>` in the watcher repository, and only the cycle GitHub lets create it writes. A label
-  name is unique in a repository, so exactly one cycle wins, and no duplicate issue or comment is created — and so none is
-  notified. The PR #62 review rejected the first version, which wrote first and tidied up afterwards: the duplicate
-  notifications had gone out by then. A claim whose write fails is deleted again, so the next cycle raises the alert, and
-  claims older than a day are deleted by the next winner. Creating and deleting labels needs no permission beyond the
-  `issues: write` the alerts already use.
+  label `mw-claim-<digest>` in the watcher repository, the digest being of the alert's title and its window key, and only
+  the cycle GitHub lets create it writes. A label name is unique in a repository, so exactly one cycle wins, and no
+  duplicate issue or comment is created — and so none is notified. The PR #62 review rejected two earlier versions: the
+  first wrote and then tidied up, by which time the duplicate notifications had gone out; the second named the claim after
+  the claiming cycle's own minute as well, so two cycles either side of a minute boundary claimed different labels for one
+  window and both wrote. The name now depends on nothing but the alert and its window. A claim whose write fails is deleted
+  again, so the next cycle raises the alert; the description records when it was claimed, and claims older than a day are
+  deleted by the next winner. Creating and deleting labels needs no permission beyond the `issues: write` the alerts
+  already use.
 - **The alerts can always be written.** They use the workflow's `GITHUB_TOKEN`, whose budget is separate from the App's.
 - **ETags were considered and deferred.** After the fix, a cycle's reads are about 20, and most of them are expected to
   change between cycles: the head, the issues, the jobs.

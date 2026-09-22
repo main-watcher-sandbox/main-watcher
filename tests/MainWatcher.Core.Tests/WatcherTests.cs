@@ -2545,7 +2545,8 @@ public class WatcherTests
 
     // Cycles for different targets, and a sweep's legs, run at once, and each checks before it writes, so every one of them
     // can find nothing written (PR #62 review). Here the issue and comment lists lag, so none of the three sees another's
-    // write at all: only the claim decides, and only one alert is ever written, so only one is ever notified.
+    // write at all: only the claim decides, and only one alert is ever written, so only one is ever notified. They also run
+    // either side of a minute boundary, which a claim named after the claiming cycle's own minute let through (PR #62 review).
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -2555,24 +2556,31 @@ public class WatcherTests
         var watcher = new FakeGitHub { ListLags = true };
         if (alreadyOpen) watcher.Seed("owner/watcher", Alerts.Label, InstallationBudget.LowTitle, "github-actions[bot]", "Bot", "earlier window");
         var reset = DateTimeOffset.Parse("2026-09-22T14:35:41Z");
-        var cycles = new[] { "owner/repo", "owner/other", "owner/third" }.Select(repo =>
-            InstallationBudget.Judge(repo, new("core", 900, 5000, reset), null, new Alerts(watcher, "owner/watcher", () => Now), Now, ct)).ToArray();
+        // One second before a minute ends, and two and three seconds after it.
+        var minute = Now.AddSeconds(-Now.Second).AddSeconds(59);
+        var cycles = new[] { minute, minute.AddSeconds(3), minute.AddSeconds(4) }.Select((at, i) =>
+            InstallationBudget.Judge($"owner/target-{i}", new("core", 900, 5000, reset), null,
+                new Alerts(watcher, "owner/watcher", () => at), at, ct)).ToArray();
         await Task.WhenAll(cycles);
 
         var alert = Assert.Single(watcher.Issues["owner/watcher"]);
         Assert.True(alert.Open);
         Assert.Equal(alreadyOpen ? 1 : 0, alert.Comments.Count);
         Assert.Equal(1, watcher.Order.Count(o => o.StartsWith("create:", StringComparison.Ordinal) || o.StartsWith("comment:", StringComparison.Ordinal)));
-        // An hour later the list has caught up, as GitHub's does in seconds. The claim names the window, so the next one is
-        // raised, on the same alert, and the day-old claims of earlier ones are deleted.
+        Assert.NotEqual(minute.Minute, minute.AddSeconds(3).Minute); // The cycles did straddle a minute boundary.
+        var claim = Assert.Single(watcher.CreatedLabels["owner/watcher"]);
+        Assert.StartsWith($"{Alerts.ClaimedAt}{Markers.Stamp(minute)}", claim.Description);
+
+        // An hour later the list has caught up, as GitHub's does in seconds. The claim names the alert and its window, so the
+        // next window is raised, on the same alert, and claims older than a day are deleted.
         watcher.Catch();
-        var stale = $"{Alerts.ClaimPrefix}{(Now - Alerts.ClaimKept - TimeSpan.FromMinutes(1)).UtcDateTime:yyyyMMddHHmm}-0badcafe";
-        await watcher.Claim("owner/watcher", stale, "an old claim", ct);
+        await watcher.Claim("owner/watcher", $"{Alerts.ClaimPrefix}0badcafe", $"{Alerts.ClaimedAt}{Markers.Stamp(Now - Alerts.ClaimKept - TimeSpan.FromMinutes(1))}.", ct);
         await InstallationBudget.Judge("owner/later", new("core", 900, 5000, reset.AddHours(1)), null,
             new Alerts(watcher, "owner/watcher", () => Now), Now, ct);
         Assert.Equal(alreadyOpen ? 2 : 1, Assert.Single(watcher.Issues["owner/watcher"]).Comments.Count);
-        Assert.DoesNotContain(stale, watcher.CreatedLabels["owner/watcher"]);
-        Assert.Equal(2, watcher.CreatedLabels["owner/watcher"].Count(l => l.StartsWith(Alerts.ClaimPrefix, StringComparison.Ordinal)));
+        Assert.Contains(watcher.CreatedLabels["owner/watcher"], l => l.Name == claim.Name);
+        Assert.DoesNotContain(watcher.CreatedLabels["owner/watcher"], l => l.Name == $"{Alerts.ClaimPrefix}0badcafe");
+        Assert.Equal(2, watcher.CreatedLabels["owner/watcher"].Count(l => l.Name.StartsWith(Alerts.ClaimPrefix, StringComparison.Ordinal)));
     }
 
     // A claim stands for an alert that was written, so one whose write fails is given back (PR #62 review).
@@ -2704,21 +2712,22 @@ public class WatcherTests
             return Task.CompletedTask;
         }
         /// <summary>The labels of the repository, as the claim of a shared alert creates them.</summary>
-        public Dictionary<string, List<string>> CreatedLabels { get; } = [];
+        public Dictionary<string, List<RepoLabel>> CreatedLabels { get; } = [];
         public Task<bool> Claim(string repo, string name, string description, CancellationToken ct)
         {
             CreatedLabels.TryAdd(repo, []);
             // A label name is unique in a repository: GitHub refuses the second creation, whoever sends it.
-            if (CreatedLabels[repo].Contains(name)) return Task.FromResult(false);
-            CreatedLabels[repo].Add(name);
+            if (CreatedLabels[repo].Any(l => l.Name == name)) return Task.FromResult(false);
+            CreatedLabels[repo].Add(new(name, description));
             Wrote($"claim:{name}");
             return Task.FromResult(true);
         }
-        public Task<IReadOnlyList<string>> LabelNames(string repo, string prefix, CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<string>>(CreatedLabels.GetValueOrDefault(repo, []).Where(l => l.StartsWith(prefix, StringComparison.Ordinal)).ToArray());
+        public Task<IReadOnlyList<RepoLabel>> RepoLabels(string repo, string prefix, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<RepoLabel>>(CreatedLabels.GetValueOrDefault(repo, [])
+                .Where(l => l.Name.StartsWith(prefix, StringComparison.Ordinal)).ToArray());
         public Task DeleteLabel(string repo, string name, CancellationToken ct)
         {
-            CreatedLabels.GetValueOrDefault(repo, []).Remove(name);
+            CreatedLabels.GetValueOrDefault(repo, []).RemoveAll(l => l.Name == name);
             Wrote($"delete-label:{name}");
             return Task.CompletedTask;
         }
