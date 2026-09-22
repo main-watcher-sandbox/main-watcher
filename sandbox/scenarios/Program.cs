@@ -14,7 +14,8 @@ if (options is null)
           --only       run only the units covering these scenarios (a prefix: TS-S16 is every TS-S16 unit)
           --no-deploy  skip publishing, the replica push, the worker image and seeding: test what the sandbox already runs
           --targets    how many pool targets to use (2 to 10, default 6): sample-target, sample-target-2 onwards, and
-                       always sample-target-10, which the worker gives a short queue deadline
+                       always sample-target-10, which the worker gives a short queue deadline. A full run needs 6, one
+                       for each unit that starts at once; --only needs as many as its outage and early units
           --no-status  post no commit status, even when the run qualifies
           --list       list the units and exit
         """);
@@ -30,6 +31,14 @@ if (options.List)
 var selected = options.Only is null ? catalogue
     : catalogue.Where(u => u.Covers.Any(c => options.Only.Any(o => c.StartsWith(o, StringComparison.OrdinalIgnoreCase)))).ToList();
 if (selected.Count == 0) { Console.Error.WriteLine("No unit covers those scenarios."); return 2; }
+// Every outage and early unit starts at once on a target of its own (Suite.Run). Too small a pool is refused here, before
+// the sandbox is touched, rather than part-way through a run with no results written (PR #61 review).
+var needed = selected.Count(u => u.Phase != Phase.Pool);
+if (options.Targets < needed)
+{
+    Console.Error.WriteLine($"These units need at least {needed} targets, for the ones that start together; --targets is {options.Targets}.");
+    return 2;
+}
 
 var root = Repository.Root();
 var commit = (await Shell.Run("git", ["rev-parse", "HEAD"], CancellationToken.None, root)).Trim();

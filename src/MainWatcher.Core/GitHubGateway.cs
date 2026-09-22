@@ -35,6 +35,22 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     /// </summary>
     public string? Budget { get; private set; }
 
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> requests = new();
+
+    /// <summary>
+    /// How many requests this gateway has sent, by endpoint with its numbers and SHAs generalised, most first: what a cycle
+    /// costs the installation's shared budget, and where (R-13, #60).
+    /// </summary>
+    public IReadOnlyList<(string Endpoint, int Count)> Requests =>
+        requests.OrderByDescending(r => r.Value).ThenBy(r => r.Key, StringComparer.Ordinal).Select(r => (r.Key, r.Value)).ToArray();
+
+    void Count(HttpMethod method, string path)
+    {
+        var resource = path.Split('?')[0].Replace("https://api.github.com/", "").TrimStart('/');
+        resource = System.Text.RegularExpressions.Regex.Replace(resource, "(?<=/)([0-9a-f]{40}|[0-9]+)(?=/|$)", "{n}");
+        requests.AddOrUpdate($"{method} {resource}", 1, (_, n) => n + 1);
+    }
+
     /// <summary>
     /// An installation token for the App this gateway authenticates as (a JWT client), limited to <paramref name="repo"/>.
     /// </summary>
@@ -62,6 +78,7 @@ public sealed class GitHubGateway(HttpClient http, long appId,
             {
                 using var request = new HttpRequestMessage(method, path);
                 if (body is not null) request.Content = JsonContent.Create(body);
+                Count(method, path);
                 using var response = await http.SendAsync(request, ct);
                 Note(response);
                 if (method == HttpMethod.Get && attempt < 3 && IsTransient(response))
@@ -489,6 +506,7 @@ public sealed class GitHubGateway(HttpClient http, long appId,
                 .Where(a => Text(a, "name") == "main-watcher-ctrf" && !a.GetProperty("expired").GetBoolean()).ToArray();
             if (artifacts.Length != 1) return CtrfResult.Unknown;
             var id = artifacts[0].GetProperty("id").GetInt64();
+            Count(HttpMethod.Get, $"repos/{repo}/actions/artifacts/{id}/zip");
             using var response = await http.GetAsync($"repos/{repo}/actions/artifacts/{id}/zip", HttpCompletionOption.ResponseHeadersRead, ct);
             response.EnsureSuccessStatusCode();
             if (response.Content.Headers.ContentLength > CtrfReader.MaxReportBytes) return CtrfResult.Unknown;

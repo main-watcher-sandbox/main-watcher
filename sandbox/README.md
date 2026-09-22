@@ -226,8 +226,10 @@ It then configures the sandbox for the run:
 
 With `--no-deploy` it skips the first part and tests whatever the sandbox already runs.
 
-A full run takes about 1 h 45 min. The longest unit, TS-S16 (h)'s unstoppable run, starts first and sets that time: from
-its run deadline through the refused cancel and force-cancel to the alert is about 90 min of GitHub time.
+A full run takes about 2 h 15 min on six targets; one on ten took 100 minutes. The longest unit, TS-S16 (h)'s unstoppable
+run, starts first: from its run deadline through the refused cancel and force-cancel to the alert is about 90 min of
+GitHub time. A full run does not yet fit the `main-watcher` installation's API budget, below, so none has passed yet
+(#60).
 
 **The pool.** Scenarios run side by side, each on a target of its own. Ten targets are set up: `sample-target` and
 `sample-target-2` to `sample-target-10`. A pool target needs three things:
@@ -282,7 +284,9 @@ Any run that includes TS-S13 posts `scenario-suite/ts-s13`. `--no-status` posts 
 
 **What it cannot check.**
 
-- The CTRF job summary is not in the API. TS-S13's job-summary half is checked only as far as the
-  `report` job succeeding and saving its history artifact. Its check-run half is checked against
-  the CTRF reports and `timings.json`.
+- The CTRF job summary is not in the REST API, so the `report` job also keeps the markdown the
+  reporter generated, as the `main-watcher-summary` artifact. TS-S13 checks that summary's slowest
+  tests against the CTRF reports: each timed test listed, its average and p95 within a factor of
+  three of CTRF's duration, and the 20-second test ranked slowest. It cannot see how GitHub
+  renders the page. The check-run half is checked against the CTRF reports and `timings.json`.
 - TS-S18's "once the feed is back" needs a new head, because the feed switch is a file.

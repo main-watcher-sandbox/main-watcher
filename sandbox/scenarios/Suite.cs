@@ -31,6 +31,9 @@ public sealed class Suite(SandboxOrg sandbox, IReadOnlyList<Scenario> units, str
         var free = new Queue<Target>(sandbox.Pool);
         var lanes = new List<Task>();
         var fixedUnits = units.Where(u => u.Phase != Phase.Pool).ToList();
+        // Checked before any lane starts, so a pool too small fails with nothing begun (Program.cs refuses it earlier still).
+        if (fixedUnits.Count > sandbox.Pool.Count)
+            throw new InvalidOperationException($"The pool has too few targets for the units that need their own ({fixedUnits.Count}).");
         pending.AddRange(units.Where(u => u.Phase == Phase.Pool).OrderByDescending(u => u.Estimate.Ticks));
 
         foreach (var unit in fixedUnits.Where(u => u.Phase == Phase.Outage)) sandbox.Outage.Join(unit.Name);

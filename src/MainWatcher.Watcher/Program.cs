@@ -169,6 +169,9 @@ catch (Exception e)
 finally
 {
     if (budget?.Budget is { } left) Console.WriteLine($"API budget of this installation: {left}.");
+    if (budget?.Requests is { Count: > 0 } sent)
+        Console.WriteLine($"API requests this cycle: {sent.Sum(r => r.Count)}; most: "
+            + string.Join(", ", sent.Take(6).Select(r => $"{r.Count} {r.Endpoint}")) + ".");
 }
 
 static HttpClient Client(string token)
