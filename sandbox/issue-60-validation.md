@@ -74,12 +74,14 @@ latest one.
 ## What changed
 
 - **A first `Checks` read stops at the last green run.** It walks back from the head and reads each commit's check runs
-  until it finds a green one, and never more than 50 commits (`GitHubGateway.ChecksLimit`). This is exact for pending
-  runs, the newest runs and the neutral-retry count: only the Planner creates check runs, on the head, and never while
-  one is pending (ADR-017). So a pending run is always the newest run, and runs on older commits are older. What the limit
-  can miss:
-  - a green run more than 50 commits back, which only the timing comparison reads (the push list walks back on its own);
-  - a pending run with more than 50 pushes after it.
+  until it finds a green one, or until it has read 50 commits (`GitHubGateway.ChecksLimit`) and found a check run of any
+  kind. Only the Planner creates check runs, on the head, and never while one is pending (ADR-017). So a pending run is
+  always the newest run, and runs on older commits are older. Finding the newest check run finds every pending one,
+  however many pushes followed it. The first version stopped at 50 commits whatever it had found, which the PR #62 review
+  showed could lose a pending run behind 50 newer commits. What the limit leaves out is a green run further back, which
+  only the timing comparison reads (the push list walks back on its own). A target with no check run at all, such as one
+  just added with a long history, is searched 1000 commits back (`ChecksSearchLimit`). Otherwise its first cycle would
+  spend the hour's budget before it could start the test that ends the search.
 
   Estimated from the logs above:
   - a dispatch cycle drops from 208 to about 17 requests: 2 check-runs reads to reach the previous green commit, 1 more
@@ -92,12 +94,16 @@ latest one.
 - **A refused cycle alerts.** The gateway records the first request GitHub refused on its rate limit:
   - a 429;
   - a 403 with `x-ratelimit-remaining: 0`, the primary limit;
-  - a 403 with `retry-after`, the secondary limit.
+  - a 403 with `retry-after`, or with a message naming a rate limit, the secondary limit. GitHub documents `retry-after`
+    as optional there, and a secondary limit leaves the primary budget untouched (PR #62 review).
 
   The cycle then raises "The main-watcher App's API rate limit is refusing cycles", quoting the refusal. The record is
   made wherever the refusal was caught, since the cycle can fail on it at any step.
-- **One alert per window.** Both alerts carry a key naming the minute the budget refills. However many cycles and targets
-  see one shortage, it is one issue, with at most one comment an hour.
+- **One alert per window.** Both alerts carry a key naming the minute the budget refills. Cycles for different targets,
+  and a sweep's legs, run at the same moment, and each checks before it writes. So both alerts are raised as `shared`:
+  the writer waits 10 s (`Alerts.Settle`), then closes newer open copies as duplicates of the oldest and deletes comments
+  that repeat the key (PR #62 review). However many cycles and targets see one shortage, it is one issue, with at most one
+  comment an hour.
 - **The alerts can always be written.** They use the workflow's `GITHUB_TOKEN`, whose budget is separate from the App's.
 - **ETags were considered and deferred.** After the fix, a cycle's reads are about 20, and most of them are expected to
   change between cycles: the head, the issues, the jobs.

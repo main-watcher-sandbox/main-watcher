@@ -39,12 +39,16 @@ public sealed record RateLimit(string Resource, int Remaining, int Limit, DateTi
     }
 
     /// <summary>
-    /// Whether a refused response was GitHub's rate limit rather than a permission: a 429, or a 403 with the budget spent or a
-    /// <c>retry-after</c>, which is how GitHub marks a secondary rate limit.
+    /// Whether a refused response was GitHub's rate limit rather than a permission: a 429, or a 403 with the budget spent, a
+    /// <c>retry-after</c>, or a message naming a rate limit. GitHub documents <c>retry-after</c> as optional on a secondary
+    /// limit, which leaves the primary budget as it was, so its message is what marks it (PR #62 review).
     /// </summary>
-    public static bool Refused(HttpResponseMessage response) => response.StatusCode == System.Net.HttpStatusCode.TooManyRequests
+    /// <param name="message">GitHub's error message, when the body has been read; the headers alone decide without it.</param>
+    public static bool Refused(HttpResponseMessage response, string? message = null) =>
+        response.StatusCode == System.Net.HttpStatusCode.TooManyRequests
         || response.StatusCode == System.Net.HttpStatusCode.Forbidden
-        && (response.Headers.RetryAfter is not null || Header(response, "x-ratelimit-remaining") == "0");
+        && (response.Headers.RetryAfter is not null || Header(response, "x-ratelimit-remaining") == "0"
+            || message?.Contains("rate limit", StringComparison.OrdinalIgnoreCase) == true);
 
     static string? Header(HttpResponseMessage response, string name) =>
         response.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;

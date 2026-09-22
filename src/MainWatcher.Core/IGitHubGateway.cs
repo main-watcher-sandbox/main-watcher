@@ -90,4 +90,6 @@ public interface IGitHubGateway
     /// <paramref name="duplicateOf"/> is the canonical issue's database ID (<see cref="Issue.Id"/>).
     /// </summary>
     Task Close(string repo, int number, string reason, long? duplicateOf, CancellationToken ct);
+    /// <summary>Deletes an issue comment; one already deleted is not an error.</summary>
+    Task DeleteComment(string repo, long id, CancellationToken ct);
 }

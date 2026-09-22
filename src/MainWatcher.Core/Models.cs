@@ -28,7 +28,8 @@ public sealed record WorkflowJob(string Name, string Status, IReadOnlyList<JobSt
 public sealed record Issue(int Number, string Title, string? Body, string Author, string AuthorType, string Url,
     string State = "open", string? StateReason = null, DateTimeOffset? UpdatedAt = null, long Id = 0,
     DateTimeOffset? CreatedAt = null, DateTimeOffset? ClosedAt = null);
-public sealed record IssueComment(string Body, string Author, string AuthorType);
+/// <summary>An issue comment. <paramref name="Id"/> is what deletes it; 0 when it is not known.</summary>
+public sealed record IssueComment(string Body, string Author, string AuthorType, long Id = 0);
 /// <summary>A GitHub account, with its <c>type</c> (<c>User</c> or <c>Bot</c>).</summary>
 public sealed record Account(string Login, string Type);
 /// <summary>One entry of the repository activity API on <c>main</c>. <see cref="Actor"/> is null for a deleted account.</summary>

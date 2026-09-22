@@ -2506,7 +2506,7 @@ public class WatcherTests
     {
         var ct = TestContext.Current.CancellationToken;
         var watcher = new FakeGitHub();
-        var alerts = new Alerts(watcher, "owner/watcher");
+        var alerts = new Alerts(watcher, "owner/watcher", delay: (_, _) => Task.CompletedTask);
         var reset = DateTimeOffset.Parse("2026-09-22T14:35:41Z");
         Assert.Null(await InstallationBudget.Judge("owner/repo", new("core", 1000, 5000, reset), null, alerts, Now, ct));
         Assert.Null(await InstallationBudget.Judge("owner/repo", null, null, alerts, Now, ct));
@@ -2534,12 +2534,54 @@ public class WatcherTests
         var watcher = new FakeGitHub();
         var refused = "GitHub answered 403 (Forbidden) to GET /repos/owner/repo/commits/main: API rate limit exceeded for installation ID 1";
         Assert.Equal(InstallationBudget.RefusedTitle, await InstallationBudget.Judge("owner/repo",
-            new("core", 0, 5000, DateTimeOffset.Parse("2026-09-21T22:15:29Z")), refused, new Alerts(watcher, "owner/watcher"), Now, ct));
+            new("core", 0, 5000, DateTimeOffset.Parse("2026-09-21T22:15:29Z")), refused,
+            new Alerts(watcher, "owner/watcher", delay: (_, _) => Task.CompletedTask), Now, ct));
         var alert = Assert.Single(watcher.Issues["owner/watcher"]);
         Assert.Equal(InstallationBudget.RefusedTitle, alert.Issue.Title);
         Assert.Contains($"A cycle for `owner/repo` was refused by GitHub's rate limit:\n\n> {refused}", alert.Issue.Body);
         Assert.Contains("The lowest budget it saw was 0 of 5000 requests left, refilled at 22:15:29Z.", alert.Issue.Body);
         Assert.Equal(Alerts.Label, alert.Label);
+    }
+
+    // Cycles for different targets, and a sweep's legs, run at once, and each checks before it writes (PR #62 review). Both
+    // writers here check, write and wait before either tidies, which is the race: with the issue list lagging, both open an
+    // alert; with one already open, both comment in the same window.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TwoCyclesRaisingTheBudgetAlertAtOnceLeaveOneIssueAndOneComment(bool alreadyOpen)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var watcher = new FakeGitHub { ListLags = true };
+        if (alreadyOpen) watcher.Seed("owner/watcher", Alerts.Label, InstallationBudget.LowTitle, "github-actions[bot]", "Bot", "earlier window");
+        var arrived = 0;
+        var settled = new TaskCompletionSource();
+        async Task Settle(TimeSpan wait, CancellationToken token)
+        {
+            Assert.Equal(Alerts.Settle, wait);
+            if (++arrived == 2)
+            {
+                watcher.Catch();
+                settled.SetResult();
+            }
+            // A writer that never reaches this wait fails the test rather than hanging it.
+            await settled.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
+        }
+        var reset = DateTimeOffset.Parse("2026-09-22T14:35:41Z");
+        var first = InstallationBudget.Judge("owner/repo", new("core", 900, 5000, reset), null, new Alerts(watcher, "owner/watcher", delay: Settle), Now, ct);
+        var second = InstallationBudget.Judge("owner/other", new("core", 800, 5000, reset), null, new Alerts(watcher, "owner/watcher", delay: Settle), Now, ct);
+        await Task.WhenAll(first, second);
+
+        var alerts = watcher.Issues["owner/watcher"];
+        var open = Assert.Single(alerts, a => a.Open);
+        Assert.Equal(alerts.Min(a => a.Issue.Number), open.Issue.Number);
+        Assert.All(alerts.Where(a => !a.Open), a => Assert.Equal("duplicate", a.Issue.StateReason));
+        Assert.Equal(alreadyOpen ? 1 : 0, open.Comments.Count);
+        // A third cycle in the same window finds its key and writes nothing.
+        await InstallationBudget.Judge("owner/third", new("core", 700, 5000, reset), null,
+            new Alerts(watcher, "owner/watcher", delay: (_, _) => Task.CompletedTask), Now, ct);
+        Assert.Single(watcher.Issues["owner/watcher"], a => a.Open);
+        Assert.Equal(alreadyOpen ? 1 : 0, open.Comments.Count);
     }
 
     sealed class FakeIssue(Issue issue, string label)
@@ -2560,16 +2602,24 @@ public class WatcherTests
         public List<string> Order { get; } = [];
         public List<string> Comments { get; } = [];
         public bool IssueError { get; init; }
-        /// <summary>The issue list lags, as GitHub's does: an issue this fake creates is not listed until <see cref="Catch"/>.</summary>
+        /// <summary>
+        /// The issue list lags, as GitHub's does: an issue or comment this fake creates is not listed until <see cref="Catch"/>.
+        /// </summary>
         public bool ListLags { get; set; }
         readonly HashSet<int> unlisted = [];
-        public void Catch() => unlisted.Clear();
+        readonly HashSet<long> unlistedComments = [];
+        public void Catch()
+        {
+            unlisted.Clear();
+            unlistedComments.Clear();
+        }
         public string JobConclusion { get; init; } = "failure";
         /// <summary>Stops the report, as a crash would, right after this many issue writes succeed.</summary>
         public int? StopAfterWrites { get; set; }
         public int ClosedByReads { get; private set; }
         int next;
         int writes;
+        long commentIds;
 
         void Wrote(string entry)
         {
@@ -2604,7 +2654,7 @@ public class WatcherTests
             Task.FromResult<IReadOnlyList<Issue>>(Issues.GetValueOrDefault(repo, [])
                 .Where(i => i.Label == label && (i.Issue.UpdatedAt is null || i.Issue.UpdatedAt >= since)).Select(i => i.Issue).ToArray());
         Task<IReadOnlyList<IssueComment>> IGitHubGateway.Comments(string repo, int number, DateTimeOffset? since, CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<IssueComment>>(Find(repo, number).Comments.ToArray());
+            Task.FromResult<IReadOnlyList<IssueComment>>(Find(repo, number).Comments.Where(c => !unlistedComments.Contains(c.Id)).ToArray());
         public Task<Account?> ClosedBy(string repo, int number, CancellationToken ct)
         {
             ClosedByReads++;
@@ -2622,7 +2672,8 @@ public class WatcherTests
         {
             if (IssueError) throw new HttpRequestException("issues unavailable");
             if (Issues.TryGetValue(repo, out var list) && list.FirstOrDefault(i => i.Issue.Number == number) is { } issue)
-                issue.Comments.Add(new(body, "main-watcher[bot]", "Bot"));
+                issue.Comments.Add(new(body, "main-watcher[bot]", "Bot", ++commentIds));
+            if (ListLags) unlistedComments.Add(commentIds);
             Comments.Add(body);
             Wrote($"comment:{number}");
             return Task.CompletedTask;
@@ -2642,6 +2693,12 @@ public class WatcherTests
             issue.Issue = issue.Issue with { State = "closed", StateReason = reason };
             issue.ClosedBy = new("main-watcher[bot]", "Bot");
             Wrote($"close:{number}" + (reason == "completed" ? "" : $":{reason}") + (duplicateOf is null ? "" : $":{duplicateOf}"));
+            return Task.CompletedTask;
+        }
+        public Task DeleteComment(string repo, long id, CancellationToken ct)
+        {
+            foreach (var issue in Issues.GetValueOrDefault(repo, [])) issue.Comments.RemoveAll(c => c.Id == id);
+            Wrote($"delete-comment:{id}");
             return Task.CompletedTask;
         }
 

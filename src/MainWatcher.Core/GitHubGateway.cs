@@ -127,7 +127,7 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         var resource = "/" + path.Split('?')[0].Replace("https://api.github.com/", "").TrimStart('/');
         var error = $"GitHub answered {(int)response.StatusCode} ({response.ReasonPhrase}) to {method} {resource}"
             + (message is null ? "" : $": {message}") + (limits.Length == 0 ? "" : $" [{limits}]");
-        if (RateLimit.Refused(response)) RateLimited ??= error;
+        if (RateLimit.Refused(response, message)) RateLimited ??= error;
         throw new HttpRequestException(error, null, response.StatusCode);
     }
 
@@ -180,12 +180,21 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     public const int ChecksLimit = 50;
 
     /// <summary>
+    /// How far back a first read looks for the newest check run when <see cref="ChecksLimit"/> commits held none. It bounds
+    /// only a target with no check run at all within it, such as one just added with a long history, whose first cycle would
+    /// otherwise spend the hour's budget before it could start the test that ends the search.
+    /// </summary>
+    public const int ChecksSearchLimit = 1000;
+
+    /// <summary>
     /// This App's check runs on <c>main</c>'s history, as far back as the rules that read them need: the newest ones, any
-    /// pending, and the last green run. A first read walks back from the head only until it reaches a commit with a green run,
-    /// or for <see cref="ChecksLimit"/> commits. Only the Planner creates check runs, on the head, and never while one is
-    /// pending (ADR-017), so every check run on an older commit is older than those on a newer one, and a pending one is always
-    /// the newest. What the limit leaves out is a last green run further back, which only the timing comparison reads (the push
-    /// list walks back on its own), and a pending run with more than that many pushes after it.
+    /// pending, and the last green run. A first read walks back from the head until it reaches a commit with a green run, or
+    /// until it has read <see cref="ChecksLimit"/> commits <b>and</b> found a check run of any kind. Only the Planner creates
+    /// check runs, on the head, and never while one is pending (ADR-017), so every check run on an older commit is older than
+    /// those on a newer one, and a pending one is always the newest: finding the newest check run is what finds every pending
+    /// one, however many pushes came after it, so recovery and reporting never lose one (ADR-013, PR #62 review). What the limit
+    /// leaves out is only a last green run further back, which only the timing comparison reads; the push list walks back on
+    /// its own.
     /// </summary>
     public async Task<IReadOnlyList<CheckRun>> Checks(string repo, CancellationToken ct)
     {
@@ -201,6 +210,7 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         if (!hasSnapshot || snapshot.Head != head)
         {
             var walked = 0;
+            var found = false;
             await foreach (var commit in Items($"repos/{repo}/commits?sha={head}", null, ct))
             {
                 var sha = commit.GetProperty("sha").GetString()!;
@@ -211,7 +221,10 @@ public sealed class GitHubGateway(HttpClient http, long appId,
                     continue;
                 }
                 var checks = read[sha] = await CommitChecks(repo, sha, ct);
-                if (checks.Any(c => c is { Status: "completed", Conclusion: "success" }) || ++walked >= ChecksLimit) break;
+                found |= checks.Count > 0;
+                walked++;
+                if (checks.Any(c => c is { Status: "completed", Conclusion: "success" }) || walked >= ChecksLimit && found
+                    || walked >= ChecksSearchLimit) break;
             }
         }
         foreach (var sha in refresh.Concat(read.Keys).Distinct(StringComparer.Ordinal))
@@ -606,8 +619,16 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     public async Task<IReadOnlyList<IssueComment>> Comments(string repo, int number, DateTimeOffset? since, CancellationToken ct) =>
         (await Pages($"repos/{repo}/issues/{number}/comments" + (since is { } time ? $"?since={Since(time)}" : ""), null, ct))
         .Select(c => c.TryGetProperty("user", out var user) && user.ValueKind == JsonValueKind.Object
-            ? new IssueComment(Text(c, "body") ?? "", Text(user, "login") ?? "", Text(user, "type") ?? "")
-            : new IssueComment(Text(c, "body") ?? "", "", "")).ToArray();
+            ? new IssueComment(Text(c, "body") ?? "", Text(user, "login") ?? "", Text(user, "type") ?? "", Id(c))
+            : new IssueComment(Text(c, "body") ?? "", "", "", Id(c))).ToArray();
+
+    static long Id(JsonElement json) => json.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number ? id.GetInt64() : 0;
+
+    public async Task DeleteComment(string repo, long id, CancellationToken ct)
+    {
+        try { await Send(HttpMethod.Delete, $"repos/{repo}/issues/comments/{id}", null, ct); }
+        catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.NotFound) { }
+    }
 
     public async Task<Account?> ClosedBy(string repo, int number, CancellationToken ct)
     {

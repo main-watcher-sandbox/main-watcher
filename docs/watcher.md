@@ -622,13 +622,17 @@ Each cycle ends by logging its requests by endpoint and the lowest budget GitHub
 "API budget of this installation: N of M requests left, refilled at HH:MM:SSZ". Then, whether
 the cycle worked or not:
 
-- if GitHub refused any request on its rate limit, primary or secondary, it raises "The
+- if GitHub refused any request on its rate limit, primary or secondary (a 429, or a 403 with
+  no budget left, a `retry-after`, or a message naming a rate limit), it raises "The
   main-watcher App's API rate limit is refusing cycles", quoting the refusal;
 - otherwise, if less than 20% of the budget was left, it raises "The main-watcher App's API
   budget is below 20%".
 
-Each carries a key naming the minute the budget refills, so however many cycles and targets see
-the same shortage, it is one issue with at most one comment per window. The alerts use the
+Each carries a key naming the minute the budget refills. Cycles for different targets, and a
+sweep's legs, raise it at the same moment, and each checks before it writes, so a writer waits
+10 s and then tidies: newer open copies are closed as duplicates of the oldest, and comments
+repeating the window's key are deleted. However many cycles and targets see the same shortage,
+it is one issue with at most one comment per window. The alerts use the
 workflow token, whose budget is separate, so they can be written once the App's is spent. A
 failed one is logged and fails the run. The measured cost of each kind of cycle is in the
 [issue #60 validation record](../sandbox/issue-60-validation.md).
