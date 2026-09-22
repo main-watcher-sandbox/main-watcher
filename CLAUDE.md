@@ -78,7 +78,9 @@ count and what its installation's budget has left. The sandbox watcher replica i
 minutes are for private repos only. Onboarding is written down and testable (MainWatcher#26): `docs/onboarding.md` is the
 procedure, `ci.yml`'s `targets` job validates every `targets.yml` entry through `--check-targets`, and `dry-run.yml` tests a
 target's whole path — entry, caller, gate workflow, one dispatched test, its CTRF against the schema — creating no check run,
-so nothing it does can lock a repository still being onboarded. Rollback is documented in the same guide.
+so nothing it does can lock a repository still being onboarded. Rollback is documented in the same guide. Validated in the sandbox (`sandbox/issue-26-validation.md`): the dry run
+through its workflow and the CLI, a red suite that passed it while creating no check run and no lock, a resume that
+started no second test, both branches of the renamed `lock.yml`'s guard, and TS-S5 as the guide runs it.
 
 ## Where things are
 
