@@ -1,46 +1,23 @@
-# The scenario suite's target pool, written by sandbox/scenarios (MainWatcher#25). A 10-minute lock_lease
-# makes a lapse take minutes (TS-S7), and poll_interval 1 makes each scenario take minutes.
-lock_lease: 10
-targets:
-  - repo: main-watcher-sandbox/sample-target
-    test_command: dotnet test --no-restore
-    results_glob: '**/TestResults/*.ctrf.json'
-    timeout: 30
-    poll_interval: 1
-    notify: [pat-actium]
-    enabled: true
-  - repo: main-watcher-sandbox/sample-target-10
-    test_command: dotnet test --no-restore
-    results_glob: '**/TestResults/*.ctrf.json'
-    timeout: 2
-    poll_interval: 1
-    notify: [pat-actium]
-    enabled: true
-  - repo: main-watcher-sandbox/sample-target-2
-    test_command: dotnet test --no-restore
-    results_glob: '**/TestResults/*.ctrf.json'
-    timeout: 30
-    poll_interval: 1
-    notify: [pat-actium]
-    enabled: true
-  - repo: main-watcher-sandbox/sample-target-3
-    test_command: dotnet test --no-restore
-    results_glob: '**/TestResults/*.ctrf.json'
-    timeout: 30
-    poll_interval: 1
-    notify: [pat-actium]
-    enabled: true
-  - repo: main-watcher-sandbox/sample-target-4
-    test_command: dotnet test --no-restore
-    results_glob: '**/TestResults/*.ctrf.json'
-    timeout: 30
-    poll_interval: 1
-    notify: [pat-actium]
-    enabled: true
-  - repo: main-watcher-sandbox/sample-target-5
-    test_command: dotnet test --no-restore
-    results_glob: '**/TestResults/*.ctrf.json'
-    timeout: 2
-    poll_interval: 1
-    notify: [pat-actium]
-    enabled: true
+# The repositories Main Watcher watches, one entry each. Add production targets on onboarding.
+# timeout and poll_interval are minutes; test_command, results_glob and timeout must match the
+# target's copied main-watcher-tests.yml. watch.yml never executes these commands itself.
+#
+# lock_lease is the one setting outside the list (ADR-014): how long, in minutes, a renewal keeps
+# an open lock enforced, and so the longest a watcher outage can block ordinary merges. It is 240
+# by default and at most 1440, because the gate rejects a lease more than 24 hours ahead.
+#
+# No targets are configured yet, so the hourly sweep does nothing and the trigger worker starts
+# no cycles. The sandbox target is watched by the replica
+# main-watcher-sandbox/main-watcher, which holds the App credentials; see sandbox/README.md.
+# Two watchers on one target would race for its check runs, so it does not belong here.
+#
+# An entry looks like this:
+#
+#   - repo: owner/repo
+#     test_command: dotnet test --no-restore
+#     results_glob: '**/TestResults/*.ctrf.json'
+#     timeout: 30
+#     poll_interval: 15
+#     notify: []
+#     enabled: true
+targets: []
