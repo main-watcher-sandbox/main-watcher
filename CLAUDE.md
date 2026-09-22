@@ -64,7 +64,9 @@ pool of sandbox targets (MainWatcher#25). A full pass posts the `scenario-suite`
 the workflow tag or the worker image only for a commit on `main` that has it (`docs/release.md`). Every unit has passed,
 but no full run has yet: the suite needed about twice the sandbox `main-watcher` installation's 5000 API requests an hour.
 MainWatcher#60 measured why: about 195 of a cycle's 210 requests read the check runs of every commit on `main`. A first
-read now stops at the last green run, an estimated 20 requests a cycle that the next suite run is to confirm. A low or spent
+read now stops at the last green run, and run 9 of the suite measured 17 to 21 requests a cycle, about 2,400 an hour on six
+targets, with no request refused. Its only failures, TS-S15 and TS-S8, were suite faults, fixed and passed again on their
+own. A low or spent
 installation budget now raises a `watcher-infra` alert, and R-13 names that budget as the limit. Its eight runs found two Main Watcher faults, both fixed:
 - two alerts with the same title raised 2 s apart opened two issues, because the issue list lags;
 - a lock closed by hand during a cycle was marked reconciled before its override was noted, so the override comment

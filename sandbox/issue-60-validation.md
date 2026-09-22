@@ -37,7 +37,7 @@ kinds: a test dispatch for a new head, then the report of that test.
 | 35736804335 | Report | 215 | 197 | 4855 |
 
 The rest of a dispatch cycle:
-- 6 lock-issue reads, for recovery, renewal, the queue sweep, planning and the override check;
+- 6 reads of the lock issues;
 - 3 reads of the head;
 - 2 pages of commits;
 - the caller file;
@@ -86,7 +86,7 @@ latest one.
     for planning, and one page of commits instead of two;
   - a report cycle drops to about 21.
 
-  The next suite run is to confirm both figures.
+  The full suite run below confirmed both.
 - **A low budget alerts.** After every cycle, including one that failed, `InstallationBudget.Judge` raises "The
   main-watcher App's API budget is below 20%" when the lowest budget the cycle saw had less than 20% left.
 - **A refused cycle alerts.** The gateway records the first request GitHub refused on its rate limit:
@@ -109,12 +109,48 @@ Unit tests:
 - `WatcherTests.ALowInstallationBudgetRaisesOneAlertPerWindow`
 - `WatcherTests.ACycleRefusedByTheRateLimitRaisesAnAlertNamingIt`
 
-## Still to do in the sandbox
+## The first full suite run with the fix
 
-This change has not yet run in the sandbox. A scenario suite run was using the replica while it was written, so it was
-not deployed there. After merging, the next suite run should show two things:
-- the per-cycle request counts falling to about 20;
-- no cycle refused on the budget.
+Run 9 of the scenario suite was on 2026-09-22, 14:35 to 16:32, at `22ffc39`, on six targets.
 
-At about 20 requests a cycle, the busy phase of runs 6 to 8 (56 cycles in 23 minutes, about 150 an hour) would cost about
-3,000 requests an hour, inside the 5000.
+- **Result:** 23 of 25 units passed in 116 minutes.
+- **The two failures were in the suite, not Main Watcher.** Both are fixed in `0636e51`:
+  - **TS-S15:** it read #30 in `sample-target-3` as open, unmerged and out of the queue, in the second when the queue
+    removed and merged it (both 14:57:42Z). It failed on "left the merge queue without merging", though #30 had merged.
+    A queue state that says so is now read again after 10 s, in both queue waits.
+  - **TS-S8:** three checks failed:
+    - `mw-observer`'s refused issue write on the replica was an empty new issue. The replica has been public since #25,
+      and there GitHub answers that with 422, from validation, before its 403. It is now probed with an empty update to
+      an existing issue, as on the targets.
+    - The two installation checks expected the Apps on the six targets the run used. Both Apps are installed on all ten
+      pool targets. The suite now passes the whole pool as `MW_INSTALLED_TARGETS`.
+- **The budget held.** 209 cycles sent 4603 requests, about 2,400 an hour:
+  - no request was refused;
+  - no budget alert was raised;
+  - the lowest budget any cycle logged was 3016 of 5000.
+
+  Runs 6 to 8 spent the budget in this phase.
+
+Requests per cycle, by what the cycle did:
+
+| Cycle | Cycles | Median | Range |
+|---|---|---|---|
+| Test dispatch | 47 | 17 | 17–21 |
+| Test dispatch, with reconciliation or an override | 27 | 22 | 20–42 |
+| Report | 35 | 21 | 16–36 |
+| Report, with reconciliation or an override | 33 | 31 | 21–35 |
+| Stale run (cancel, force-cancel, waiting for either) | 33 | 17 | 16–22 |
+| Idle: no eligible head | 11 | 15 | 14–19 |
+| Sweep leg | 6 | 30 | 22–40 |
+| Other, or a pending check with nothing to report | 17 | 21 | 20–21 |
+
+The dispatch and report figures are the 17 and 21 estimated above. Check-runs reads fell from about 195 a cycle to 3 to 5.
+
+Across all 209 cycles, the endpoints that dominate now are all per-cycle reads, none of which grows with history:
+- 1379 issue reads, the largest single cost, about 7 a cycle;
+- 974 check-runs reads;
+- 695 reads of the head.
+
+Most of a cycle's issue reads list the same lock issues again: renewal, the queue sweep, the report, the override check and
+reconciliation each read them for themselves. Reading them once a cycle is the next saving, if the budget needs one.
+
