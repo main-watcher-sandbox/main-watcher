@@ -42,22 +42,57 @@ async Task<int> Cycle()
                 [$"targets={System.Text.Json.JsonSerializer.Serialize(config.Targets.Where(t => t.Enabled).Select(t => t.Repo))}"]);
             return 0;
         }
+        if (args is ["--check-targets"])
+        {
+            // Watcher repo CI (docs/onboarding.md): the committed list, read by the parser the cycles use, so an entry that
+            // would break a sweep fails the pull request that adds it rather than the next hour's sweep.
+            foreach (var entry in config.Targets)
+                Console.WriteLine($"{entry.Repo}: {(entry.Enabled ? "enabled" : "disabled")}, test_command \"{entry.TestCommand}\", "
+                    + $"results_glob \"{entry.ResultsGlob}\", timeout {entry.Timeout} min, poll_interval {entry.PollInterval} min, "
+                    + $"notify [{string.Join(", ", entry.Notify)}].");
+            Console.WriteLine($"{config.Targets.Count} target(s) parsed; lock_lease {config.LockLease} min.");
+            return 0;
+        }
         var repo = Environment.GetEnvironmentVariable("MW_TARGET") ?? "";
         var target = config.Targets.SingleOrDefault(t => t.Repo.Equals(repo, StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidOperationException("MW_TARGET must identify a configured target.");
-        if (!target.Enabled)
+        // A dry run is what an entry gets before it is enabled (docs/onboarding.md), so it is the one mode that accepts a
+        // disabled target. It creates no check run, so nothing it does can lock the target.
+        var dryRun = args is ["--dry-run"] or ["--validate-target", "--dry-run"];
+        if (!target.Enabled && !dryRun)
         {
             if (args is ["--validate-target"]) throw new InvalidOperationException("Target disabled; no App token requested.");
             Console.WriteLine("Target disabled.");
             return 0;
         }
-        if (args is ["--validate-target"])
+        if (args is ["--validate-target"] or ["--validate-target", "--dry-run"])
         {
             var parts = target.Repo.Split('/');
             File.AppendAllLines(Required("GITHUB_OUTPUT"), [$"owner={parts[0]}", $"repo={parts[1]}"]);
             return 0;
         }
-        if (args.Length != 0) throw new ArgumentException("Usage: MainWatcher.Watcher [--validate-target|--list-targets]");
+        if (dryRun)
+        {
+            using var dryHttp = Client(Required("GH_TOKEN"));
+            var dryGithub = new GitHubGateway(dryHttp, long.Parse(Required("MW_APP_ID")), log: Console.WriteLine);
+            budget = dryGithub;
+            // MW_DRY_RUN_ID judges a target run that already exists, with this run's fresh token and no new test: how a suite
+            // that outlasted an earlier dry run's token still gets its CTRF validated.
+            var existing = Environment.GetEnvironmentVariable("MW_DRY_RUN_ID") is { Length: > 0 } id
+                ? long.TryParse(id, out var parsed) && parsed > 0 ? parsed
+                    : throw new ArgumentException($"MW_DRY_RUN_ID must be a target run's ID; got \"{id}\".")
+                : (long?)null;
+            // The dry run stops itself within the hour its App token lasts, so this only catches a wait that is not waiting.
+            using var dryTimeout = new CancellationTokenSource(DryRun.TokenWindow + TimeSpan.FromMinutes(5));
+            var report = await new DryRun(dryGithub, log: Console.WriteLine).Run(target, existing, dryTimeout.Token);
+            Summarise(target.Repo, report);
+            Console.WriteLine(report.Passed
+                ? $"Dry run of {target.Repo} passed. Next: make the gate a required merge-queue check, run TS-S5 once, then set enabled: true."
+                : $"Dry run of {target.Repo} failed at \"{report.Steps[^1].Name}\".");
+            return report.Passed ? 0 : 1;
+        }
+        if (args.Length != 0)
+            throw new ArgumentException("Usage: MainWatcher.Watcher [--list-targets|--check-targets|--dry-run|--validate-target [--dry-run]]");
         using var http = Client(Required("GH_TOKEN"));
         // Alerts go to the watcher repo with its own workflow token; the App token is scoped to the target.
         alertHttp = Client(Required("MW_ALERT_TOKEN"));
@@ -195,6 +230,14 @@ async Task<int> Cycle()
         Console.Error.WriteLine($"Watcher failed: {e.Message}");
         return 1;
     }
+}
+
+/// <summary>The dry run's checks in the job summary, so the report outlives the log (docs/onboarding.md).</summary>
+static void Summarise(string repo, DryRunReport report)
+{
+    if (Environment.GetEnvironmentVariable("GITHUB_STEP_SUMMARY") is not { Length: > 0 } path) return;
+    File.AppendAllLines(path, [$"## Dry run of `{repo}`: {(report.Passed ? "passed" : "failed")}", ""]);
+    File.AppendAllLines(path, report.Steps.Select(s => $"- **{s.Name}** — {(s.Passed ? "ok" : "**failed**")}: {s.Detail}"));
 }
 
 static HttpClient Client(string token)

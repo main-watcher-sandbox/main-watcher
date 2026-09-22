@@ -1,0 +1,65 @@
+# The onboarding dry run (FR-1, ARCH-001 §10 step 5, docs/onboarding.md). It checks a target's entry, its two
+# copied workflows and one real test of its `main`, and validates the CTRF the test uploads against the schema
+# (ADR-007). It creates no check run, so nothing it does can open a lock: a target being onboarded is tested
+# without being watched.
+name: dry-run
+run-name: dry run ${{ inputs.target }}${{ inputs.run_id && format(' (run {0})', inputs.run_id) || '' }}
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Configured owner/repo in targets.yml; it may still be enabled:false
+        required: true
+        type: string
+      run_id:
+        description: Judge this target run instead of dispatching one, for a suite that outlasted an earlier dry run
+        required: false
+        type: string
+        default: ""
+permissions:
+  contents: read
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    # The dry run waits at most 50 minutes, which is what its App token lasts (DryRun.TokenWindow), plus the build and
+    # a margin. A suite that needs longer than that is read from the target run itself; the dry run says so.
+    timeout-minutes: 70
+    environment: reporter
+    concurrency:
+      # The group watch.yml uses for this target, so a dry run and a cycle never test the same repository at once.
+      # GitHub group names are case-insensitive, matching target lookup in the CLI.
+      group: main-watcher-${{ inputs.target }}
+      cancel-in-progress: false
+    steps:
+      # Only watcher code is checked out. Target commands run in the target workflow.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - run: dotnet build src/MainWatcher.Watcher --configuration Release
+      - id: target
+        name: Validate token scope
+        env:
+          MW_TARGET: ${{ inputs.target }}
+        run: dotnet src/MainWatcher.Watcher/bin/Release/net10.0/MainWatcher.Watcher.dll --validate-target --dry-run
+      - id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.MAIN_WATCHER_APP_ID }}
+          private-key: ${{ secrets.MAIN_WATCHER_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.repo }}
+          # A dry run reads the target and starts one test run. It writes no check run and no issue, so it asks for
+          # neither permission: nothing it holds can lock the target or edit a lock.
+          permission-actions: write
+          permission-contents: read
+      - name: Dry run
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          MW_APP_ID: ${{ vars.MAIN_WATCHER_APP_ID }}
+          MW_TARGET: ${{ inputs.target }}
+          # Empty dispatches a test; a run ID judges that run with this job's own fresh token and starts none.
+          MW_DRY_RUN_ID: ${{ inputs.run_id }}
+        run: dotnet src/MainWatcher.Watcher/bin/Release/net10.0/MainWatcher.Watcher.dll --dry-run

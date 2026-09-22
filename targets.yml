@@ -1,4 +1,5 @@
-# The repositories Main Watcher watches, one entry each. Add production targets on onboarding.
+# The repositories Main Watcher watches, one entry each. Add production targets on onboarding:
+# docs/onboarding.md is the whole procedure, and the targets job in ci.yml validates every entry here.
 # timeout and poll_interval are minutes; test_command, results_glob and timeout must match the
 # target's copied main-watcher-tests.yml. watch.yml never executes these commands itself.
 #

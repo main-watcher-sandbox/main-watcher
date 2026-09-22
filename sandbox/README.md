@@ -20,6 +20,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-22-validation.md` | TS-S13, check-run half: suite time, the change from the last green run, the 5 slowest tests and the retry flag, against the CTRF artifact, for #22 |
 | `issue-23-validation.md` | TS-S10: whether an App's team @-mention notifies, the organisation `Members: read` it needs, and the CODEOWNERS fallback, for #23 |
 | `issue-24-validation.md` | The TS-001 §6 checklist as tests, a target test run that inspects its own environment for Main Watcher keys, and how to run TS-S8, for #24 |
+| `issue-26-validation.md` | The dry run through its own workflow and the CLI, its resume path, both branches of the renamed `lock.yml`'s guard, and TS-S5 as the onboarding guide runs it, for #26 |
 | `issue-25-validation.md` | The scenario suite's first runs: what they found and how long they took, for #25 |
 | `issue-53-validation.md` | The replica's CI green on its own sandbox target list, once `CommittedTargetListParses` scoped its sandbox-target clause to this repo, for #53 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
@@ -125,15 +126,22 @@ kubectl -n main-watcher-sandbox scale deploy/trigger-worker --replicas=0
 ## Hand-made locks
 
 Scenario tests that need a hand-made lock (TS-S4, TS-S5) open one with the
-`sandbox-lock` workflow. It creates a `main-broken` issue authored by `main-watcher[bot]`
+`lock` workflow. It creates a `main-broken` issue authored by `main-watcher[bot]`
 with a `lease_until` marker, or closes the open ones:
 
 ```
-gh workflow run sandbox-lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=open -f lease_hours=4
-gh workflow run sandbox-lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=close
+gh workflow run lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=open -f lease_hours=4
+gh workflow run lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=close
 ```
 
 A negative `lease_hours` makes an expired lease, for the "LOCK LEASE EXPIRED" path.
+
+The workflow is no longer sandbox-only, and was `sandbox-lock.yml` until MainWatcher#26: it also
+opens the lock TS-S5 needs when a repository is onboarded
+([onboarding.md](../docs/onboarding.md)). A bare `target` still means a `main-watcher-sandbox`
+repository, which is how the suite dispatches it; anything else must be an `owner/repo` listed in
+`targets.yml`, and any other repository is refused. The validation records of #16 and #20 name it
+by its old filename, which is what ran at the time.
 
 ## Workflow variants
 

@@ -303,33 +303,33 @@ public sealed class Replica(GitHub github, string repo)
         return end == title.Length || title[end] is ')' or ' ' or '.' or ':';
     }
 
-    // ---- hand-made locks (sandbox-lock.yml) ----
+    // ---- hand-made locks (lock.yml) ----
 
     /// <summary>Opens an App-authored lock by hand with the given lease, and returns it.</summary>
     public async Task<Issue> OpenHandMadeLock(Target target, int leaseHours, CancellationToken ct)
     {
         var since = DateTimeOffset.UtcNow;
-        var run = (await github.Post($"repos/{Repo}/actions/workflows/sandbox-lock.yml/dispatches", new
+        var run = (await github.Post($"repos/{Repo}/actions/workflows/lock.yml/dispatches", new
         {
             @ref = "main",
             inputs = new Dictionary<string, string> { ["target"] = target.Name, ["action"] = "open", ["lease_hours"] = leaseHours.ToString() },
             return_run_details = true
         }, ct))!["workflow_run_id"]!.GetValue<long>();
         var done = await AwaitRun(run, TimeSpan.FromMinutes(6), ct);
-        if (done.Conclusion != "success") throw new ScenarioFailure($"sandbox-lock run {run} ended {done.Conclusion}");
+        if (done.Conclusion != "success") throw new ScenarioFailure($"lock run {run} ended {done.Conclusion}");
         return await target.AwaitNewLock(since, TimeSpan.FromMinutes(2), ct);
     }
 
     /// <summary>Closes every open App-authored lock on a target, as the App, so no override is recorded.</summary>
     public async Task CloseHandMadeLocks(Target target, CancellationToken ct)
     {
-        var run = (await github.Post($"repos/{Repo}/actions/workflows/sandbox-lock.yml/dispatches", new
+        var run = (await github.Post($"repos/{Repo}/actions/workflows/lock.yml/dispatches", new
         {
             @ref = "main",
             inputs = new Dictionary<string, string> { ["target"] = target.Name, ["action"] = "close", ["lease_hours"] = "4" },
             return_run_details = true
         }, ct))!["workflow_run_id"]!.GetValue<long>();
         var done = await AwaitRun(run, TimeSpan.FromMinutes(6), ct);
-        if (done.Conclusion != "success") throw new ScenarioFailure($"sandbox-lock close run {run} ended {done.Conclusion}");
+        if (done.Conclusion != "success") throw new ScenarioFailure($"lock close run {run} ended {done.Conclusion}");
     }
 }
