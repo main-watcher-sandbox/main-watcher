@@ -694,7 +694,11 @@ failed one is logged and fails the run. The measured cost of each kind of cycle 
 Run `dotnet test` and the CI-pinned actionlint. The core suite includes real xUnit
 reports and a GitHub reusable-caller jobs response, with provenance in its fixtures
 directory. TS-U16 covers the dry run: what each check establishes, what each failure stops at, and
-that a dry run writes nothing to the target but its one dispatch. Sandbox execution uses the watcher replica described in
+that a dry run writes nothing to the target but its one dispatch. The
+[issue #26 validation record](../sandbox/issue-26-validation.md) covers it against the live sandbox
+target: a green target, a caller mismatch that dispatched nothing, a red suite that passed the dry
+run while opening no lock, and a resumed run judged with five GETs and no dispatch. The dry-run
+workflow itself, and the renamed lock workflow, are not covered there. Sandbox execution uses the watcher replica described in
 `sandbox/README.md`. The [issue #9 validation record](../sandbox/issue-9-validation.md)
 links the passing and failing checks, their Planner and Reporter cycles, and
 the target restoration evidence. The [issue #10 validation record](../sandbox/issue-10-validation.md)

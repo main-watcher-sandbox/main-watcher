@@ -20,6 +20,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-22-validation.md` | TS-S13, check-run half: suite time, the change from the last green run, the 5 slowest tests and the retry flag, against the CTRF artifact, for #22 |
 | `issue-23-validation.md` | TS-S10: whether an App's team @-mention notifies, the organisation `Members: read` it needs, and the CODEOWNERS fallback, for #23 |
 | `issue-24-validation.md` | The TS-001 §6 checklist as tests, a target test run that inspects its own environment for Main Watcher keys, and how to run TS-S8, for #24 |
+| `issue-26-validation.md` | The dry run against the live sandbox target: a green target, a caller mismatch, a red suite and a resumed run, none of which created a check run or a lock, for #26 |
 | `issue-25-validation.md` | The scenario suite's first runs: what they found and how long they took, for #25 |
 | `issue-53-validation.md` | The replica's CI green on its own sandbox target list, once `CommittedTargetListParses` scoped its sandbox-target clause to this repo, for #53 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |

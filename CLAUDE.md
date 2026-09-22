@@ -123,7 +123,8 @@ so nothing it does can lock a repository still being onboarded. Rollback is docu
   `sandbox/issue-18-validation.md`, `sandbox/issue-19-validation.md`,
   `sandbox/issue-20-validation.md`, `sandbox/issue-21-validation.md`,
   `sandbox/issue-22-validation.md`, `sandbox/issue-23-validation.md`, `sandbox/issue-24-validation.md`,
-  `sandbox/issue-25-validation.md`, `sandbox/issue-53-validation.md` and `sandbox/issue-60-validation.md`.
+  `sandbox/issue-25-validation.md`, `sandbox/issue-26-validation.md`, `sandbox/issue-53-validation.md` and
+  `sandbox/issue-60-validation.md`.
 - `sandbox/run-scenarios.sh` runs the scenario suite (`sandbox/scenarios/`, a .NET console app), which a release requires.
   Read `docs/release.md` for releasing and the release App's one-time setup.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
