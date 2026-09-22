@@ -1,6 +1,6 @@
 ---
 owner: platform-team
-reviewed: 2026-09-21
+reviewed: 2026-09-22
 review_by: 2027-03-15
 ---
 
@@ -614,6 +614,24 @@ lock, the check run or the testing the cycle does; the cycle logs it and exits n
 neutral-result alert leaves the check run `in_progress` for a replay, a failed "lock lease
 lapsed" alert leaves `lapse_reported` unwritten, and a failed "Merged while locked" alert leaves
 `last_reconciled` where it was, so a later cycle raises each of them.
+
+### API budget
+
+Every target's cycles share the `main-watcher` App installation's 5000 requests an hour (R-13).
+Each cycle ends by logging its requests by endpoint and the lowest budget GitHub reported to it:
+"API budget of this installation: N of M requests left, refilled at HH:MM:SSZ". Then, whether
+the cycle worked or not:
+
+- if GitHub refused any request on its rate limit, primary or secondary, it raises "The
+  main-watcher App's API rate limit is refusing cycles", quoting the refusal;
+- otherwise, if less than 20% of the budget was left, it raises "The main-watcher App's API
+  budget is below 20%".
+
+Each carries a key naming the minute the budget refills, so however many cycles and targets see
+the same shortage, it is one issue with at most one comment per window. The alerts use the
+workflow token, whose budget is separate, so they can be written once the App's is spent. A
+failed one is logged and fails the run. The measured cost of each kind of cycle is in the
+[issue #60 validation record](../sandbox/issue-60-validation.md).
 
 ## Validation
 

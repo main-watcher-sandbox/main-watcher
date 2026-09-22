@@ -1,16 +1,6 @@
-using System.Globalization;
+using MainWatcher.Core;
 
 namespace MainWatcher.Worker;
-
-/// <summary>
-/// What GitHub's rate-limit headers said on one response: how much of <paramref name="Resource"/>'s budget is left, and when it
-/// resets. Each installation has its own budget, so the worker keeps the lowest it has seen (R-13).
-/// </summary>
-public sealed record RateLimit(string Resource, int Remaining, int Limit, DateTimeOffset? Reset)
-{
-    /// <summary>The share of the budget still available, 0 to 1. A response without a limit counts as a full budget.</summary>
-    public double Left => Limit > 0 ? (double)Remaining / Limit : 1;
-}
 
 /// <summary>What the worker's GitHub access says about its own health, for <see cref="WorkerAlerts"/>.</summary>
 public interface IAccessHealth
@@ -37,7 +27,7 @@ public sealed class RateLimitWatch : DelegatingHandler
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         var response = await base.SendAsync(request, ct);
-        if (Read(response) is { } limit)
+        if (RateLimit.Read(response) is { } limit)
             lock (gate)
                 if (lowest is null || limit.Left < lowest.Left) lowest = limit;
         return response;
@@ -52,18 +42,4 @@ public sealed class RateLimitWatch : DelegatingHandler
             return seen;
         }
     }
-
-    static RateLimit? Read(HttpResponseMessage response)
-    {
-        // Every rate-limited response carries all three; a cached or non-API response carries none.
-        if (Header(response, "x-ratelimit-remaining") is not { } remaining || Header(response, "x-ratelimit-limit") is not { } limit
-            || !int.TryParse(remaining, NumberStyles.None, CultureInfo.InvariantCulture, out var left)
-            || !int.TryParse(limit, NumberStyles.None, CultureInfo.InvariantCulture, out var budget) || budget == 0) return null;
-        return new(Header(response, "x-ratelimit-resource") ?? "core", left, budget,
-            long.TryParse(Header(response, "x-ratelimit-reset"), NumberStyles.None, CultureInfo.InvariantCulture, out var reset)
-                ? DateTimeOffset.FromUnixTimeSeconds(reset) : null);
-    }
-
-    static string? Header(HttpResponseMessage response, string name) =>
-        response.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;
 }

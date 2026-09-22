@@ -78,21 +78,79 @@ public class GatewayTests
             + "[x-ratelimit-remaining: 4211, retry-after: 60]", e.Message);
     }
 
+    // GitHub answered one sweep from two budgets at once (#60): the one that runs out is the one that matters.
     [Fact]
-    public async Task TheBudgetIsTheLatestResponsesRateLimit()
+    public async Task TheBudgetIsTheLowestRateLimitOfItsWindow()
     {
+        var readings = new Queue<(string Remaining, string Reset)>([("1234", "2026-09-21T22:15:29Z"), ("4000", "2026-09-21T22:15:31Z"),
+            ("4999", "2026-09-21T23:15:29Z")]);
         using var http = Client(new Handler(_ =>
         {
-            var response = Response("{\"jobs\":[]}");
+            var (remaining, reset) = readings.Dequeue();
+            var response = Response("{\"sha\":\"head\"}");
             response.Headers.Add("x-ratelimit-limit", "5000");
-            response.Headers.Add("x-ratelimit-remaining", "1234");
-            response.Headers.Add("x-ratelimit-reset", DateTimeOffset.Parse("2026-09-21T22:15:29Z").ToUnixTimeSeconds().ToString());
+            response.Headers.Add("x-ratelimit-remaining", remaining);
+            response.Headers.Add("x-ratelimit-reset", DateTimeOffset.Parse(reset).ToUnixTimeSeconds().ToString());
             return Task.FromResult(response);
         }));
         var gateway = new GitHubGateway(http, 1);
         Assert.Null(gateway.Budget);
-        await gateway.Jobs("owner/repo", 1, TestContext.Current.CancellationToken);
-        Assert.Equal("1234 of 5000 requests left, refilled at 22:15:29Z", gateway.Budget);
+        await gateway.MainHead("owner/repo", TestContext.Current.CancellationToken);
+        await gateway.MainHead("owner/repo", TestContext.Current.CancellationToken);
+        Assert.Equal("1234 of 5000 requests left, refilled at 22:15:29Z", gateway.Budget?.ToString());
+        // A budget that has refilled is not low any more.
+        await gateway.MainHead("owner/repo", TestContext.Current.CancellationToken);
+        Assert.Equal("4999 of 5000 requests left, refilled at 23:15:29Z", gateway.Budget?.ToString());
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Forbidden, "0", null, true)]
+    [InlineData(HttpStatusCode.Forbidden, "4211", "60", true)]
+    [InlineData(HttpStatusCode.TooManyRequests, "4211", null, true)]
+    [InlineData(HttpStatusCode.Forbidden, "4211", null, false)]
+    public async Task ARateLimitRefusalIsRecordedWhereverTheCycleCaughtIt(HttpStatusCode status, string remaining, string? retryAfter,
+        bool limited)
+    {
+        using var http = Client(new Handler(_ =>
+        {
+            var response = new HttpResponseMessage(status)
+            {
+                Content = new StringContent("{\"message\":\"API rate limit exceeded for installation ID 162224105.\"}", Encoding.UTF8, "application/json")
+            };
+            response.Headers.Add("x-ratelimit-remaining", remaining);
+            if (retryAfter is not null) response.Headers.Add("retry-after", retryAfter);
+            return Task.FromResult(response);
+        }));
+        var gateway = new GitHubGateway(http, 1, (_, _) => Task.CompletedTask);
+        var e = await Assert.ThrowsAsync<HttpRequestException>(() => gateway.MainHead("owner/repo", TestContext.Current.CancellationToken));
+        Assert.Equal(limited ? e.Message : null, gateway.RateLimited);
+    }
+
+    // Reading every commit's check runs cost each cycle about 195 of its 210 requests on a 195-commit target (#60).
+    [Theory]
+    [InlineData(3, 4)]
+    [InlineData(null, GitHubGateway.ChecksLimit)]
+    public async Task AFirstReadOfTheChecksStopsAtTheLastGreenRun(int? green, int walked)
+    {
+        var requests = new List<string>();
+        var commits = Enumerable.Range(0, 200).Select(i => $"c{i}").ToArray();
+        using var http = Client(new Handler(request =>
+        {
+            var path = request.RequestUri!.PathAndQuery;
+            requests.Add(path);
+            if (path.EndsWith("/commits/main")) return Task.FromResult(Response("{\"sha\":\"c0\"}"));
+            if (path.Contains("/commits?"))
+                return Task.FromResult(Response("[" + string.Join(",", commits.Select(c => $"{{\"sha\":\"{c}\"}}")) + "]"));
+            var sha = path.Split('/')[5];
+            var index = Array.IndexOf(commits, sha);
+            var conclusion = index == green ? "success" : "failure";
+            return Task.FromResult(Response(index % 2 == 1 || index == green ? $$$"""
+                {"check_runs":[{"id":{{{index + 1}}},"head_sha":"{{{sha}}}","status":"completed","conclusion":"{{{conclusion}}}","started_at":"2026-09-16T18:00:00Z","app":{"id":7}}]}
+                """ : "{\"check_runs\":[]}"));
+        }));
+        var checks = await new GitHubGateway(http, 7).Checks("owner/repo", TestContext.Current.CancellationToken);
+        Assert.Equal(commits.Take(walked), requests.Where(p => p.Contains("/check-runs")).Select(p => p.Split('/')[5]));
+        if (green is { } g) Assert.Equal("success", checks.Single(c => c.Sha == commits[g]).Conclusion);
     }
 
     [Fact]

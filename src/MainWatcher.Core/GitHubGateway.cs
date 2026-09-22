@@ -29,11 +29,18 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     readonly Dictionary<string, (string Head, List<CheckRun> Checks)> snapshots = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The rate-limit budget GitHub reported on the latest response: what the token's installation has left of its hourly
-    /// requests, and when it refills (R-13). Every target shares one installation's budget, and the scenario suite's fourth
-    /// run spent it all (#25).
+    /// The lowest rate-limit budget GitHub reported in the current window: what the token's installation has left of its
+    /// hourly requests, and when it refills (R-13). Every target shares one installation's budget, and the scenario suite's
+    /// fourth run spent it all (#25). The lowest, not the latest, because GitHub answered one sweep from two budgets at once
+    /// (#60), and the one that runs out is the one that matters.
     /// </summary>
-    public string? Budget { get; private set; }
+    public RateLimit? Budget { get; private set; }
+
+    /// <summary>
+    /// The first request GitHub refused on its rate limit, primary or secondary, as the error said it; null when none was.
+    /// A cycle can fail on it anywhere, so the watcher reads it here rather than from whichever step failed (#60).
+    /// </summary>
+    public string? RateLimited { get; private set; }
 
     readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> requests = new();
 
@@ -104,7 +111,7 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     /// (Forbidden)" could not tell a missing permission from an exhausted or secondary rate limit: the scenario suite saw
     /// every cycle fail with only that (#25).
     /// </summary>
-    static async Task Ensure(HttpResponseMessage response, HttpMethod method, string path, CancellationToken ct)
+    async Task Ensure(HttpResponseMessage response, HttpMethod method, string path, CancellationToken ct)
     {
         if (response.IsSuccessStatusCode) return;
         string? message = null;
@@ -118,23 +125,15 @@ public sealed class GitHubGateway(HttpClient http, long appId,
             .Select(name => response.Headers.TryGetValues(name, out var values) ? $"{name}: {values.First()}" : null).OfType<string>());
         // The path without its query: the resource is what matters, and a page link's query is long.
         var resource = "/" + path.Split('?')[0].Replace("https://api.github.com/", "").TrimStart('/');
-        throw new HttpRequestException(
-            $"GitHub answered {(int)response.StatusCode} ({response.ReasonPhrase}) to {method} {resource}"
-            + (message is null ? "" : $": {message}") + (limits.Length == 0 ? "" : $" [{limits}]"), null, response.StatusCode);
+        var error = $"GitHub answered {(int)response.StatusCode} ({response.ReasonPhrase}) to {method} {resource}"
+            + (message is null ? "" : $": {message}") + (limits.Length == 0 ? "" : $" [{limits}]");
+        if (RateLimit.Refused(response)) RateLimited ??= error;
+        throw new HttpRequestException(error, null, response.StatusCode);
     }
 
-    void Note(HttpResponseMessage response)
-    {
-        string? Header(string name) => response.Headers.TryGetValues(name, out var values) ? values.First() : null;
-        if (Header("x-ratelimit-remaining") is { } remaining && Header("x-ratelimit-limit") is { } limit
-            && long.TryParse(Header("x-ratelimit-reset"), out var reset))
-            Budget = $"{remaining} of {limit} requests left, refilled at {DateTimeOffset.FromUnixTimeSeconds(reset):HH:mm:ss}Z";
-    }
+    void Note(HttpResponseMessage response) => Budget = RateLimit.Lower(Budget, RateLimit.Read(response));
 
-    static bool IsTransient(HttpResponseMessage response) => (int)response.StatusCode >= 500
-        || response.StatusCode == HttpStatusCode.TooManyRequests
-        || response.StatusCode == HttpStatusCode.Forbidden && (response.Headers.RetryAfter is not null
-            || response.Headers.TryGetValues("x-ratelimit-remaining", out var values) && values.Contains("0"));
+    static bool IsTransient(HttpResponseMessage response) => (int)response.StatusCode >= 500 || RateLimit.Refused(response);
 
     static string? NextPage(HttpResponseMessage response) => response.Headers.TryGetValues("Link", out var links)
         ? links.Select(link => System.Text.RegularExpressions.Regex.Match(link, "<([^>]+)>;\\s*rel=\"next\""))
@@ -173,6 +172,21 @@ public sealed class GitHubGateway(HttpClient http, long appId,
     public async Task<string> MainHead(string repo, CancellationToken ct) =>
         (await Send(HttpMethod.Get, $"repos/{repo}/commits/main", null, ct)).GetProperty("sha").GetString()!;
 
+    /// <summary>
+    /// How many commits back a first read of a target's check runs looks for its last green run. Each commit costs a request,
+    /// and reading them all cost every <c>watch.yml</c> cycle about 195 of its 210 requests on a sandbox target with 195
+    /// commits (#60): a cost that grew with every push, and on a target with a long history more than the hour's budget.
+    /// </summary>
+    public const int ChecksLimit = 50;
+
+    /// <summary>
+    /// This App's check runs on <c>main</c>'s history, as far back as the rules that read them need: the newest ones, any
+    /// pending, and the last green run. A first read walks back from the head only until it reaches a commit with a green run,
+    /// or for <see cref="ChecksLimit"/> commits. Only the Planner creates check runs, on the head, and never while one is
+    /// pending (ADR-017), so every check run on an older commit is older than those on a newer one, and a pending one is always
+    /// the newest. What the limit leaves out is a last green run further back, which only the timing comparison reads (the push
+    /// list walks back on its own), and a pending run with more than that many pushes after it.
+    /// </summary>
     public async Task<IReadOnlyList<CheckRun>> Checks(string repo, CancellationToken ct)
     {
         // Bootstrap once per gateway lifetime; subsequent worker polls refresh only
@@ -183,18 +197,26 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         var refresh = result.Where(c => c.Status != "completed").Select(c => c.Sha).ToHashSet(StringComparer.Ordinal);
         if (hasSnapshot) refresh.Add(snapshot.Head);
         refresh.Add(head);
+        var read = new Dictionary<string, IReadOnlyList<CheckRun>>(StringComparer.Ordinal);
         if (!hasSnapshot || snapshot.Head != head)
         {
+            var walked = 0;
             await foreach (var commit in Items($"repos/{repo}/commits?sha={head}", null, ct))
             {
                 var sha = commit.GetProperty("sha").GetString()!;
-                if (hasSnapshot && sha == snapshot.Head) break;
-                refresh.Add(sha);
+                if (hasSnapshot)
+                {
+                    if (sha == snapshot.Head) break;
+                    refresh.Add(sha);
+                    continue;
+                }
+                var checks = read[sha] = await CommitChecks(repo, sha, ct);
+                if (checks.Any(c => c is { Status: "completed", Conclusion: "success" }) || ++walked >= ChecksLimit) break;
             }
         }
-        foreach (var sha in refresh)
+        foreach (var sha in refresh.Concat(read.Keys).Distinct(StringComparer.Ordinal))
         {
-            var checks = await CommitChecks(repo, sha, ct);
+            var checks = read.TryGetValue(sha, out var known) ? known : await CommitChecks(repo, sha, ct);
             result.RemoveAll(c => c.Sha == sha);
             result.AddRange(checks);
         }

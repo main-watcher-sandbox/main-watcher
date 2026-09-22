@@ -2499,6 +2499,49 @@ public class WatcherTests
         Assert.Equal("b", Markers.Field(Markers.Set(null, ("a", "b")), "a"));
     }
 
+    // #60: every target's cycles share the main-watcher installation's budget, and a fourth scenario-suite run spent it with no
+    // alert, since only the worker's own Apps were watched.
+    [Fact]
+    public async Task ALowInstallationBudgetRaisesOneAlertPerWindow()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var watcher = new FakeGitHub();
+        var alerts = new Alerts(watcher, "owner/watcher");
+        var reset = DateTimeOffset.Parse("2026-09-22T14:35:41Z");
+        Assert.Null(await InstallationBudget.Judge("owner/repo", new("core", 1000, 5000, reset), null, alerts, Now, ct));
+        Assert.Null(await InstallationBudget.Judge("owner/repo", null, null, alerts, Now, ct));
+        Assert.False(watcher.Issues.ContainsKey("owner/watcher"));
+
+        Assert.Equal(InstallationBudget.LowTitle,
+            await InstallationBudget.Judge("owner/repo", new("core", 999, 5000, reset), null, alerts, Now, ct));
+        // Another target in the same window, on a budget refilling two seconds later, as GitHub answered one sweep (#60).
+        await InstallationBudget.Judge("owner/other", new("core", 700, 5000, reset.AddSeconds(2)), null, alerts, Now, ct);
+        var alert = Assert.Single(watcher.Issues["owner/watcher"]);
+        Assert.Equal(InstallationBudget.LowTitle, alert.Issue.Title);
+        Assert.Contains("left 999 of 5000 `core` requests (20%)", alert.Issue.Body);
+        Assert.Contains("refills at 2026-09-22 14:35:41 UTC", alert.Issue.Body);
+        Assert.Empty(alert.Comments);
+
+        // The next window is one comment on the same alert.
+        await InstallationBudget.Judge("owner/repo", new("core", 10, 5000, reset.AddHours(1)), null, alerts, Now, ct);
+        Assert.Contains("left 10 of 5000", Assert.Single(Assert.Single(watcher.Issues["owner/watcher"]).Comments).Body);
+    }
+
+    [Fact]
+    public async Task ACycleRefusedByTheRateLimitRaisesAnAlertNamingIt()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var watcher = new FakeGitHub();
+        var refused = "GitHub answered 403 (Forbidden) to GET /repos/owner/repo/commits/main: API rate limit exceeded for installation ID 1";
+        Assert.Equal(InstallationBudget.RefusedTitle, await InstallationBudget.Judge("owner/repo",
+            new("core", 0, 5000, DateTimeOffset.Parse("2026-09-21T22:15:29Z")), refused, new Alerts(watcher, "owner/watcher"), Now, ct));
+        var alert = Assert.Single(watcher.Issues["owner/watcher"]);
+        Assert.Equal(InstallationBudget.RefusedTitle, alert.Issue.Title);
+        Assert.Contains($"A cycle for `owner/repo` was refused by GitHub's rate limit:\n\n> {refused}", alert.Issue.Body);
+        Assert.Contains("The lowest budget it saw was 0 of 5000 requests left, refilled at 22:15:29Z.", alert.Issue.Body);
+        Assert.Equal(Alerts.Label, alert.Label);
+    }
+
     sealed class FakeIssue(Issue issue, string label)
     {
         public Issue Issue { get; set; } = issue;
