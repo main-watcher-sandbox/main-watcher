@@ -1,6 +1,6 @@
 ---
 owner: platform-team
-reviewed: 2026-09-21
+reviewed: 2026-09-22
 review_by: 2027-03-15
 ---
 
@@ -26,12 +26,15 @@ All times UTC.
 | 6 | `04dee2c` | All 25, 6 targets | Stopped after TS-S14 found a race in Main Watcher | 72 min |
 | 7 | `664b6a7` | All 25, 6 targets | Stopped once TS-S7 (a) and TS-S11 failed on the API budget | 40 min |
 | 8 | `664b6a7` | All 25, 6 targets | Stopped once TS-S17 (a) failed on the API budget | 65 min |
+| 9 | `22ffc39` | All 25, 6 targets | 23 passed, 2 failed, both in the suite's own code | 116 min |
+| 10 | `1e68709` | All 25, 6 targets | **Passed**, and posted `scenario-suite` = `success` | 115 min |
 
-**No full run has passed yet, so no commit carries the `scenario-suite` status.** Every unit has passed in at least one
-run. But the suite needs more GitHub API requests than the sandbox's `main-watcher` App installation allows: 5000 an hour,
-shared by every target's cycles. With six targets, the busy part of a run uses them at about 10,000 an hour. What the
-runs found is below; cutting the watcher's API cost is
-[MainWatcher#60](https://github.com/Actium-Group-Corporation/MainWatcher/issues/60).
+**Run 10 passed in full on 2026-09-22, and `1e68709` on `main` carries `scenario-suite` = `success`.** Runs 3 to 8 were
+stopped by the API budget: the suite needed more requests than the sandbox's `main-watcher` App installation allows, 5000
+an hour shared by every target's cycles, and with six targets the busy part of a run used them at about 10,000 an hour.
+[MainWatcher#60](https://github.com/Actium-Group-Corporation/MainWatcher/issues/60) cut a cycle from about 210 requests to
+about 20 (`issue-60-validation.md`). Runs 9 and 10 are recorded there; run 9's two failures were both in the suite's own
+code, and run 10 passed with both fixed. What the earlier runs found is below.
 
 **Duration.** The issue asked for about 30 minutes. That cannot be reached. TS-S16 (h)'s unstoppable run has to wait for
 its run deadline, 32 minutes after its job starts. Then come 15 minutes to the force-cancel and 15 more to the alert.

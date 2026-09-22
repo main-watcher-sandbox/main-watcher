@@ -126,7 +126,7 @@ Unit tests:
 - `WatcherTests.ALowInstallationBudgetRaisesOneAlertPerWindow`
 - `WatcherTests.ACycleRefusedByTheRateLimitRaisesAnAlertNamingIt`
 
-## The first full suite run with the fix
+## Run 9: the first suite run with the fix
 
 Run 9 of the scenario suite was on 2026-09-22, 14:35 to 16:32, at `22ffc39`, on six targets.
 
@@ -171,3 +171,34 @@ Across all 209 cycles, the endpoints that dominate now are all per-cycle reads, 
 Most of a cycle's issue reads list the same lock issues again: renewal, the queue sweep, the report, the override check and
 reconciliation each read them for themselves. Reading them once a cycle is the next saving, if the budget needs one.
 
+
+## Run 10: the suite's first full pass
+
+Run 10 was on 2026-09-22, 18:16 to 20:12, at `1e68709`, the commit that merged this work into `main`, on six targets.
+
+**All 25 units passed, in 115 minutes.** It posted `scenario-suite` = `success` and `scenario-suite/ts-s13` = `success`
+on `1e68709`, the first commit to carry either, so `release.yml` will release from it (`docs/release.md`). The two units
+that failed run 9, TS-S15 and TS-S8, passed in 26.8 and 5.4 minutes.
+
+**The budget held with room to spare.** Across the whole run, 208 cycles sent 4614 requests, about 2,400 an hour:
+
+- no request was refused, and no budget alert was raised;
+- the lowest budget any cycle logged was 3113 of 5000.
+
+Requests per cycle, by what the cycle did:
+
+| Cycle | Cycles | Median | Range |
+|---|---|---|---|
+| Test dispatch | 76 | 17 | 17–50 |
+| Report | 70 | 29 | 16–37 |
+| Stale run (cancel, force-cancel, waiting for either) | 30 | 17 | 16–22 |
+| Idle: no eligible head | 12 | 17 | 14–20 |
+| Sweep leg | 6 | 36 | 22–41 |
+| Other, or a pending check with nothing to report | 14 | 21 | 21 |
+
+This is run 9's shape again, with the report cycles' median a little higher because more of them reconciled. Before this
+work a cycle cost about 210 requests, and six busy targets spent the hour's 5000 in about 30 minutes.
+
+**What has not been exercised.** No cycle in either run came near the floor, so the alerts themselves have not fired in
+the sandbox: the claim label, the low-budget alert and the refusal alert are covered by unit tests only. Nor did any
+target need the unbounded GraphQL search, since every one of them has a check run within 50 commits of its head.

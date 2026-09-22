@@ -20,6 +20,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-22-validation.md` | TS-S13, check-run half: suite time, the change from the last green run, the 5 slowest tests and the retry flag, against the CTRF artifact, for #22 |
 | `issue-23-validation.md` | TS-S10: whether an App's team @-mention notifies, the organisation `Members: read` it needs, and the CODEOWNERS fallback, for #23 |
 | `issue-24-validation.md` | The TS-001 §6 checklist as tests, a target test run that inspects its own environment for Main Watcher keys, and how to run TS-S8, for #24 |
+| `issue-26-validation.md` | The dry run against the live sandbox target: a green target, a caller mismatch, a red suite and a resumed run, none of which created a check run or a lock, for #26 |
 | `issue-25-validation.md` | The scenario suite's first runs: what they found and how long they took, for #25 |
 | `issue-53-validation.md` | The replica's CI green on its own sandbox target list, once `CommittedTargetListParses` scoped its sandbox-target clause to this repo, for #53 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
@@ -125,15 +126,22 @@ kubectl -n main-watcher-sandbox scale deploy/trigger-worker --replicas=0
 ## Hand-made locks
 
 Scenario tests that need a hand-made lock (TS-S4, TS-S5) open one with the
-`sandbox-lock` workflow. It creates a `main-broken` issue authored by `main-watcher[bot]`
+`lock` workflow. It creates a `main-broken` issue authored by `main-watcher[bot]`
 with a `lease_until` marker, or closes the open ones:
 
 ```
-gh workflow run sandbox-lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=open -f lease_hours=4
-gh workflow run sandbox-lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=close
+gh workflow run lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=open -f lease_hours=4
+gh workflow run lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=close
 ```
 
 A negative `lease_hours` makes an expired lease, for the "LOCK LEASE EXPIRED" path.
+
+The workflow is no longer sandbox-only, and was `sandbox-lock.yml` until MainWatcher#26: it also
+opens the lock TS-S5 needs when a repository is onboarded
+([onboarding.md](../docs/onboarding.md)). A bare `target` still means a `main-watcher-sandbox`
+repository, which is how the suite dispatches it; anything else must be an `owner/repo` listed in
+`targets.yml`, and any other repository is refused. The validation records of #16 and #20 name it
+by its old filename, which is what ran at the time.
 
 ## Workflow variants
 
@@ -226,10 +234,10 @@ It then configures the sandbox for the run:
 
 With `--no-deploy` it skips the first part and tests whatever the sandbox already runs.
 
-A full run takes about 2 h 15 min on six targets; one on ten took 100 minutes. The longest unit, TS-S16 (h)'s unstoppable
+A full run takes about 2 h on six targets; one on ten took 100 minutes. The longest unit, TS-S16 (h)'s unstoppable
 run, starts first: from its run deadline through the refused cancel and force-cancel to the alert is about 90 min of
-GitHub time. A full run does not yet fit the `main-watcher` installation's API budget, below, so none has passed yet
-(#60).
+GitHub time. The first full pass was on 2026-09-22: 25 units in 115 min, within the `main-watcher` installation's API
+budget, which #60 brought a cycle down to about 20 requests.
 
 **The pool.** Scenarios run side by side, each on a target of its own. Ten targets are set up: `sample-target` and
 `sample-target-2` to `sample-target-10`. A pool target needs three things:
@@ -241,7 +249,8 @@ GitHub time. A full run does not yet fit the `main-watcher` installation's API b
 A run uses six of them by default: `sample-target`, `sample-target-2` to `-5`, and `sample-target-10`, the one the worker
 gives a short queue deadline. `--targets N` uses N, from 2 to 10. More is not faster in practice. Every target's cycles
 share the `main-watcher` App installation's 5000 API requests an hour. With ten targets, the fourth run spent the whole
-budget in 39 minutes, and every cycle then failed with 403 until it refilled (#25). Each cycle's log ends with its requests
+budget in 39 minutes, and every cycle then failed with 403 until it refilled (#25). Since #60 the passing run used about
+2,400 an hour on six targets, and never left less than 3113 of the 5000. Each cycle's log ends with its requests
 by endpoint and the lowest budget it saw: "API budget of this installation: … requests left". Since #60, a cycle's first read
 of the check runs stops at the last green run instead of reading every commit, and a low or spent budget raises a
 `watcher-infra` alert (`docs/watcher.md`).

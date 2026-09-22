@@ -4,7 +4,7 @@ type: test-strategy
 status: draft
 state: target
 owner: platform-team
-reviewed: 2026-09-21
+reviewed: 2026-09-22
 review_by: 2027-03-15
 sources: [ARCH-001, ADR-002, ADR-003, ADR-004, ADR-007, ADR-008, ADR-009, ADR-010, ADR-011, ADR-012, ADR-013, ADR-014, ADR-015, ADR-016, ADR-017, ADR-018]
 confidence: assumed
@@ -62,7 +62,7 @@ confidence: assumed
 | TS-S2: three quick pushes during a running test lead to exactly one further test, of the newest commit; the issue lists all pushes | FR-2, FR-3, ADR-009 | Slow suite; push 3 failing commits | Release |
 | TS-S3: a green run closes the lock; an override lifts the gate; a failure on a newer commit opens a new issue | ADR-004 | Scripted sequence | Release |
 | TS-S4: while locked, an unlabelled PR is removed from the queue and a `fixes-main` PR merges | FR-4, C-2 | Queue both | Release |
-| TS-S5: a batched group mixing a fix and a non-fix PR fails the gate | R-3, A-5 | Merge limit 2 | Release, and at onboarding |
+| TS-S5: a batched group mixing a fix and a non-fix PR fails the gate | R-3, A-5 | Merge limit 2, with a lock open: `lock.yml` opens an App-authored one with a short lease for a sandbox target or one listed in `targets.yml`, and closes it as the App afterwards | Release, and at onboarding |
 | TS-S6: a hand-made `main-broken` issue does not lock | R-2 | Issue created by a user | Release |
 | TS-S7: with the worker scaled to 0 and the sweep disabled, merges still proceed: (a) with no lock open, at once; (b) starting from an open lock, once `lock_lease` has passed, with the gate warning "LOCK LEASE EXPIRED". After the watcher is restored, the lease is renewed, the lock is enforced again, a "lock lapsed" alert is raised, and the merge from (b) is reported | NFR-3, ADR-014 | Queue a PR in each case; sandbox `lock_lease` of 10 min | Release |
 | TS-S8: credential scope. `mw-observer` cannot write or dispatch; `mw-doorbell` cannot touch targets; a target test run has no access to any Main Watcher key | ADR-009, ADR-010 | API calls with each token must return 403, with a working call beside each as control (`sandbox/ts-s8-credential-scope.sh`); the test run inspects its own environment (`inspect_environment` switch) | Release |
@@ -91,11 +91,12 @@ confidence: assumed
 | TS-U13: the eligibility rule, implemented once in the shared .NET library: no check run → eligible once `poll_interval` has passed since the last start; newest `neutral` → eligible once `poll_interval` has passed since it completed, while the head has fewer than 3 neutral check runs; newest `in_progress`, `success` or `failure` → not eligible; the Planner re-checks before starting; `force` ignores only the cap; the worker and the Planner both call the library's rule and keep no copy of their own | ADR-017 | Timestamped check-run fixtures in the shared library's test suite | Every commit |
 | TS-U14: the test wrapper sets `finished=true` only when the test command exits on its own, passes the command's exit code through after the one retry, and at its deadline stops the whole process tree and exits non-zero without setting `finished` | ADR-007, ADR-013 | Fake test commands that pass, fail, spawn child processes, and sleep past a short deadline | Every commit |
 | TS-U15: the stale-run lifecycle: the queue deadline counts from check-run creation until the job starts, and the run deadline from the job's `started_at`; past either, the Planner records `cancel_requested`, cancels, and keeps the check run `in_progress` until the run stops; it force-cancels 15 min later; once the job has stopped, the outcome table is applied to its steps; 15 min after an unsuccessful force-cancel it raises an alert, keeps the check run `in_progress`, repeats the force-cancel each cycle, and starts no test for the target (no retry, newer head or forced dispatch) until the run stops or is deleted; a 404 gives "outcome unknown"; a jobs API error changes nothing; a crash between any two steps resumes from the recorded times | ADR-013, ADR-017 | Timestamped job, run and check-run fixtures; faked cancel and force-cancel responses | Every commit |
+| TS-U16: the onboarding dry run checks the entry, the target's caller and gate workflows, one dispatched test and its CTRF, in that order, and stops at the first failure; a red suite still passes and says the lock would open; a caller mismatch or a missing gate workflow stops it before it dispatches; a run that never appears, two runs of the same commit, a job that never completes, a neutral outcome and an unreadable artifact each fail at their own check; a completed run with no `main-watcher` job is judged at once rather than waited out, since the gateway answers a run whose job does not exist yet with a queued one; a run still going when the dry run's App token is nearly spent stops on that, and says how to resume rather than blaming the target's timeout; a dry run given a run ID judges that run with its own fresh credentials, making every check and starting no second test, and one given an unrelated run fails at the outcome by the contract's own names; an API error is reported as the check it stopped, not thrown; and a whole dry run writes nothing to the target but its one dispatch — no check run, so nothing it does can lock a repository being onboarded | FR-1, ADR-007, ADR-009, ADR-013 | Faked gateway, clock advanced by the wait | Every commit |
 
 **Workflow and deployment review checklist:** each item is also a test in `SecurityChecklistTests` (watcher CI), except the App installations, which `sandbox/ts-s8-credential-scope.sh` checks against the live Apps.
 - no `pull_request_target`;
 - the reusable workflow requests no App tokens;
-- `watch.yml` never checks out or runs target code;
+- the workflows holding the main App key (`watch.yml`, `dry-run.yml`, `lock.yml`) never check out or run target code, and the dry run's token asks for neither Checks nor Issues;
 - third-party actions pinned by commit SHA;
 - the worker's Kubernetes Secret has restricted RBAC;
 - `main-watcher` and `mw-observer` are installed on selected repositories only, matching
@@ -113,6 +114,7 @@ detection stalled becomes a scenario or unit test. Owner: platform lead.
 
 | Requirement | Covered by |
 |---|---|
+| FR-1 | TS-U16, and TS-S5 at each onboarding |
 | FR-2 | TS-S1, TS-S2, TS-S18, TS-U3, TS-U5, TS-U13 |
 | FR-3 | TS-S2, TS-S16, TS-U1, TS-U11, TS-U14, TS-U15 |
 | FR-4 | TS-S3, TS-S4, TS-S5, TS-S14, TS-S16, TS-S17, TS-U8, TS-U12 |

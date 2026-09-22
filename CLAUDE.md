@@ -61,20 +61,24 @@ now uses `SubjectAccessReview`s. TS-S8 passed on the fourth run, all 35 checks, 
 on a public repo, GitHub validates a new issue's body before it checks permission, so issue writes are probed with
 an empty update instead. The scenario suite now runs TS-S1 to TS-S18 from one entry point, `sandbox/run-scenarios.sh`, on a
 pool of sandbox targets (MainWatcher#25). A full pass posts the `scenario-suite` commit status, and `release.yml` releases
-the workflow tag or the worker image only for a commit on `main` that has it (`docs/release.md`). Every unit has passed,
-but no full run has yet: the suite needed about twice the sandbox `main-watcher` installation's 5000 API requests an hour.
-MainWatcher#60 measured why: about 195 of a cycle's 210 requests read the check runs of every commit on `main`. A first
-read now stops at the last green run, and run 9 of the suite measured 17 to 21 requests a cycle, about 2,400 an hour on six
-targets, with no request refused. Its only failures, TS-S15 and TS-S8, were suite faults, fixed and passed again on their
-own. A low or spent
-installation budget now raises a `watcher-infra` alert, and R-13 names that budget as the limit. Its eight runs found two Main Watcher faults, both fixed:
+the workflow tag or the worker image only for a commit on `main` that has it (`docs/release.md`). **The suite passed in full on
+2026-09-22**, run 10, all 25 units in 115 minutes, and `1e68709` on `main` carries `scenario-suite` = `success`, so
+releases are no longer blocked. The eight runs before it were stopped by the API budget: the suite needed about twice the
+sandbox `main-watcher` installation's 5000 requests an hour. MainWatcher#60 measured why — about 195 of a cycle's 210
+requests read the check runs of every commit on `main` — and a first read now stops at the last green run, or searches
+further back through GraphQL, whose budget is separate. A cycle costs about 20 requests, and the passing run used about
+2,400 an hour on six targets with none refused. A low or spent installation budget now raises a `watcher-infra` alert,
+raised once per window by claiming a label named after it, and R-13 names that budget as the limit. Its eight runs found two Main Watcher faults, both fixed:
 - two alerts with the same title raised 2 s apart opened two issues, because the issue list lags;
 - a lock closed by hand during a cycle was marked reconciled before its override was noted, so the override comment
   waited for an unrelated cycle.
 
 The override check also no longer re-reads every closed lock on each cycle. Each `watch.yml` cycle now logs its request
 count and what its installation's budget has left. The sandbox watcher replica is public, since the Free plan's Actions
-minutes are for private repos only.
+minutes are for private repos only. Onboarding is written down and testable (MainWatcher#26): `docs/onboarding.md` is the
+procedure, `ci.yml`'s `targets` job validates every `targets.yml` entry through `--check-targets`, and `dry-run.yml` tests a
+target's whole path — entry, caller, gate workflow, one dispatched test, its CTRF against the schema — creating no check run,
+so nothing it does can lock a repository still being onboarded. Rollback is documented in the same guide.
 
 ## Where things are
 
@@ -109,8 +113,9 @@ minutes are for private repos only.
 - `src/MainWatcher.Core/Reconciliation.cs` holds the reconciliation rules; `Planner.Reconcile`
   runs them. `src/MainWatcher.Core/QueueSweep.cs` holds the ADR-016 sweep rules;
   `Planner.SweepQueue` runs them.
-- `targets.yml` configures targets. For dispatch, recovery and caller validation, read
-  `docs/watcher.md`. Sandbox evidence is in `sandbox/issue-9-validation.md`,
+- `targets.yml` configures targets. Onboarding one is `docs/onboarding.md`: the App installs, the two
+  copied workflows, the entry, the dry run, the required gate check and rollback. For dispatch,
+  recovery and caller validation, read `docs/watcher.md`. Sandbox evidence is in `sandbox/issue-9-validation.md`,
   `sandbox/issue-10-validation.md`, `sandbox/issue-11-validation.md`,
   `sandbox/issue-12-validation.md`, `sandbox/issue-13-validation.md`,
   `sandbox/issue-14-validation.md`, `sandbox/issue-15-validation.md`,
@@ -118,7 +123,8 @@ minutes are for private repos only.
   `sandbox/issue-18-validation.md`, `sandbox/issue-19-validation.md`,
   `sandbox/issue-20-validation.md`, `sandbox/issue-21-validation.md`,
   `sandbox/issue-22-validation.md`, `sandbox/issue-23-validation.md`, `sandbox/issue-24-validation.md`,
-  `sandbox/issue-25-validation.md`, `sandbox/issue-53-validation.md` and `sandbox/issue-60-validation.md`.
+  `sandbox/issue-25-validation.md`, `sandbox/issue-26-validation.md`, `sandbox/issue-53-validation.md` and
+  `sandbox/issue-60-validation.md`.
 - `sandbox/run-scenarios.sh` runs the scenario suite (`sandbox/scenarios/`, a .NET console app), which a release requires.
   Read `docs/release.md` for releasing and the release App's one-time setup.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
@@ -126,8 +132,10 @@ minutes are for private repos only.
 - `templates/main-watcher-tests.yml` — the test caller targets copy. It calls
   `.github/workflows/run-integration-tests.yml`, whose `.github/actions/test-runner` builds
   `src/MainWatcher.TestRunner`.
-- `.github/workflows/` — `ci.yml` (`dotnet test` and actionlint on every PR),
-  `sandbox-lock.yml` (hand-made App-authored locks, sandbox org only),
+- `src/MainWatcher.Core/DryRun.cs` is the onboarding dry run; `.github/workflows/dry-run.yml` runs it.
+- `.github/workflows/` — `ci.yml` (`dotnet test`, `targets.yml` validation and actionlint on every PR),
+  `lock.yml` (hand-made App-authored locks, for a sandbox target or one listed in
+  `targets.yml`; it opens the lock TS-S5 needs at onboarding),
   `app-installations.yml` (lists `main-watcher`'s installed repositories for TS-S8), `release.yml` (moves the workflow
   tag and pushes the worker image, only for a commit with a passing `scenario-suite` status), and
   `run-integration-tests.yml`, the reusable test workflow targets call;
@@ -193,6 +201,10 @@ metrics store (PostgreSQL + Grafana) is deferred.
    passed with TS-S9 and TS-S15 (MainWatcher#20), TS-S10 with the team mention
    (MainWatcher#23), and TS-S8 with the credential-scope script (MainWatcher#24).
 2. Remaining `[assumption]` tag: worker resource sizing.
+3. Remaining `[open]` tag: OIDC for target tests (ARCH-001 §8). The reusable workflow's job
+   permissions cap what the tests get, so `id-token: write` never reaches them; granting it
+   would break every existing caller unless they change in the same release. Found while
+   writing `docs/onboarding.md` (MainWatcher#26); no target has asked for it yet.
 
 ## Suggested next steps
 
@@ -215,7 +227,8 @@ metrics store (PostgreSQL + Grafana) is deferred.
       (MainWatcher#18), the lock leases it asks to have renewed (MainWatcher#19), the closed
       locks that still owe reconciliation (MainWatcher#20) and the queue sweeps it keeps asking
       for until they finish (MainWatcher#21).
-   5. Onboarding docs.
+   5. Onboarding docs. Built (MainWatcher#26): `docs/onboarding.md`, the CI entry check and the
+      dry run.
 
 ## Validating the docs after edits
 
