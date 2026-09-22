@@ -177,6 +177,7 @@ jobs:
       # previous-results-report is the duration trend: one row per earlier run, with its
       # wall-clock time. summary-delta-report is left out: it formats durations in the wrong unit.
       - uses: ctrf-io/github-test-reporter@7974087018bf4857cf5a9d78723e152038c3fa31 # v1.3.0
+        id: reporter
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
@@ -190,3 +191,17 @@ jobs:
           artifact-name: main-watcher-report
           upload-artifact: true
           previous-results-max: 100
+
+      # The job summary cannot be read through the REST API, so the markdown the reporter wrote is kept as an artifact
+      # too. TS-S13 checks its slowest tests and their units against the CTRF reports, which is what a new reporter pin
+      # must not break (TS-001 §4).
+      - name: Keep the job summary
+        env:
+          SUMMARY: ${{ steps.reporter.outputs.summary }}
+        run: printf '%s\n' "$SUMMARY" > main-watcher-summary.md
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: main-watcher-summary
+          path: main-watcher-summary.md
+          if-no-files-found: error

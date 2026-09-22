@@ -85,32 +85,26 @@ public sealed class GitHub : IDisposable
     public async Task<string> Text(string path, CancellationToken ct) => System.Text.Encoding.UTF8.GetString(await Bytes(path, ct));
 
     /// <summary>A download, such as an artifact's zip, through GitHub's redirect to storage.</summary>
-    public async Task<byte[]> Bytes(string path, CancellationToken ct)
-    {
-        for (var attempt = 1; ; attempt++)
-        {
-            await slots.WaitAsync(ct);
-            try
-            {
-                Interlocked.Increment(ref calls);
-                using var response = await http.GetAsync(path, ct);
-                var bytes = await response.Content.ReadAsByteArrayAsync(ct);
-                if (response.IsSuccessStatusCode) return bytes;
-                if (attempt < 4 && (int)response.StatusCode >= 500) { await Task.Delay(TimeSpan.FromSeconds(5 * attempt), ct); continue; }
-                throw new GitHubException(response.StatusCode, "GET", path, System.Text.Encoding.UTF8.GetString(bytes));
-            }
-            finally { slots.Release(); }
-        }
-    }
+    public Task<byte[]> Bytes(string path, CancellationToken ct) => Request(HttpMethod.Get, path, null, ct);
 
     async Task<JsonNode?> Send(HttpMethod method, string path, object? body, CancellationToken ct)
+    {
+        var content = await Request(method, path, body, ct);
+        return content.Length == 0 ? null : JsonNode.Parse(content);
+    }
+
+    /// <summary>
+    /// The one request policy, for API calls and downloads alike: the concurrency limit, the wait for the hourly budget, and
+    /// retries of transport failures, GitHub's own errors and the secondary rate limit. Only the decoding differs.
+    /// </summary>
+    async Task<byte[]> Request(HttpMethod method, string path, object? body, CancellationToken ct)
     {
         for (var attempt = 1; ; attempt++)
         {
             await Budget(ct);
             await slots.WaitAsync(ct);
             HttpResponseMessage? response = null;
-            string text;
+            byte[] content;
             try
             {
                 Interlocked.Increment(ref calls);
@@ -119,7 +113,7 @@ public sealed class GitHub : IDisposable
                     request.Content = new StringContent(body is JsonNode node ? node.ToJsonString() : JsonSerializer.Serialize(body),
                         Encoding.UTF8, "application/json");
                 response = await http.SendAsync(request, ct);
-                text = await response.Content.ReadAsStringAsync(ct);
+                content = await response.Content.ReadAsByteArrayAsync(ct);
                 Track(response);
             }
             catch (Exception e) when (e is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested && attempt < 4)
@@ -131,8 +125,8 @@ public sealed class GitHub : IDisposable
             finally { slots.Release(); }
             using (response)
             {
-                if (response.IsSuccessStatusCode)
-                    return text.Length == 0 ? null : JsonNode.Parse(text);
+                if (response.IsSuccessStatusCode) return content;
+                var text = Encoding.UTF8.GetString(content);
                 var status = (int)response.StatusCode;
                 // Transient: GitHub's own errors, and the secondary rate limit, which says how long to wait.
                 if (attempt < 4 && (status >= 500 || status == 429

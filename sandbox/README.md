@@ -284,7 +284,9 @@ Any run that includes TS-S13 posts `scenario-suite/ts-s13`. `--no-status` posts 
 
 **What it cannot check.**
 
-- The CTRF job summary is not in the API. TS-S13's job-summary half is checked only as far as the
-  `report` job succeeding and saving its history artifact. Its check-run half is checked against
-  the CTRF reports and `timings.json`.
+- The CTRF job summary is not in the REST API, so the `report` job also keeps the markdown the
+  reporter generated, as the `main-watcher-summary` artifact. TS-S13 checks that summary's slowest
+  tests against the CTRF reports: each timed test listed, its average and p95 within a factor of
+  three of CTRF's duration, and the 20-second test ranked slowest. It cannot see how GitHub
+  renders the page. The check-run half is checked against the CTRF reports and `timings.json`.
 - TS-S18's "once the feed is back" needs a new head, because the feed switch is a file.

@@ -47,7 +47,7 @@ public sealed class CancelledRun : Scenario
 public sealed class Timings : Scenario
 {
     public override string[] Covers => ["TS-S13"];
-    public override string Title => "The check run's timing section matches the CTRF reports, run to run and with a retry";
+    public override string Title => "The job summary and the check run's timing section match the CTRF reports, run to run and with a retry";
     public override TimeSpan Estimate => TimeSpan.FromMinutes(12);
 
     public override async Task Run(ScenarioContext ctx)
@@ -93,7 +93,88 @@ public sealed class Timings : Scenario
         var report = (await t.Jobs(runId, ctx.Ct))?.SingleOrDefault(j => j.Name.EndsWith("/ report", StringComparison.Ordinal));
         ctx.Require(report?.Conclusion == "success", $"target run {runId}: the report job, which writes the job summary, succeeded", report?.ToString());
         ctx.Require((await t.Artifact(runId, "main-watcher-report", ctx.Ct)).Count > 0, $"target run {runId}: the reporter saved its history artifact");
+
+        // The job summary itself (TS-001 §4, ADR-011): the reporter's slowest tests, in the right units. The summary is not in
+        // the REST API, so the report job keeps the markdown the reporter generated as the main-watcher-summary artifact.
+        var markdown = (await t.Artifact(runId, "main-watcher-summary", ctx.Ct)).Values.SingleOrDefault() ?? "";
+        var slowest = JobSummary.Slowest(markdown);
+        ctx.Require(slowest.Count > 0, $"target run {runId}: the job summary has a slowest-tests table", Target.Excerpt(markdown));
+        var timed = files.Where(f => f.Key.EndsWith(".ctrf.json", StringComparison.Ordinal))
+            .SelectMany(f => JsonNode.Parse(f.Value)!["results"]!["tests"]!.AsArray())
+            .Select(n => (Name: n!["name"]!.GetValue<string>(), Duration: n["duration"]!.GetValue<long>()))
+            .Where(x => JobSummary.TimedTests.Any(x.Name.EndsWith)).ToList();
+        ctx.Require(timed.Count == JobSummary.TimedTests.Length, $"target run {runId}: the CTRF reports hold the three timed tests",
+            string.Join(", ", timed.Select(x => x.Name)));
+        foreach (var (name, duration) in timed)
+        {
+            var row = slowest.FirstOrDefault(r => r.Name == name);
+            ctx.Require(row is not null && JobSummary.SameScale(row.Average, duration) && JobSummary.SameScale(row.P95, duration),
+                $"target run {runId}: the job summary lists {name} at {row?.AverageText} average and {row?.P95Text} p95, "
+                + $"in scale with CTRF's {duration} ms", row?.ToString());
+        }
+        ctx.Require(slowest[0].Name.EndsWith(JobSummary.TimedTests[0], StringComparison.Ordinal),
+            $"target run {runId}: the job summary ranks the 20-second test slowest", slowest[0].ToString());
     }
+}
+
+/// <summary>
+/// The slowest-tests table of the CTRF reporter's job summary, as its pinned version renders it
+/// (<c>reports/slowest-table.hbs</c>): each test's average and p95 duration across the runs it reads, formatted as
+/// <c>127ms</c>, <c>20.1s</c> or <c>1m 30s</c>. A new pin that renders a different unit, or scales the milliseconds CTRF
+/// reports, is what TS-S13 exists to catch (R-17).
+/// </summary>
+static class JobSummary
+{
+    /// <summary>The sample target's timed tests, slowest first.</summary>
+    public static readonly string[] TimedTests = ["Takes20Seconds", "Takes2Seconds", "Takes50Milliseconds"];
+
+    public sealed record Row(string Name, string AverageText, string P95Text)
+    {
+        public double? Average => Milliseconds(AverageText);
+        public double? P95 => Milliseconds(P95Text);
+    }
+
+    public static List<Row> Slowest(string markdown)
+    {
+        var rows = new List<Row>();
+        var inTable = false;
+        foreach (var line in markdown.Replace("\r\n", "\n").Split('\n'))
+        {
+            var cells = line.Trim().Trim('|').Split('|').Select(c => c.Trim()).ToArray();
+            if (cells.Length == 4 && cells[2].StartsWith("Duration (avg)", StringComparison.Ordinal)
+                && cells[3].StartsWith("Duration (p95)", StringComparison.Ordinal))
+            {
+                inTable = true;
+                continue;
+            }
+            if (!inTable) continue;
+            if (!line.TrimStart().StartsWith('|')) break;
+            if (cells.Length == 4 && !cells[0].StartsWith("---", StringComparison.Ordinal)) rows.Add(new(cells[0], cells[2], cells[3]));
+        }
+        return rows;
+    }
+
+    /// <summary>The reporter's duration text in milliseconds; null for "not captured" or anything it does not render.</summary>
+    public static double? Milliseconds(string text)
+    {
+        var total = 0.0;
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return null;
+        foreach (var part in parts)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(part, @"^([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)$");
+            if (!match.Success) return null;
+            var value = double.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            total += value * match.Groups[2].Value switch { "ms" => 1, "s" => 1000, "m" => 60_000, _ => 3_600_000 };
+        }
+        return total;
+    }
+
+    /// <summary>
+    /// Within a factor of three of CTRF's own duration. An average and a p95 across earlier runs are not this run's figure,
+    /// but a unit or scale error is a factor of a thousand.
+    /// </summary>
+    public static bool SameScale(double? shown, long ctrfMs) => shown is { } ms && ms >= ctrfMs / 3.0 && ms <= ctrfMs * 3.0;
 }
 
 /// <summary>
