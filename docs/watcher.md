@@ -32,13 +32,18 @@ malformed or disabled targets fail this step without requesting a token.
 
 ## Configuration
 
+Adding a target is [onboarding.md](onboarding.md), which covers the App installs, the two copied workflows, the
+entry below, the dry run and the required gate check. This section is the entry's own reference.
+
 `targets.yml` is a mapping with a `targets` array. Unknown fields and duplicate
 keys or repositories are rejected. An empty array is valid, and is what this repo ships:
 no target is watched from here, so the hourly sweep does nothing and the trigger worker starts
 no cycles. The scenario-test target belongs to the sandbox replica, which holds the App
 credentials; two watchers on one target would race for its check runs. A regression test parses
 the committed file, so one the sweep could not read fails the build rather than a cycle an hour
-later.
+later. The `targets` job in `ci.yml` runs the same parser through `--check-targets`, which prints what each entry
+was understood to mean: it is what an onboarding pull request reads, and it fails that pull request rather than
+the next sweep.
 
 `lock_lease` sits beside `targets`, outside the list: how long, in whole minutes, a renewal keeps
 an open lock enforced (ADR-014). It defaults to 240 and is at most 1440, because the gate rejects
@@ -128,6 +133,31 @@ deferred to worker/production work rather than introducing new GitHub state in #
 Read calls retry transient failures up to three times with bounded exponential
 backoff, and collection reads follow GitHub's next-page links. Writes are not
 automatically retried: recovery inspects GitHub state before another dispatch.
+
+## Dry run
+
+`dry-run.yml` tests one target's setup end to end without watching it, which is step 5 of
+[onboarding.md](onboarding.md):
+
+```sh
+gh workflow run dry-run.yml -f target=owner/repo
+```
+
+It validates the entry, the target's copied caller and gate workflows, dispatches one test of the
+head of `main`, judges that run by the ADR-013 outcome table and validates its CTRF artifact
+against the schema (ADR-007). Each check is what the next one needs, so it stops at the first
+failure and the job summary names it.
+
+It creates **no check run**, which is the whole point: a check run is what makes a red result a
+lock, and a repository still being onboarded must not get one. For the same reason its App token
+asks only for Contents: read and Actions: write — nothing it holds can write a check run or an
+issue. It shares the target's `main-watcher-<owner/repo>` concurrency group with `watch.yml`, so a
+dry run and a cycle never test the same repository at once, and it accepts an entry that is still
+`enabled: false`, which is what an entry has while it is being onboarded.
+
+A red suite still passes: the contract is what is being tested, and a failing test exercises more
+of it than a passing one. The outcome line says the suite failed and that a real cycle would open
+the lock for that commit.
 
 ## Backup sweep
 
@@ -645,7 +675,8 @@ failed one is logged and fails the run. The measured cost of each kind of cycle 
 
 Run `dotnet test` and the CI-pinned actionlint. The core suite includes real xUnit
 reports and a GitHub reusable-caller jobs response, with provenance in its fixtures
-directory. Sandbox execution uses the watcher replica described in
+directory. TS-U16 covers the dry run: what each check establishes, what each failure stops at, and
+that a dry run writes nothing to the target but its one dispatch. Sandbox execution uses the watcher replica described in
 `sandbox/README.md`. The [issue #9 validation record](../sandbox/issue-9-validation.md)
 links the passing and failing checks, their Planner and Reporter cycles, and
 the target restoration evidence. The [issue #10 validation record](../sandbox/issue-10-validation.md)

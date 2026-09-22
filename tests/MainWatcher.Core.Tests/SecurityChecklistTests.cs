@@ -64,18 +64,21 @@ public partial class SecurityChecklistTests
     }
 
     /// <summary>
-    /// <c>watch.yml</c> holds the main App key, so it checks out only the watcher repo at its own commit and calls
-    /// no other workflow: target code runs only in the target's own run (ARCH-001 §8).
+    /// The workflows that hold the main App key check out only the watcher repo at its own commit and call no other
+    /// workflow: target code runs only in the target's own run (ARCH-001 §8). <c>watch.yml</c> runs the cycles;
+    /// <c>dry-run.yml</c> holds the same key to dispatch one test at onboarding.
     /// </summary>
-    [Fact]
-    public void WatchRunsNoTargetCode()
+    [Theory]
+    [InlineData("watch.yml")]
+    [InlineData("dry-run.yml")]
+    public void WorkflowsHoldingTheAppKeyRunNoTargetCode(string workflow)
     {
-        var jobs = (YamlMappingNode)Load(Path.Combine(Root, ".github/workflows/watch.yml"))["jobs"];
+        var jobs = (YamlMappingNode)Load(Path.Combine(Root, ".github/workflows", workflow))["jobs"];
         var checkouts = 0;
         foreach (var (name, node) in jobs.Children)
         {
             var job = (YamlMappingNode)node;
-            Assert.False(job.Children.ContainsKey("uses"), $"watch.yml job {name} calls another workflow");
+            Assert.False(job.Children.ContainsKey("uses"), $"{workflow} job {name} calls another workflow");
             foreach (var step in ((YamlSequenceNode)job["steps"]).Children.Cast<YamlMappingNode>())
             {
                 if (!step.Children.TryGetValue("uses", out var uses) || !((YamlScalarNode)uses).Value!.StartsWith("actions/checkout@"))
@@ -92,7 +95,24 @@ public partial class SecurityChecklistTests
             }
         }
 
-        Assert.True(checkouts > 0, "watch.yml no longer checks out the watcher; update this test");
+        Assert.True(checkouts > 0, $"{workflow} no longer checks out the watcher; update this test");
+    }
+
+    /// <summary>
+    /// The dry run creates no check run and writes no issue, so its token asks for neither permission: a target still
+    /// being onboarded cannot be locked by the run that tests it (docs/onboarding.md).
+    /// </summary>
+    [Fact]
+    public void DryRunTokenCannotWriteChecksOrIssues()
+    {
+        var token = ((YamlSequenceNode)((YamlMappingNode)((YamlMappingNode)
+            Load(Path.Combine(Root, ".github/workflows/dry-run.yml"))["jobs"])["dry-run"])["steps"])
+            .Children.Cast<YamlMappingNode>()
+            .Single(s => s.Children.TryGetValue("uses", out var uses)
+                && ((YamlScalarNode)uses).Value!.StartsWith("actions/create-github-app-token@", StringComparison.Ordinal));
+        var asked = ((YamlMappingNode)token["with"]).Children.Keys.Select(k => ((YamlScalarNode)k).Value!)
+            .Where(k => k.StartsWith("permission-", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(["permission-actions", "permission-contents"], asked.Order());
     }
 
     /// <summary>

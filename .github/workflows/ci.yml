@@ -22,6 +22,26 @@ jobs:
 
       - run: dotnet test
 
+  # Every targets.yml entry, read by the parser the cycles use, so an onboarding pull request fails here rather than an
+  # hour later in a sweep (docs/onboarding.md). The unit tests parse the committed file too; this job is what an
+  # onboarding pull request reads, and says what each entry was understood to mean.
+  targets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - run: dotnet build src/MainWatcher.Watcher --configuration Release
+
+      - name: Validate targets.yml
+        run: dotnet src/MainWatcher.Watcher/bin/Release/net10.0/MainWatcher.Watcher.dll --check-targets
+
   # The trigger worker's container: it builds, fails fast without configuration and answers /healthz (#14).
   worker-image:
     runs-on: ubuntu-latest

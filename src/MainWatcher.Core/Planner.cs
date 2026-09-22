@@ -668,9 +668,15 @@ public sealed class Planner(IGitHubGateway github, Func<DateTimeOffset>? clock =
     async Task<WorkflowRun[]> MatchingRuns(string repo, CheckRun check, CancellationToken ct) =>
         RunsFor(check, await github.Runs(repo, GitHubGateway.Workflow, check.StartedAt.AddSeconds(-2), ct));
 
+    /// <summary>
+    /// The <c>run-name</c> the caller template gives a test of <paramref name="sha"/>. It is how a dispatched run is found
+    /// when its ID was not returned: recovery, the trigger worker and the onboarding dry run all look for exactly this.
+    /// </summary>
+    public static string RunName(string sha) => $"main-watcher-tests {sha}";
+
     /// <summary>Target runs that could belong to an unlinked check; the trigger worker reads them the same way.</summary>
     public static WorkflowRun[] RunsFor(CheckRun check, IEnumerable<WorkflowRun> runs) =>
-        runs.Where(r => r.Title == $"main-watcher-tests {check.Sha}" && r.CreatedAt >= check.StartedAt.AddSeconds(-2)).ToArray();
+        runs.Where(r => r.Title == RunName(check.Sha) && r.CreatedAt >= check.StartedAt.AddSeconds(-2)).ToArray();
 
     /// <summary>How long an unlinked check waits for its target run before <see cref="Recover"/> completes it as neutral.</summary>
     public static readonly TimeSpan DispatchWindow = TimeSpan.FromMinutes(30);

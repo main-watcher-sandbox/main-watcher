@@ -2600,6 +2600,181 @@ public class WatcherTests
         Assert.Equal(InstallationBudget.LowTitle, Assert.Single(watcher.Issues["owner/watcher"]).Issue.Title);
     }
 
+    // TS-U16: the onboarding dry run (FR-1). It checks the entry, the two copied workflows and one real test, validates the
+    // CTRF that test uploads, and writes nothing to the target but the dispatch, so nothing it does can lock the repository.
+
+    const string GatePath = "owner/repo:.github/workflows/main-watcher-gate.yml";
+    const string GateBody = "jobs:\n  gate:\n    steps:\n      - uses: Actium-Group-Corporation/MainWatcher/.github/actions/gate@v1\n";
+
+    static async Task<DryRunReport> Dry(FakeGitHub fake, Target? target = null)
+    {
+        // The wait advances the clock, so a check that polls to its deadline reaches it in the test rather than spinning.
+        var clock = Now;
+        return await new DryRun(fake, () => clock, (d, _) => { clock += d; return Task.CompletedTask; })
+            .Run(target ?? new Target { Repo = "owner/repo" }, TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>A target set up correctly, whose suite passes.</summary>
+    static FakeGitHub GreenTarget()
+    {
+        var fake = new FakeGitHub { JobConclusion = "success", ReportResult = new(true, []) };
+        fake.Files[GatePath] = GateBody;
+        return fake;
+    }
+
+    [Fact]
+    public async Task DryRunChecksTheWholeTestPathAndWritesNothingButTheDispatch()
+    {
+        var fake = GreenTarget();
+        var report = await Dry(fake, new Target { Repo = "owner/repo", Enabled = false, Timeout = 12 });
+
+        Assert.True(report.Passed);
+        Assert.Equal(["Target entry", "Test caller", "Gate workflow", "Test run", "Test outcome", "CTRF reports"],
+            report.Steps.Select(s => s.Name));
+        Assert.Contains("`timeout` 12 min", report.Steps[0].Detail);
+        // A dry run is made before the entry is enabled, so a disabled one is reported, never refused.
+        Assert.Contains("`enabled` false", report.Steps[0].Detail);
+        Assert.Contains("run 77", report.Steps[3].Detail);
+        Assert.Contains("the tests passed", report.Steps[4].Detail);
+        Assert.Contains("validates against the CTRF schema", report.Steps[5].Detail);
+        // No check run and no issue: the one write is the dispatch, with the check run ID a run by hand leaves empty.
+        Assert.Equal("dispatch-workflow:main-watcher-tests.yml:sha=head,check_run_id=", Assert.Single(fake.Writes));
+        Assert.Empty(fake.Order);
+    }
+
+    [Fact]
+    public async Task DryRunPassesOnFailingTestsAndSaysTheLockWouldOpen()
+    {
+        var fake = new FakeGitHub { JobConclusion = "failure" };
+        fake.Files[GatePath] = GateBody;
+        var report = await Dry(fake);
+
+        // The contract held end to end, which is what a dry run judges. That `main` is red is a different thing, and is said
+        // where it will be read rather than folded into the verdict.
+        Assert.True(report.Passed);
+        Assert.Contains("the tests **failed**", report.Steps[4].Detail);
+        Assert.Contains("`main-broken`", report.Steps[4].Detail);
+        Assert.Contains("`Alpha`", report.Steps[5].Detail);
+    }
+
+    [Fact]
+    public async Task DryRunStopsAtACallerMismatchWithoutDispatching()
+    {
+        var fake = new FakeGitHub { InvalidCaller = true };
+        fake.Files[GatePath] = GateBody;
+        var report = await Dry(fake);
+
+        Assert.False(report.Passed);
+        Assert.Equal("Test caller", report.Steps[^1].Name);
+        Assert.Empty(fake.Writes);
+    }
+
+    [Fact]
+    public async Task DryRunStopsWhenTheGateWorkflowIsMissingOrDoesNotRunTheAction()
+    {
+        var missing = await Dry(new FakeGitHub());
+        Assert.False(missing.Passed);
+        Assert.Equal("Gate workflow", missing.Steps[^1].Name);
+        Assert.Contains("is missing", missing.Steps[^1].Detail);
+
+        var wrong = new FakeGitHub();
+        wrong.Files[GatePath] = "jobs:\n  gate:\n    steps:\n      - run: exit 0\n";
+        var report = await Dry(wrong);
+        Assert.False(report.Passed);
+        Assert.Contains("does not run", report.Steps[^1].Detail);
+        Assert.Empty(wrong.Writes);
+    }
+
+    [Fact]
+    public async Task DryRunFailsWhenTheDispatchedRunNeverAppears()
+    {
+        var fake = new FakeGitHub { DispatchStartsRun = false };
+        fake.Files[GatePath] = GateBody;
+        var report = await Dry(fake);
+
+        Assert.False(report.Passed);
+        Assert.Equal("Test run", report.Steps[^1].Name);
+        Assert.Contains("No run of `main-watcher-tests.yml` named `head` appeared", report.Steps[^1].Detail);
+    }
+
+    [Fact]
+    public async Task DryRunRefusesToGuessBetweenTwoRunsOfTheCommit()
+    {
+        var fake = new FakeGitHub { DispatchedRuns = 2 };
+        fake.Files[GatePath] = GateBody;
+        var report = await Dry(fake);
+
+        Assert.False(report.Passed);
+        Assert.Equal("Test run", report.Steps[^1].Name);
+        Assert.Contains("2 runs", report.Steps[^1].Detail);
+    }
+
+    [Fact]
+    public async Task DryRunFailsOnANeutralOutcome()
+    {
+        // The marker step is missing, so the tests did not run to completion (ADR-013): no row of the outcome table trusts the
+        // test step, and a target left like this would give the watcher neutral results for ever.
+        var fake = new FakeGitHub { JobList = [new("main-watcher", "completed", [new("main-watcher-test", "failure")])] };
+        fake.Files[GatePath] = GateBody;
+        var report = await Dry(fake);
+
+        Assert.False(report.Passed);
+        Assert.Equal("Test outcome", report.Steps[^1].Name);
+        Assert.Contains("Infrastructure error", report.Steps[^1].Detail);
+    }
+
+    [Fact]
+    public async Task DryRunFailsWhenTheJobNeverCompletes()
+    {
+        var fake = new FakeGitHub { JobList = [new("main-watcher", "in_progress", [])] };
+        fake.Files[GatePath] = GateBody;
+        var report = await Dry(fake, new Target { Repo = "owner/repo", Timeout = 10 });
+
+        Assert.False(report.Passed);
+        Assert.Equal("Test outcome", report.Steps[^1].Name);
+        // The target's own timeout, plus the reusable workflow's margin and the queue's.
+        Assert.Contains("had not completed 40 minutes", report.Steps[^1].Detail);
+    }
+
+    [Fact]
+    public async Task DryRunWaitsOutARunWhoseJobGitHubHasNotCreatedYet()
+    {
+        // GitHub answers with no jobs at all in the seconds after a dispatch. Judging that would call every correct target's
+        // contract broken, and a dry run polls from the moment the run appears.
+        var fake = new FakeGitHub { JobList = [] };
+        fake.Files[GatePath] = GateBody;
+        var report = await Dry(fake, new Target { Repo = "owner/repo", Timeout = 10 });
+
+        Assert.False(report.Passed);
+        Assert.Equal("Test outcome", report.Steps[^1].Name);
+        Assert.Contains("had not completed 40 minutes", report.Steps[^1].Detail);
+        Assert.DoesNotContain("contract broken", report.Steps[^1].Detail);
+    }
+
+    [Fact]
+    public async Task DryRunFailsWhenTheReportsAreNotValidCtrf()
+    {
+        var fake = new FakeGitHub { JobConclusion = "success", ReportResult = CtrfResult.Unknown };
+        fake.Files[GatePath] = GateBody;
+        var report = await Dry(fake);
+
+        Assert.False(report.Passed);
+        Assert.Equal("CTRF reports", report.Steps[^1].Name);
+        Assert.Contains("not valid CTRF", report.Steps[^1].Detail);
+    }
+
+    [Fact]
+    public async Task DryRunReportsTheCheckAnApiErrorStoppedRatherThanThrowing()
+    {
+        var fake = new FakeGitHub { RunsError = true };
+        fake.Files[GatePath] = GateBody;
+        var report = await Dry(fake);
+
+        Assert.False(report.Passed);
+        Assert.Equal("Test run", report.Steps[^1].Name);
+        Assert.Contains("unavailable", report.Steps[^1].Detail);
+    }
+
     sealed class FakeIssue(Issue issue, string label)
     {
         public Issue Issue { get; set; } = issue;
@@ -2776,7 +2951,19 @@ public class WatcherTests
             return Task.FromResult(new CheckRun(1, sha, "in_progress", null, now, null, null, title, summary));
         }
         public Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct) { Writes.Add("dispatch"); if (DispatchError is not null) throw DispatchError; return Task.FromResult(DispatchId); }
-        public Task DispatchWorkflow(string repo, string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct) => throw new NotSupportedException();
+        /// <summary>Whether a workflow dispatch makes a run appear, as GitHub's does, for the dry run's lookup.</summary>
+        public bool DispatchStartsRun { get; init; } = true;
+        /// <summary>How many runs of the dispatched commit appear: 2 is the ambiguity the dry run refuses to guess at.</summary>
+        public int DispatchedRuns { get; init; } = 1;
+        public Task DispatchWorkflow(string repo, string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct)
+        {
+            Writes.Add($"dispatch-workflow:{workflow}:" + string.Join(",", inputs.Select(i => $"{i.Key}={i.Value}")));
+            if (DispatchError is not null) throw DispatchError;
+            if (DispatchStartsRun)
+                for (var i = 0; i < DispatchedRuns; i++)
+                    RunList.Add(new(77 + i, $"main-watcher-tests {inputs["sha"]}", Now, "completed"));
+            return Task.CompletedTask;
+        }
         public Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct) => RunsError ? throw new HttpRequestException("unavailable")
             : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList.Where(r => r.CreatedAt >= since).ToArray());
         public Task Link(string repo, long checkId, long runId, CancellationToken ct) { Writes.Add($"link:{runId}"); return Task.CompletedTask; }
