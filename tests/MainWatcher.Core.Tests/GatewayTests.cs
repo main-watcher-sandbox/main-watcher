@@ -130,30 +130,49 @@ public class GatewayTests
         Assert.Equal(limited ? e.Message : null, gateway.RateLimited);
     }
 
-    // A pending check run is always the newest, so the walk goes past ChecksLimit until it finds one: recovery must not lose a
-    // test that more than 50 pushes followed (PR #62 review). A target with no check run at all stops at ChecksSearchLimit.
+    // A pending check run is always the newest, so when ChecksLimit commits hold none, the history is searched with no limit:
+    // recovery must not lose a test however many pushes followed it, and a cap would hide exactly that run (PR #62 review).
     [Theory]
-    [InlineData(80, 81)]
-    [InlineData(null, GitHubGateway.ChecksSearchLimit)]
-    public async Task AFirstReadOfTheChecksFindsAPendingRunBehindTheLimit(int? pending, int walked)
+    [InlineData(1100)]
+    [InlineData(null)]
+    public async Task AFirstReadOfTheChecksFindsAPendingRunBehindAnyNumberOfCommits(int? pending)
     {
         var requests = new List<string>();
-        var commits = Enumerable.Range(0, 1200).Select(i => $"c{i}").ToArray();
-        using var http = Client(new Handler(request =>
+        var commits = Enumerable.Range(0, 3000).Select(i => $"c{i}").ToArray();
+        using var http = Client(new Handler(async request =>
         {
             var path = request.RequestUri!.PathAndQuery;
             requests.Add(path);
-            if (path.EndsWith("/commits/main")) return Task.FromResult(Response("{\"sha\":\"c0\"}"));
+            if (path.EndsWith("/graphql"))
+            {
+                // One page of 100 commits, from the cursor, each saying whether it carries a check run of this App.
+                var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync(TestContext.Current.CancellationToken))!;
+                Assert.Equal(7, body["variables"]!["app"]!.GetValue<long>());
+                var from = body["variables"]!["after"]?.GetValue<string>() is { } cursor ? int.Parse(cursor) : 0;
+                var page = commits.Skip(from).Take(100).Select(c => new JsonObject
+                {
+                    ["oid"] = c,
+                    ["checkSuites"] = new JsonObject { ["nodes"] = new JsonArray(new JsonObject { ["checkRuns"] =
+                        new JsonObject { ["totalCount"] = Array.IndexOf(commits, c) == pending ? 1 : 0 } }) },
+                }).ToArray();
+                return Response(new JsonObject { ["data"] = new JsonObject { ["repository"] = new JsonObject {
+                    ["object"] = new JsonObject { ["history"] = new JsonObject {
+                        ["pageInfo"] = new JsonObject { ["hasNextPage"] = from + 100 < commits.Length, ["endCursor"] = $"{from + 100}" },
+                        ["nodes"] = new JsonArray(page) } } } } }.ToJsonString());
+            }
+            if (path.EndsWith("/commits/main")) return Response("{\"sha\":\"c0\"}");
             if (path.Contains("/commits?"))
-                return Task.FromResult(Response("[" + string.Join(",", commits.Select(c => $"{{\"sha\":\"{c}\"}}")) + "]"));
+                return Response("[" + string.Join(",", commits.Select(c => $"{{\"sha\":\"{c}\"}}")) + "]");
             var sha = path.Split('/')[5];
-            return Task.FromResult(Response(Array.IndexOf(commits, sha) == pending ? $$$"""
+            return Response(Array.IndexOf(commits, sha) == pending ? $$$"""
                 {"check_runs":[{"id":1,"head_sha":"{{{sha}}}","status":"in_progress","conclusion":null,"started_at":"2026-09-16T18:00:00Z","app":{"id":7}}]}
-                """ : "{\"check_runs\":[]}"));
+                """ : "{\"check_runs\":[]}");
         }));
         var checks = await new GitHubGateway(http, 7).Checks("owner/repo", TestContext.Current.CancellationToken);
-        Assert.Equal(walked, requests.Count(p => p.Contains("/check-runs")));
-        if (pending is not null) Assert.Equal(("c80", "in_progress"), (Assert.Single(checks).Sha, checks[0].Status));
+        // The search itself costs no REST request: GraphQL has a budget of its own, which the cycles do not spend.
+        Assert.Equal(GitHubGateway.ChecksLimit + (pending is null ? 0 : 1), requests.Count(p => p.Contains("/check-runs")));
+        Assert.Equal(pending is null ? 30 : 12, requests.Count(p => p.EndsWith("/graphql")));
+        if (pending is not null) Assert.Equal(("c1100", "in_progress"), (Assert.Single(checks).Sha, checks[0].Status));
         else Assert.Empty(checks);
     }
 

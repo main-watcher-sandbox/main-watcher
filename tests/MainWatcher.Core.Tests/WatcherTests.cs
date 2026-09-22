@@ -2506,7 +2506,7 @@ public class WatcherTests
     {
         var ct = TestContext.Current.CancellationToken;
         var watcher = new FakeGitHub();
-        var alerts = new Alerts(watcher, "owner/watcher", delay: (_, _) => Task.CompletedTask);
+        var alerts = new Alerts(watcher, "owner/watcher", () => Now);
         var reset = DateTimeOffset.Parse("2026-09-22T14:35:41Z");
         Assert.Null(await InstallationBudget.Judge("owner/repo", new("core", 1000, 5000, reset), null, alerts, Now, ct));
         Assert.Null(await InstallationBudget.Judge("owner/repo", null, null, alerts, Now, ct));
@@ -2535,7 +2535,7 @@ public class WatcherTests
         var refused = "GitHub answered 403 (Forbidden) to GET /repos/owner/repo/commits/main: API rate limit exceeded for installation ID 1";
         Assert.Equal(InstallationBudget.RefusedTitle, await InstallationBudget.Judge("owner/repo",
             new("core", 0, 5000, DateTimeOffset.Parse("2026-09-21T22:15:29Z")), refused,
-            new Alerts(watcher, "owner/watcher", delay: (_, _) => Task.CompletedTask), Now, ct));
+            new Alerts(watcher, "owner/watcher", () => Now), Now, ct));
         var alert = Assert.Single(watcher.Issues["owner/watcher"]);
         Assert.Equal(InstallationBudget.RefusedTitle, alert.Issue.Title);
         Assert.Contains($"A cycle for `owner/repo` was refused by GitHub's rate limit:\n\n> {refused}", alert.Issue.Body);
@@ -2543,45 +2543,53 @@ public class WatcherTests
         Assert.Equal(Alerts.Label, alert.Label);
     }
 
-    // Cycles for different targets, and a sweep's legs, run at once, and each checks before it writes (PR #62 review). Both
-    // writers here check, write and wait before either tidies, which is the race: with the issue list lagging, both open an
-    // alert; with one already open, both comment in the same window.
+    // Cycles for different targets, and a sweep's legs, run at once, and each checks before it writes, so every one of them
+    // can find nothing written (PR #62 review). Here the issue and comment lists lag, so none of the three sees another's
+    // write at all: only the claim decides, and only one alert is ever written, so only one is ever notified.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task TwoCyclesRaisingTheBudgetAlertAtOnceLeaveOneIssueAndOneComment(bool alreadyOpen)
+    public async Task ConcurrentCyclesWriteTheBudgetAlertOnce(bool alreadyOpen)
     {
         var ct = TestContext.Current.CancellationToken;
         var watcher = new FakeGitHub { ListLags = true };
         if (alreadyOpen) watcher.Seed("owner/watcher", Alerts.Label, InstallationBudget.LowTitle, "github-actions[bot]", "Bot", "earlier window");
-        var arrived = 0;
-        var settled = new TaskCompletionSource();
-        async Task Settle(TimeSpan wait, CancellationToken token)
-        {
-            Assert.Equal(Alerts.Settle, wait);
-            if (++arrived == 2)
-            {
-                watcher.Catch();
-                settled.SetResult();
-            }
-            // A writer that never reaches this wait fails the test rather than hanging it.
-            await settled.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
-        }
         var reset = DateTimeOffset.Parse("2026-09-22T14:35:41Z");
-        var first = InstallationBudget.Judge("owner/repo", new("core", 900, 5000, reset), null, new Alerts(watcher, "owner/watcher", delay: Settle), Now, ct);
-        var second = InstallationBudget.Judge("owner/other", new("core", 800, 5000, reset), null, new Alerts(watcher, "owner/watcher", delay: Settle), Now, ct);
-        await Task.WhenAll(first, second);
+        var cycles = new[] { "owner/repo", "owner/other", "owner/third" }.Select(repo =>
+            InstallationBudget.Judge(repo, new("core", 900, 5000, reset), null, new Alerts(watcher, "owner/watcher", () => Now), Now, ct)).ToArray();
+        await Task.WhenAll(cycles);
 
-        var alerts = watcher.Issues["owner/watcher"];
-        var open = Assert.Single(alerts, a => a.Open);
-        Assert.Equal(alerts.Min(a => a.Issue.Number), open.Issue.Number);
-        Assert.All(alerts.Where(a => !a.Open), a => Assert.Equal("duplicate", a.Issue.StateReason));
-        Assert.Equal(alreadyOpen ? 1 : 0, open.Comments.Count);
-        // A third cycle in the same window finds its key and writes nothing.
-        await InstallationBudget.Judge("owner/third", new("core", 700, 5000, reset), null,
-            new Alerts(watcher, "owner/watcher", delay: (_, _) => Task.CompletedTask), Now, ct);
-        Assert.Single(watcher.Issues["owner/watcher"], a => a.Open);
-        Assert.Equal(alreadyOpen ? 1 : 0, open.Comments.Count);
+        var alert = Assert.Single(watcher.Issues["owner/watcher"]);
+        Assert.True(alert.Open);
+        Assert.Equal(alreadyOpen ? 1 : 0, alert.Comments.Count);
+        Assert.Equal(1, watcher.Order.Count(o => o.StartsWith("create:", StringComparison.Ordinal) || o.StartsWith("comment:", StringComparison.Ordinal)));
+        // An hour later the list has caught up, as GitHub's does in seconds. The claim names the window, so the next one is
+        // raised, on the same alert, and the day-old claims of earlier ones are deleted.
+        watcher.Catch();
+        var stale = $"{Alerts.ClaimPrefix}{(Now - Alerts.ClaimKept - TimeSpan.FromMinutes(1)).UtcDateTime:yyyyMMddHHmm}-0badcafe";
+        await watcher.Claim("owner/watcher", stale, "an old claim", ct);
+        await InstallationBudget.Judge("owner/later", new("core", 900, 5000, reset.AddHours(1)), null,
+            new Alerts(watcher, "owner/watcher", () => Now), Now, ct);
+        Assert.Equal(alreadyOpen ? 2 : 1, Assert.Single(watcher.Issues["owner/watcher"]).Comments.Count);
+        Assert.DoesNotContain(stale, watcher.CreatedLabels["owner/watcher"]);
+        Assert.Equal(2, watcher.CreatedLabels["owner/watcher"].Count(l => l.StartsWith(Alerts.ClaimPrefix, StringComparison.Ordinal)));
+    }
+
+    // A claim stands for an alert that was written, so one whose write fails is given back (PR #62 review).
+    [Fact]
+    public async Task AClaimWhoseWriteFailsIsGivenBack()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var watcher = new FakeGitHub { IssueError = true };
+        var budget = new RateLimit("core", 900, 5000, DateTimeOffset.Parse("2026-09-22T14:35:41Z"));
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            InstallationBudget.Judge("owner/repo", budget, null, new Alerts(watcher, "owner/watcher", () => Now), Now, ct));
+        Assert.Empty(watcher.CreatedLabels["owner/watcher"]);
+        Assert.False(watcher.Issues.ContainsKey("owner/watcher"));
+        // The next cycle claims the same window again and writes the alert.
+        watcher.IssueError = false;
+        await InstallationBudget.Judge("owner/repo", budget, null, new Alerts(watcher, "owner/watcher", () => Now), Now, ct);
+        Assert.Equal(InstallationBudget.LowTitle, Assert.Single(watcher.Issues["owner/watcher"]).Issue.Title);
     }
 
     sealed class FakeIssue(Issue issue, string label)
@@ -2601,7 +2609,7 @@ public class WatcherTests
         public Dictionary<string, string> Files { get; } = [];
         public List<string> Order { get; } = [];
         public List<string> Comments { get; } = [];
-        public bool IssueError { get; init; }
+        public bool IssueError { get; set; }
         /// <summary>
         /// The issue list lags, as GitHub's does: an issue or comment this fake creates is not listed until <see cref="Catch"/>.
         /// </summary>
@@ -2695,10 +2703,23 @@ public class WatcherTests
             Wrote($"close:{number}" + (reason == "completed" ? "" : $":{reason}") + (duplicateOf is null ? "" : $":{duplicateOf}"));
             return Task.CompletedTask;
         }
-        public Task DeleteComment(string repo, long id, CancellationToken ct)
+        /// <summary>The labels of the repository, as the claim of a shared alert creates them.</summary>
+        public Dictionary<string, List<string>> CreatedLabels { get; } = [];
+        public Task<bool> Claim(string repo, string name, string description, CancellationToken ct)
         {
-            foreach (var issue in Issues.GetValueOrDefault(repo, [])) issue.Comments.RemoveAll(c => c.Id == id);
-            Wrote($"delete-comment:{id}");
+            CreatedLabels.TryAdd(repo, []);
+            // A label name is unique in a repository: GitHub refuses the second creation, whoever sends it.
+            if (CreatedLabels[repo].Contains(name)) return Task.FromResult(false);
+            CreatedLabels[repo].Add(name);
+            Wrote($"claim:{name}");
+            return Task.FromResult(true);
+        }
+        public Task<IReadOnlyList<string>> LabelNames(string repo, string prefix, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<string>>(CreatedLabels.GetValueOrDefault(repo, []).Where(l => l.StartsWith(prefix, StringComparison.Ordinal)).ToArray());
+        public Task DeleteLabel(string repo, string name, CancellationToken ct)
+        {
+            CreatedLabels.GetValueOrDefault(repo, []).Remove(name);
+            Wrote($"delete-label:{name}");
             return Task.CompletedTask;
         }
 

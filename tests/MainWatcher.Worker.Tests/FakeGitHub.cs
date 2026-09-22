@@ -88,5 +88,7 @@ sealed class FakeGitHub : IGitHubGateway
     public Task<Account?> ClosedBy(string repo, int number, CancellationToken ct) => throw new NotSupportedException();
     public Task EditBody(string repo, int number, string body, CancellationToken ct) => throw new NotSupportedException();
     public Task Close(string repo, int number, string reason, long? duplicateOf, CancellationToken ct) => throw new NotSupportedException();
-    public Task DeleteComment(string repo, long id, CancellationToken ct) => throw new NotSupportedException();
+    public Task<bool> Claim(string repo, string name, string description, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<string>> LabelNames(string repo, string prefix, CancellationToken ct) => throw new NotSupportedException();
+    public Task DeleteLabel(string repo, string name, CancellationToken ct) => throw new NotSupportedException();
 }

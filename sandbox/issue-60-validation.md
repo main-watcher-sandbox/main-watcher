@@ -74,14 +74,18 @@ latest one.
 ## What changed
 
 - **A first `Checks` read stops at the last green run.** It walks back from the head and reads each commit's check runs
-  until it finds a green one, or until it has read 50 commits (`GitHubGateway.ChecksLimit`) and found a check run of any
-  kind. Only the Planner creates check runs, on the head, and never while one is pending (ADR-017). So a pending run is
-  always the newest run, and runs on older commits are older. Finding the newest check run finds every pending one,
-  however many pushes followed it. The first version stopped at 50 commits whatever it had found, which the PR #62 review
-  showed could lose a pending run behind 50 newer commits. What the limit leaves out is a green run further back, which
-  only the timing comparison reads (the push list walks back on its own). A target with no check run at all, such as one
-  just added with a long history, is searched 1000 commits back (`ChecksSearchLimit`). Otherwise its first cycle would
-  spend the hour's budget before it could start the test that ends the search.
+  until it finds a green one, or until it has read 50 commits (`GitHubGateway.ChecksLimit`). Only the Planner creates check
+  runs, on the head, and never while one is pending (ADR-017). So a pending run is always the newest run, and runs on older
+  commits are older. Finding the newest check run finds every pending one, however many pushes followed it. What the limit
+  leaves out is a green run further back, which only the timing comparison reads (the push list walks back on its own).
+
+  **When those 50 commits hold no check run at all, the rest of the history is searched with no limit**
+  (`NewestCheckedCommit`), through GraphQL, 100 commits a request. The PR #62 review rejected two earlier versions: the
+  first stopped at 50 commits whatever it had found, and the second at 1000, each of which could hide the pending run this
+  has to find. GraphQL has a budget of its own, separate from the REST requests the cycles spend, and a page of 100 commits
+  costs 2 of its 5000 points an hour: measured against `sample-target`, where the query also returned the commits in the
+  same order as the REST list. So even a first cycle on a repository with a long history and no check run costs the
+  installation's hourly requests nothing.
 
   Estimated from the logs above:
   - a dispatch cycle drops from 208 to about 17 requests: 2 check-runs reads to reach the previous green commit, 1 more
@@ -99,11 +103,15 @@ latest one.
 
   The cycle then raises "The main-watcher App's API rate limit is refusing cycles", quoting the refusal. The record is
   made wherever the refusal was caught, since the cycle can fail on it at any step.
-- **One alert per window.** Both alerts carry a key naming the minute the budget refills. Cycles for different targets,
-  and a sweep's legs, run at the same moment, and each checks before it writes. So both alerts are raised as `shared`:
-  the writer waits 10 s (`Alerts.Settle`), then closes newer open copies as duplicates of the oldest and deletes comments
-  that repeat the key (PR #62 review). However many cycles and targets see one shortage, it is one issue, with at most one
-  comment an hour.
+- **One alert per window, written once.** Both alerts carry a key naming the minute the budget refills. Cycles for
+  different targets, and a sweep's legs, run at the same moment, and each checks before it writes, so each can find nothing
+  written. Both alerts are therefore raised as `shared`, which claims the window before writing it: the cycle creates the
+  label `mw-claim-<minute>-<digest>` in the watcher repository, and only the cycle GitHub lets create it writes. A label
+  name is unique in a repository, so exactly one cycle wins, and no duplicate issue or comment is created — and so none is
+  notified. The PR #62 review rejected the first version, which wrote first and tidied up afterwards: the duplicate
+  notifications had gone out by then. A claim whose write fails is deleted again, so the next cycle raises the alert, and
+  claims older than a day are deleted by the next winner. Creating and deleting labels needs no permission beyond the
+  `issues: write` the alerts already use.
 - **The alerts can always be written.** They use the workflow's `GITHUB_TOKEN`, whose budget is separate from the App's.
 - **ETags were considered and deferred.** After the fix, a cycle's reads are about 20, and most of them are expected to
   change between cycles: the head, the issues, the jobs.

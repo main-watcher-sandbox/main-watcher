@@ -629,10 +629,12 @@ the cycle worked or not:
   budget is below 20%".
 
 Each carries a key naming the minute the budget refills. Cycles for different targets, and a
-sweep's legs, raise it at the same moment, and each checks before it writes, so a writer waits
-10 s and then tidies: newer open copies are closed as duplicates of the oldest, and comments
-repeating the window's key are deleted. However many cycles and targets see the same shortage,
-it is one issue with at most one comment per window. The alerts use the
+sweep's legs, raise it at the same moment, and each checks before it writes, so the window is
+claimed before it is written: the cycle creates a label named `mw-claim-<minute>-<digest>` in
+the watcher repository, and only the cycle GitHub lets create it writes. A label name is unique
+in a repository, so however many cycles see the same shortage, one alert is written and one
+notification sent. A claim whose write then fails is deleted again, so the next cycle raises the
+alert; claims older than a day are deleted by the next winner. The alerts use the
 workflow token, whose budget is separate, so they can be written once the App's is spent. A
 failed one is logged and fails the run. The measured cost of each kind of cycle is in the
 [issue #60 validation record](../sandbox/issue-60-validation.md).
