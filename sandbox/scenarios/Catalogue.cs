@@ -23,6 +23,7 @@ public static class Catalogue
         new QuickPushes(),
         new Resolution(),
         new LockedQueue(),
+        new BatchedGroup(),
         new HandMadeIssue(),
         new CredentialScope(),
         new GateApiDown(),
