@@ -29,7 +29,8 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
         var targets = (await Targets(ct)).Targets.Where(t => t.Enabled).ToArray();
         var cycles = await ActiveCycles(ct);
         var problems = new List<string>();
-        var stuck = cycles.Unfinished is { } unfinished ? await StopStuckRuns(unfinished, problems, ct) : null;
+        var (stuck, unjudged) = cycles.Unfinished is { } unfinished
+            ? await StopStuckRuns(unfinished, problems, ct) : ((IReadOnlyList<StuckRun>?)null, (IReadOnlyCollection<string>)[]);
         var pending = new List<PendingReport>();
         var sweeps = new List<PendingSweep>();
         var examined = new List<string>();
@@ -77,7 +78,8 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
             Examined = examined,
             WatchRunStarted = dispatched > 0 || cycles.Active.Count > 0,
             WatchRunCompleted = cycles.Completed,
-            StuckRuns = stuck
+            StuckRuns = stuck,
+            StuckUnjudged = unjudged
         });
     }
 
@@ -85,14 +87,17 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
     /// ADR-020: stops each <c>watch.yml</c> run for a target that has not started by its deadline, unless it is held for a
     /// listed reviewer. Nothing is recorded: the stage comes from the run's own times on every cycle, and cancelling is
     /// idempotent. Once the run has completed it no longer marks its target active, so a later cycle dispatches again.
-    /// Only runs in <see cref="ActiveRunWindow"/> are seen, so a run that cannot be stopped is force-cancelled until it is two
-    /// hours old; by then it no longer marks its target active either.
     /// </summary>
-    /// <returns>The runs past their deadline, for the alerts; only runs whose gates could be read are judged.</returns>
-    async Task<IReadOnlyList<StuckRun>> StopStuckRuns(IReadOnlyList<WorkflowRun> unfinished, List<string> problems, CancellationToken ct)
+    /// <returns>
+    /// The runs past their deadline, for the alerts, and the targets with a run whose gates could not be read: those are not
+    /// judged this cycle, so their alerts keep their state rather than clearing and alerting again (PR #72 review).
+    /// </returns>
+    async Task<(IReadOnlyList<StuckRun>? Stuck, IReadOnlyCollection<string> Unjudged)> StopStuckRuns(IReadOnlyList<WorkflowRun> unfinished,
+        List<string> problems, CancellationToken ct)
     {
         var now = Now();
         var stuck = new List<StuckRun>();
+        var unjudged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var run in unfinished.Where(r => StuckWatchRuns.Due(r, now) && r.Title.StartsWith(RunNamePrefix, StringComparison.Ordinal)))
         {
             var target = run.Title[RunNamePrefix.Length..];
@@ -106,6 +111,7 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
                     problems.Add($"{target}: could not read the gates of {WorkerSettings.WatchWorkflow} run {run.Id}: {e.Message}");
                     log.LogError("{Target}: could not read the gates of {Workflow} run {Run}: {Message}", target,
                         WorkerSettings.WatchWorkflow, run.Id, e.Message);
+                    unjudged.Add(target);
                     continue;
                 }
             }
@@ -124,7 +130,7 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
                 WorkerSettings.WatchWorkflow, run.Id, run.Status, run.CreatedAt, force ? "force-cancelled" : "cancelled",
                 refusal is null ? "accepted" : $"refused: {refusal}");
         }
-        return stuck;
+        return (stuck, unjudged);
     }
 
     DateTimeOffset Now() => (clock ?? (() => DateTimeOffset.UtcNow))();
@@ -153,7 +159,9 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
     /// <returns>
     /// <c>Completed</c> is the newest completion time seen, not the fact that one was seen, so reading the same finished run on
     /// every cycle for the next two hours cannot keep pushing the "no run completed" clock forward. <c>Unfinished</c> is every
-    /// run in the window not yet completed, for ADR-020, and null with <c>Completed</c> when the list could not be read.
+    /// run in the window not yet completed, and every run not yet started whatever its age, for ADR-020; it is null with
+    /// <c>Completed</c> when either list could not be read. A run older than the window that has not started still marks its
+    /// target active: it holds the target's concurrency group, and ADR-020 stops it.
     /// </returns>
     async Task<(HashSet<string> Active, DateTimeOffset? Completed, IReadOnlyList<WorkflowRun>? Unfinished)> ActiveCycles(CancellationToken ct)
     {
@@ -162,12 +170,14 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
         {
             var since = Now() - ActiveRunWindow;
             var runs = await watcher.Runs(watcherRepo, WorkerSettings.WatchWorkflow, since, ct);
-            foreach (var run in runs)
-                if (run.Status != "completed" && run.Title.StartsWith(RunNamePrefix, StringComparison.Ordinal))
+            var unstarted = await watcher.RunsIn(watcherRepo, WorkerSettings.WatchWorkflow, StuckWatchRuns.UnstartedStatuses, ct);
+            var unfinished = runs.Where(r => r.Status != "completed").Concat(unstarted).DistinctBy(r => r.Id).ToArray();
+            foreach (var run in unfinished)
+                if (run.Title.StartsWith(RunNamePrefix, StringComparison.Ordinal))
                     active.Add(run.Title[RunNamePrefix.Length..]);
             // A run GitHub gives no update time for is dated by its creation: earlier than the truth, so it never hides a stall.
             return (active, runs.Where(r => r.Status == "completed").Select(r => r.UpdatedAt ?? r.CreatedAt)
-                .DefaultIfEmpty().Max() is { Ticks: > 0 } newest ? newest : null, runs.Where(r => r.Status != "completed").ToArray());
+                .DefaultIfEmpty().Max() is { Ticks: > 0 } newest ? newest : null, unfinished);
         }
         catch (Exception e) when (!ct.IsCancellationRequested)
         {

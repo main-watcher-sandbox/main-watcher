@@ -37,6 +37,11 @@ public sealed record CycleObservations
     /// says nothing about them either way.
     /// </summary>
     public IReadOnlyList<StuckRun>? StuckRuns { get; init; }
+    /// <summary>
+    /// Targets with a run whose gates could not be read, so it was not judged (ADR-020). Their stuck-run alerts are neither
+    /// raised nor cleared, which keeps the hourly repeat limit (PR #72 review).
+    /// </summary>
+    public IReadOnlyCollection<string> StuckUnjudged { get; init; } = [];
 }
 
 /// <summary>
@@ -80,7 +85,8 @@ public sealed class WorkerAlerts(Alerts alerts, IAccessHealth access, ILogger lo
     readonly Dictionary<string, DateTimeOffset> firing = new(StringComparer.Ordinal);
     readonly Dictionary<string, OwedWork> reports = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, OwedWork> sweeps = new(StringComparer.OrdinalIgnoreCase);
-    readonly HashSet<string> stuckTitles = new(StringComparer.Ordinal);
+    /// <summary>The stuck-run alerts that last held, with the target each is about.</summary>
+    readonly Dictionary<string, string> stuckTitles = new(StringComparer.Ordinal);
     readonly List<string> streak = [];
     int consecutiveErrors;
     DateTimeOffset lastCompletedRun = started;
@@ -149,53 +155,55 @@ public sealed class WorkerAlerts(Alerts alerts, IAccessHealth access, ILogger lo
                 + "and it would be reported afterwards rather than blocked. The sweep stops for a gate run that is still "
                 + "going, and for one GitHub refuses to re-run: the watcher's own run log says which.", ct);
 
-        if (seen.StuckRuns is { } stuck) await Stuck(stuck, now, ct);
+        if (seen.StuckRuns is { } stuck) await Stuck(stuck, seen.StuckUnjudged, now, ct);
     }
 
     /// <summary>
     /// One alert per target, kind and state (ADR-020), so a second stuck target is not hidden by the first. A run the cycle no longer
     /// lists as stuck has started, completed or aged out of the window, and its alert condition clears.
     /// </summary>
-    async Task Stuck(IReadOnlyList<StuckRun> stuck, DateTimeOffset now, CancellationToken ct)
+    async Task Stuck(IReadOnlyList<StuckRun> stuck, IReadOnlyCollection<string> unjudged, DateTimeOffset now, CancellationToken ct)
     {
-        var alerts = new Dictionary<string, string>(StringComparer.Ordinal);
+        var alerts = new Dictionary<string, (string Repo, string Body)>(StringComparer.Ordinal);
         foreach (var target in stuck.GroupBy(r => r.Repo, StringComparer.OrdinalIgnoreCase))
         {
             var held = target.Where(r => r.Stage == StuckStage.Reviewers).ToArray();
             if (held.Length > 0)
                 alerts[$"`watch.yml` run waiting for a reviewer on {target.Key}"] =
-                    string.Join("\n", held.Select(r => $"- [Run {r.RunId}]({r.Url}), created {r.CreatedAt.UtcDateTime:yyyy-MM-dd HH:mm} UTC, "
+                    (target.Key, string.Join("\n", held.Select(r => $"- [Run {r.RunId}]({r.Url}), created {r.CreatedAt.UtcDateTime:yyyy-MM-dd HH:mm} UTC, "
                         + $"is waiting for {string.Join(", ", r.Reviewers.Select(n => $"`{n}`"))} to approve it."))
                     + $"\n\nWhile it waits, no cycle runs for `{target.Key}`: nothing is tested or reported. The worker leaves a run "
                     + "a person can approve alone, but the `reporter` environment must have no required reviewers, since every "
                     + "cycle would need an approval (ADR-020, `docs/watcher.md`). Remove the environment's required reviewers, "
-                    + "then approve or cancel this run.";
+                    + "then approve or cancel this run.");
             // The state is in the title, as ADR-020 names the alert; a run seldom changes state while it waits.
             foreach (var stopping in target.Where(r => r.Stage != StuckStage.Reviewers).GroupBy(r => r.State, StringComparer.Ordinal))
                 alerts[$"`watch.yml` run stuck `{stopping.Key}` on {target.Key}"] =
-                    string.Join("\n", stopping.Select(r => $"- [Run {r.RunId}]({r.Url}) has been `{r.State}` since "
+                    (target.Key, string.Join("\n", stopping.Select(r => $"- [Run {r.RunId}]({r.Url}) has been `{r.State}` since "
                         + $"{r.CreatedAt.UtcDateTime:yyyy-MM-dd HH:mm} UTC ({(now - r.CreatedAt).TotalMinutes:0} minutes) without "
                         + $"starting; the worker {(r.Stage == StuckStage.Cancel ? "cancelled" : "force-cancelled")} it."))
                     + $"\n\nWhile a run for `{target.Key}` has not started, no other cycle for it starts, so nothing is tested or "
                     + "reported. Once the run has stopped, the next cycle dispatches a new one (ADR-020). A run held at an "
                     + "environment gate that lists no reviewers is waiting for an approval nobody can give, which GitHub has been "
-                    + "seen to do (MainWatcher#67).";
+                    + "seen to do (MainWatcher#67).");
             var unstoppable = target.Where(r => r.Stage == StuckStage.Unstoppable).ToArray();
             if (unstoppable.Length > 0)
                 alerts[$"`watch.yml` run could not be stopped on {target.Key}"] =
-                    string.Join("\n", unstoppable.Select(r => $"- [Run {r.RunId}]({r.Url}) is still `{r.State}` "
+                    (target.Key, string.Join("\n", unstoppable.Select(r => $"- [Run {r.RunId}]({r.Url}) is still `{r.State}` "
                         + $"{(now - r.Deadline).TotalMinutes:0} minutes after it was first cancelled."))
                     + $"\n\nThe worker force-cancels it on each cycle. Until it stops, no cycle runs for `{target.Key}`. Deleting "
-                    + "the run releases the target at once (ADR-020).";
+                    + "the run releases the target at once (ADR-020).");
         }
-        foreach (var gone in stuckTitles.Except(alerts.Keys).ToArray())
+        // A target whose gates went unread says nothing either way, so its alerts neither clear nor restart their hour.
+        foreach (var (gone, repo) in stuckTitles.Where(t => !alerts.ContainsKey(t.Key)).ToArray())
         {
+            if (unjudged.Contains(repo, StringComparer.OrdinalIgnoreCase)) continue;
             stuckTitles.Remove(gone);
             await Judge(false, gone, "", now, ct);
         }
-        foreach (var (title, body) in alerts)
+        foreach (var (title, (repo, body)) in alerts)
         {
-            stuckTitles.Add(title);
+            stuckTitles[title] = repo;
             await Judge(true, title, body, now, ct);
         }
     }

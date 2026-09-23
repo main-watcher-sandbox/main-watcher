@@ -31,7 +31,15 @@ sealed class FakeGitHub : IGitHubGateway
     public Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct)
     {
         Reads.Add($"runs:{repo}:{workflow}");
-        return RunsError ? throw new HttpRequestException("runs unavailable") : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList);
+        // As GitHub's created filter does, so a run older than the window is not listed (PR #72 review).
+        return RunsError ? throw new HttpRequestException("runs unavailable")
+            : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList.Where(r => r.CreatedAt >= since).ToArray());
+    }
+    public Task<IReadOnlyList<WorkflowRun>> RunsIn(string repo, string workflow, IReadOnlyList<string> statuses, CancellationToken ct)
+    {
+        Reads.Add($"runs-in:{string.Join(",", statuses)}");
+        return RunsError ? throw new HttpRequestException("runs unavailable")
+            : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList.Where(r => statuses.Contains(r.Status)).ToArray());
     }
     public Task<string?> File(string repo, string path, CancellationToken ct) => Task.FromResult(Files.GetValueOrDefault($"{repo}:{path}"));
     public Task DispatchWorkflow(string repo, string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct)

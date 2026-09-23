@@ -24,6 +24,8 @@ public interface IGitHubGateway
     Task DispatchWorkflow(string repo, string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct);
     /// <summary>Dispatched runs of <paramref name="workflow"/> created at or after <paramref name="since"/>.</summary>
     Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct);
+    /// <summary>Dispatched runs of <paramref name="workflow"/> in any of <paramref name="statuses"/>, whatever their age.</summary>
+    Task<IReadOnlyList<WorkflowRun>> RunsIn(string repo, string workflow, IReadOnlyList<string> statuses, CancellationToken ct);
     /// <summary>
     /// Merge groups whose gate failed open (ADR-008), from the gate runs created at or after <paramref name="since"/>; empty
     /// when the target has no such workflow.
