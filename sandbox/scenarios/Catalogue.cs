@@ -3,7 +3,7 @@ using MainWatcher.Scenarios.Scenarios;
 namespace MainWatcher.Scenarios;
 
 /// <summary>
-/// Every unit of the suite. Together they cover TS-S1 to TS-S18 (TS-001 §6), which a release requires (§5); TS-S13 is also
+/// Every unit of the suite. Together they cover TS-S1 to TS-S19 (TS-001 §6), which a release requires (§5); TS-S13 is also
 /// run on its own when the reporter pin changes.
 /// </summary>
 public static class Catalogue
@@ -37,6 +37,7 @@ public static class Catalogue
         new StuckReportJob(),
         new QueueDeadline(),
         new QueuedBeforeLock(),
-        new NeutralRetries()
+        new NeutralRetries(),
+        new ReviewerHeldCycle()
     ];
 }

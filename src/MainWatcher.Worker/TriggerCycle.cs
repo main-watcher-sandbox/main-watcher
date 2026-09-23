@@ -29,6 +29,7 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
         var targets = (await Targets(ct)).Targets.Where(t => t.Enabled).ToArray();
         var cycles = await ActiveCycles(ct);
         var problems = new List<string>();
+        var stuck = cycles.Unfinished is { } unfinished ? await StopStuckRuns(unfinished, problems, ct) : null;
         var pending = new List<PendingReport>();
         var sweeps = new List<PendingSweep>();
         var examined = new List<string>();
@@ -75,9 +76,58 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
             Targets = targets.Select(t => t.Repo).ToArray(),
             Examined = examined,
             WatchRunStarted = dispatched > 0 || cycles.Active.Count > 0,
-            WatchRunCompleted = cycles.Completed
+            WatchRunCompleted = cycles.Completed,
+            StuckRuns = stuck
         });
     }
+
+    /// <summary>
+    /// ADR-020: stops each <c>watch.yml</c> run for a target that has not started by its deadline, unless it is held for a
+    /// listed reviewer. Nothing is recorded: the stage comes from the run's own times on every cycle, and cancelling is
+    /// idempotent. Once the run has completed it no longer marks its target active, so a later cycle dispatches again.
+    /// Only runs in <see cref="ActiveRunWindow"/> are seen, so a run that cannot be stopped is force-cancelled until it is two
+    /// hours old; by then it no longer marks its target active either.
+    /// </summary>
+    /// <returns>The runs past their deadline, for the alerts; only runs whose gates could be read are judged.</returns>
+    async Task<IReadOnlyList<StuckRun>> StopStuckRuns(IReadOnlyList<WorkflowRun> unfinished, List<string> problems, CancellationToken ct)
+    {
+        var now = Now();
+        var stuck = new List<StuckRun>();
+        foreach (var run in unfinished.Where(r => StuckWatchRuns.Due(r, now) && r.Title.StartsWith(RunNamePrefix, StringComparison.Ordinal)))
+        {
+            var target = run.Title[RunNamePrefix.Length..];
+            IReadOnlyList<PendingDeployment> gates = [];
+            if (run.Status == "waiting")
+            {
+                // Unread, a gate might list a reviewer, so nothing is cancelled; the failure counts towards the failing-cycles alert.
+                try { gates = await watcher.PendingDeployments(watcherRepo, run.Id, ct); }
+                catch (Exception e) when (e is (HttpRequestException or TaskCanceledException) && !ct.IsCancellationRequested)
+                {
+                    problems.Add($"{target}: could not read the gates of {WorkerSettings.WatchWorkflow} run {run.Id}: {e.Message}");
+                    log.LogError("{Target}: could not read the gates of {Workflow} run {Run}: {Message}", target,
+                        WorkerSettings.WatchWorkflow, run.Id, e.Message);
+                    continue;
+                }
+            }
+            if (StuckWatchRuns.Judge(target, $"https://github.com/{watcherRepo}/actions/runs/{run.Id}", run, gates, now) is not { } found)
+                continue;
+            stuck.Add(found);
+            if (found.Stage == StuckStage.Reviewers)
+            {
+                log.LogWarning("{Target}: {Workflow} run {Run} is waiting for {Reviewers}, so it is left alone.", target,
+                    WorkerSettings.WatchWorkflow, run.Id, string.Join(", ", found.Reviewers));
+                continue;
+            }
+            var force = found.Stage != StuckStage.Cancel;
+            var refusal = await doorbell.CancelRun(watcherRepo, run.Id, force, ct);
+            log.LogWarning("{Target}: {Workflow} run {Run} has been {State} since {Created:O}; {Action} {Outcome}.", target,
+                WorkerSettings.WatchWorkflow, run.Id, run.Status, run.CreatedAt, force ? "force-cancelled" : "cancelled",
+                refusal is null ? "accepted" : $"refused: {refusal}");
+        }
+        return stuck;
+    }
+
+    DateTimeOffset Now() => (clock ?? (() => DateTimeOffset.UtcNow))();
 
     async Task<TargetConfiguration> Targets(CancellationToken ct)
     {
@@ -102,26 +152,27 @@ public sealed class TriggerCycle(IGitHubGateway watcher, IGitHubGateway doorbell
     /// </summary>
     /// <returns>
     /// <c>Completed</c> is the newest completion time seen, not the fact that one was seen, so reading the same finished run on
-    /// every cycle for the next two hours cannot keep pushing the "no run completed" clock forward.
+    /// every cycle for the next two hours cannot keep pushing the "no run completed" clock forward. <c>Unfinished</c> is every
+    /// run in the window not yet completed, for ADR-020, and null with <c>Completed</c> when the list could not be read.
     /// </returns>
-    async Task<(HashSet<string> Active, DateTimeOffset? Completed)> ActiveCycles(CancellationToken ct)
+    async Task<(HashSet<string> Active, DateTimeOffset? Completed, IReadOnlyList<WorkflowRun>? Unfinished)> ActiveCycles(CancellationToken ct)
     {
         var active = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            var since = (clock ?? (() => DateTimeOffset.UtcNow))() - ActiveRunWindow;
+            var since = Now() - ActiveRunWindow;
             var runs = await watcher.Runs(watcherRepo, WorkerSettings.WatchWorkflow, since, ct);
             foreach (var run in runs)
                 if (run.Status != "completed" && run.Title.StartsWith(RunNamePrefix, StringComparison.Ordinal))
                     active.Add(run.Title[RunNamePrefix.Length..]);
             // A run GitHub gives no update time for is dated by its creation: earlier than the truth, so it never hides a stall.
             return (active, runs.Where(r => r.Status == "completed").Select(r => r.UpdatedAt ?? r.CreatedAt)
-                .DefaultIfEmpty().Max() is { Ticks: > 0 } newest ? newest : null);
+                .DefaultIfEmpty().Max() is { Ticks: > 0 } newest ? newest : null, runs.Where(r => r.Status != "completed").ToArray());
         }
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
             log.LogWarning("Could not read {Workflow} runs, so no target is skipped: {Message}", WorkerSettings.WatchWorkflow, e.Message);
-            return (active, null);
+            return (active, null, null);
         }
     }
 

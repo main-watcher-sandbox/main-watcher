@@ -615,6 +615,22 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         catch (TaskCanceledException e) when (!ct.IsCancellationRequested) { return $"timed out ({e.Message})"; }
     }
 
+    public async Task<IReadOnlyList<PendingDeployment>> PendingDeployments(string repo, long runId, CancellationToken ct) =>
+        (await Send(HttpMethod.Get, $"repos/{repo}/actions/runs/{runId}/pending_deployments", null, ct)).EnumerateArray()
+        .Select(d => new PendingDeployment(
+            d.TryGetProperty("environment", out var environment) ? Text(environment, "name") ?? "" : "",
+            TimeSpan.FromMinutes(d.TryGetProperty("wait_timer", out var wait) && wait.ValueKind == JsonValueKind.Number ? wait.GetInt32() : 0),
+            d.TryGetProperty("reviewers", out var reviewers) && reviewers.ValueKind == JsonValueKind.Array
+                ? reviewers.EnumerateArray().Select(Reviewer).ToArray() : [])).ToArray();
+
+    /// <summary>A user by login, a team as <c>team &lt;slug&gt;</c>.</summary>
+    static string Reviewer(JsonElement entry)
+    {
+        var who = entry.TryGetProperty("reviewer", out var reviewer) && reviewer.ValueKind == JsonValueKind.Object ? reviewer : default;
+        if (who.ValueKind != JsonValueKind.Object) return "unknown";
+        return Text(entry, "type") == "Team" ? $"team {Text(who, "slug") ?? Text(who, "name")}" : Text(who, "login") ?? "unknown";
+    }
+
     public async Task Output(string repo, long checkId, string title, string summary, CancellationToken ct) =>
         // No status: the check run stays in_progress while the run is being stopped (ADR-013 point 5).
         await Send(HttpMethod.Patch, $"repos/{repo}/check-runs/{checkId}", new { output = new { title, summary } }, ct);

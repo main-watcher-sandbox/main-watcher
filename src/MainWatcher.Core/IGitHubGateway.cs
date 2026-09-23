@@ -69,6 +69,8 @@ public interface IGitHubGateway
     /// </summary>
     /// <returns>Null when GitHub accepted the request, else why it did not. Never throws: the escalation is the answer.</returns>
     Task<string?> CancelRun(string repo, long runId, bool force, CancellationToken ct);
+    /// <summary>The environment gates a <c>waiting</c> run is held at, with their reviewers and wait timers (ADR-020).</summary>
+    Task<IReadOnlyList<PendingDeployment>> PendingDeployments(string repo, long runId, CancellationToken ct);
     /// <summary>Replaces a check run's output without completing it, so it stays <c>in_progress</c>.</summary>
     Task Output(string repo, long checkId, string title, string summary, CancellationToken ct);
     Task Complete(string repo, long checkId, string conclusion, string title, string summary, CancellationToken ct);

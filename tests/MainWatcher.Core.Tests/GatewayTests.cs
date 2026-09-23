@@ -860,6 +860,30 @@ public class GatewayTests
         Assert.Equal(DateTimeOffset.Parse("2026-09-17T10:00:00Z"), issue.ClosedAt);
     }
 
+    // ADR-020: a waiting run's gates, with their wait timers and who may approve them; none listed means nobody can.
+    [Fact]
+    public async Task ReadsAWaitingRunsGatesAndTheirReviewers()
+    {
+        var path = "";
+        using var http = Client(new Handler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return Task.FromResult(Response("""
+                [{"environment":{"id":1,"name":"reporter"},"wait_timer":5,"wait_timer_started_at":"2026-09-23T15:34:47Z",
+                  "current_user_can_approve":false,
+                  "reviewers":[{"type":"User","reviewer":{"login":"octocat"}},{"type":"Team","reviewer":{"slug":"platform","name":"Platform"}}]},
+                 {"environment":{"id":2,"name":"other"},"wait_timer":0,"current_user_can_approve":false,"reviewers":[]}]
+                """));
+        }));
+        var gates = await new GitHubGateway(http, 1).PendingDeployments("owner/watcher", 42, TestContext.Current.CancellationToken);
+        Assert.Equal("/repos/owner/watcher/actions/runs/42/pending_deployments", path);
+        Assert.Equal(2, gates.Count);
+        Assert.Equal(("reporter", TimeSpan.FromMinutes(5)), (gates[0].Environment, gates[0].WaitTimer));
+        Assert.Equal(["octocat", "team platform"], gates[0].Reviewers);
+        Assert.Equal(("other", TimeSpan.Zero), (gates[1].Environment, gates[1].WaitTimer));
+        Assert.Empty(gates[1].Reviewers);
+    }
+
     static HttpClient Client(HttpMessageHandler handler) => new(handler) { BaseAddress = new Uri("https://api.github.com/") };
     static HttpResponseMessage Response(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
     sealed class Handler(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) : HttpMessageHandler

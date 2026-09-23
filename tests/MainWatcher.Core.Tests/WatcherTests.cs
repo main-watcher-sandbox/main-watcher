@@ -3115,6 +3115,8 @@ public class WatcherTests
             Order.Add($"{(force ? "force-cancel" : "cancel")}:{runId}");
             return Task.FromResult(CancelRefusal);
         }
+        public Task<IReadOnlyList<PendingDeployment>> PendingDeployments(string repo, long runId, CancellationToken ct) =>
+            throw new NotSupportedException();
         public Task Output(string repo, long checkId, string title, string summary, CancellationToken ct)
         {
             Order.Add($"output:{checkId}");

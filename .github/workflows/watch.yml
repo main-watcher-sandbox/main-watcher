@@ -69,7 +69,10 @@ jobs:
         target: ${{ fromJson(needs.targets.outputs.targets) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: reporter
+    # Sandbox only (TS-S19): the targets listed, comma-separated, wait at reporter-reviewed, which has a required reviewer and
+    # no secrets, so a cycle held for a person can be seen being left alone (ADR-020). Unset in production, which always uses
+    # reporter; its required reviewers must be none.
+    environment: ${{ contains(format(',{0},', vars.MW_SANDBOX_REVIEWED_TARGETS), format(',{0},', matrix.target)) && 'reporter-reviewed' || 'reporter' }}
     concurrency:
       # Per target, so a sweep's cycle for one target never runs beside a dispatched cycle for it.
       # GitHub group names are case-insensitive, matching target lookup in the CLI.
