@@ -7,6 +7,10 @@
 # which a change to the reporter pin needs (ci.yml).
 #
 # Usage: sandbox/run-scenarios.sh [--only TS-S13,TS-S4] [--no-deploy] [--targets N] [--no-status] [--list]
+#        sandbox/run-scenarios.sh capture-jobs [--target sample-target-7] [--repeat 3]
+#
+# capture-jobs records how GitHub's jobs API reports a test job around its completion (#65), on one
+# pool target that nothing else is using, and changes nothing the suite deploys.
 #
 # Needs: the .NET SDK, gh logged in as a sandbox organisation admin (admin:org, repo, workflow), git,
 # docker and kubectl on the cluster that runs the sandbox worker, and bash with curl and openssl for

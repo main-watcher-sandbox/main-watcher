@@ -45,6 +45,47 @@ public class GatewayTests
         Assert.Equal("failure", Outcomes.Read(jobs)!.Conclusion);
     }
 
+    [Fact]
+    public async Task ReadsStepStatusAndJobConclusion()
+    {
+        // Run 11's shape (#65): the job already completed, a later step not yet written down.
+        using var http = Client(new Handler(_ => Task.FromResult(Response("""
+            {"jobs":[{"name":"tests / main-watcher","status":"completed","conclusion":"failure","completed_at":"2026-09-23T14:36:34Z",
+              "steps":[{"name":"Restore","status":"completed","conclusion":"success","completed_at":"2026-09-23T14:35:02Z"},
+                       {"name":"Post Run actions/checkout","status":"pending","conclusion":null,"completed_at":null}]}]}
+            """))));
+        var job = (await new GitHubGateway(http, 1).Jobs("owner/repo", 1, TestContext.Current.CancellationToken))!.Single();
+        Assert.Equal("failure", job.Conclusion);
+        Assert.Equal(new JobStep("Restore", "success", "completed", DateTimeOffset.Parse("2026-09-23T14:35:02Z")), job.Steps[0]);
+        Assert.Equal(new JobStep("Post Run actions/checkout", null, "pending"), job.Steps[1]);
+    }
+
+    // Captured in the sandbox for #65 (sandbox/issue-65-validation.md). They pin what the rule rests on, not the rule itself.
+    [Theory]
+    [InlineData("jobs-failed-final.json", "failure", true)]
+    [InlineData("jobs-cancelled-final.json", "cancelled", true)]
+    [InlineData("jobs-force-cancelled-final.json", "cancelled", true)]
+    [InlineData("jobs-force-cancelled-unsettled.json", "cancelled", false)]
+    public async Task CapturedCompletedJobsAreFinalOnlyOnceEveryStepConcludesAndCompleteJobIsListed(string fixture, string conclusion, bool final)
+    {
+        var body = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", fixture));
+        using var http = Client(new Handler(_ => Task.FromResult(Response(body))));
+        var job = (await new GitHubGateway(http, 1).Jobs("owner/repo", 1, TestContext.Current.CancellationToken))!.Single(j => Outcomes.IsTestJob(j.Name));
+        Assert.Equal(("completed", conclusion), (job.Status, job.Conclusion));
+        Assert.Equal(final, job.Steps.All(s => s.Conclusion is not null && s.Status == "completed"));
+        Assert.Equal(final, job.Steps[^1].Name == "Complete job");
+    }
+
+    [Fact]
+    public async Task CapturedJobCancelledBeforeARunnerHasNoSteps()
+    {
+        var body = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "jobs-no-runner.json"));
+        using var http = Client(new Handler(_ => Task.FromResult(Response(body))));
+        var job = (await new GitHubGateway(http, 1).Jobs("owner/repo", 1, TestContext.Current.CancellationToken))!.Single(j => Outcomes.IsTestJob(j.Name));
+        Assert.Equal(("completed", "cancelled"), (job.Status, job.Conclusion));
+        Assert.Empty(job.Steps);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.NotFound, true)]
     [InlineData(HttpStatusCode.Forbidden, false)]
