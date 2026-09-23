@@ -60,9 +60,11 @@ cancelling a `waiting` run, the worker reads the run's `pending_deployments`:
   alert that names the reviewers and the install requirement it breaks.
 - **No reviewers listed**, or a run that is not `waiting`: the worker applies point 4.
 
-Whether `mw-observer`'s Actions: read can read `pending_deployments` with an installation token is
-`[assumption]`, to be checked before the build. If it cannot, `mw-doorbell` reads it, since it holds
-Actions: write on the same repository.
+`mw-observer`'s Actions: read is enough. On 2026-09-23, an `mw-observer` installation token on the
+sandbox replica read `pending_deployments` for two `watch.yml` runs, one of them run 11's stuck run,
+and got 200 both times. GitHub's `x-accepted-github-permissions` header named `actions=read` as the
+permission the endpoint needs. Both runs had completed, so the lists were empty; TS-S19 sees a
+reviewer entry for the first time.
 
 **4. Stopping the run follows ADR-013 point 5.**
 1. At the deadline, the worker raises a `watcher-infra` alert, "watch.yml run stuck `<state>` on

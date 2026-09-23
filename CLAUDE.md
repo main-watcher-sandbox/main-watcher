@@ -211,8 +211,7 @@ metrics store (PostgreSQL + Grafana) is deferred.
    (MainWatcher#18), TS-S7 with the lock lease (MainWatcher#19), whose reconciliation clause
    passed with TS-S9 and TS-S15 (MainWatcher#20), TS-S10 with the team mention
    (MainWatcher#23), and TS-S8 with the credential-scope script (MainWatcher#24).
-2. Remaining `[assumption]` tags: worker resource sizing, and whether `mw-observer` can read a
-   `watch.yml` run's `pending_deployments` (ADR-020, MainWatcher#67).
+2. Remaining `[assumption]` tag: worker resource sizing.
 3. Remaining `[open]` tag: OIDC for target tests (ARCH-001 §8). The reusable workflow's job
    permissions cap what the tests get, so `id-token: write` never reaches them; granting it
    would break every existing caller unless they change in the same release. Found while
