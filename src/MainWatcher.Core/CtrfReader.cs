@@ -58,7 +58,7 @@ public static class CtrfReader
                     if (test!["status"]!.GetValue<string>() != "failed") continue;
                     var message = (test["message"]?.GetValue<string>() ?? "").Split(['\r', '\n'])[0];
                     if (message.Length > 200) message = message[..200];
-                    failures.Add(new(test["name"]!.GetValue<string>(), test["suite"]?.GetValue<string>() ?? "unknown suite", message));
+                    failures.Add(new(test["name"]!.GetValue<string>(), Suite(test), message));
                 }
             }
         }
@@ -69,6 +69,22 @@ public static class CtrfReader
         if (count == 0) return CtrfResult.Unknown;
         var slowest = times.OrderByDescending(t => t.DurationMs).ThenBy(t => t.Name, StringComparer.Ordinal).Take(SlowestCount).ToArray();
         return new(true, failures, new(Math.Max(0, stop - start), times.Sum(t => t.DurationMs), times.Count(t => t.Retried), slowest));
+    }
+
+    /// <summary>
+    /// The suite a failure is listed under (ADR-021). xUnit's own <c>extra.type</c>, the test class, is preferred: its
+    /// <c>suite</c> is a GUID in 3.x, and in 4.x an array led by two hashes. Otherwise the string, or the array's last
+    /// element, which CTRF defines as the test's immediate parent.
+    /// </summary>
+    static string Suite(JsonNode test)
+    {
+        if (test["extra"]?["type"] is JsonValue type && type.TryGetValue<string>(out var name) && name.Length > 0) return name;
+        return test["suite"] switch
+        {
+            JsonValue value when value.TryGetValue<string>(out var suite) => suite,
+            JsonArray path when path.Count > 0 => path[^1]!.GetValue<string>(),
+            _ => "unknown suite",
+        };
     }
 
     // Read entries directly, never extract target-controlled paths or execute target code.

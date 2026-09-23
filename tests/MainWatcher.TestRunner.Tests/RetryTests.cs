@@ -81,8 +81,37 @@ public class RetryTests
         Assert.Equal("Ns.D.F", two["results"]!["tests"]![0]!["name"]!.GetValue<string>());
     }
 
+    // ADR-021: xUnit 4.x's own reports, first attempt and retry, written to the one TestResults folder at the root. The
+    // merge must give what the test runner gave in the sandbox on the same tests (Xunit4ParallelWithRetry).
+    [Fact]
+    public async Task Xunit4_reports_in_the_shared_results_folder_are_retried_and_merged_as_in_the_sandbox()
+    {
+        using var target = new FakeTarget();
+        var fixtures = Path.Combine(AppContext.BaseDirectory, "Fixtures");
+        foreach (var attempt in new[] { "first", "retry" })
+            foreach (var file in Directory.GetFiles(Path.Combine(fixtures, "Xunit4Retry", attempt)))
+                target.Write($"{attempt}/{Path.GetFileName(file)}", File.ReadAllText(file));
+
+        var result = await TestRunner.RunAsync(target.Options(target.FakeDotnetTest(firstExitCode: 2, retryExitCode: 2, sharedResults: true)), Log.Add);
+
+        Assert.Equal(["SampleTarget.Tests.BehaviourTests.Flaky", "SampleTarget.Tests.OutcomeTests.Beta"], result.RetriedTests.Order());
+        Assert.Equal(1, result.RetryCount);
+        foreach (var project in new[] { "SampleTarget.Tests", "SampleTarget.Timing.Tests" })
+        {
+            var merged = JsonNode.Parse(File.ReadAllText(target.PathOf($"TestResults/{project}.ctrf.json")))!["results"]!;
+            var sandbox = JsonNode.Parse(File.ReadAllText(Path.Combine(fixtures, "Xunit4ParallelWithRetry", $"{project}.ctrf.json")))!["results"]!;
+            Assert.Equal(Outcomes(sandbox), Outcomes(merged));
+            foreach (var count in new[] { "tests", "passed", "failed", "skipped" })
+                Assert.Equal(sandbox["summary"]![count]!.GetValue<int>(), merged["summary"]![count]!.GetValue<int>());
+        }
+
+        static string[] Outcomes(JsonNode results) => results["tests"]!.AsArray()
+            .Select(t => $"{t!["name"]} {t["status"]} retries={t["retries"]} flaky={t["flaky"]}").Order().ToArray();
+    }
+
     [Theory]
     [InlineData("""{"name":"Ns.C.M(x: 1)","extra":{"type":"Ns.C","method":"M"}}""", "Ns.C.M")]
+    [InlineData("""{"name":"Ns.C.M","suite":["h1","h2","Ns.C","M"],"extra":{"type":"Ns.C","method":"M"}}""", "Ns.C.M")]
     [InlineData("""{"name":"Ns.C.M(x: 1)"}""", "Ns.C.M")]
     [InlineData("""{"name":"Ns.C.M"}""", "Ns.C.M")]
     [InlineData("""{"extra":{"type":"Ns.C"}}""", "")]

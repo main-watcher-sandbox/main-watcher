@@ -36,8 +36,10 @@ public sealed class FakeTarget : IDisposable
     /// <c>&lt;project&gt;/TestResults/</c> and exits <paramref name="firstExitCode"/>; when called
     /// with <c>--filter-method</c>, saves its arguments to <c>retry-args.txt</c>, copies
     /// <c>retry/*.ctrf.json</c> instead and exits <paramref name="retryExitCode"/>. Returns the command.
+    /// With <paramref name="sharedResults"/>, every report goes to the one <c>TestResults/</c> at the root instead, as
+    /// xUnit 4.x writes them (ADR-021).
     /// </summary>
-    public string FakeDotnetTest(int firstExitCode, int retryExitCode, string retryExtra = "")
+    public string FakeDotnetTest(int firstExitCode, int retryExitCode, string retryExtra = "", bool sharedResults = false)
     {
         Write("fake-test.sh", $$"""
             if [[ " $* " == *" --filter-method "* ]]; then
@@ -49,9 +51,9 @@ public sealed class FakeTarget : IDisposable
             fi
             for f in "$src"/*.ctrf.json; do
               [ -e "$f" ] || continue
-              project="$(basename "$f" .ctrf.json)"
-              mkdir -p "$project/TestResults"
-              cp "$f" "$project/TestResults/"
+              {{(sharedResults ? "dir=TestResults" : "dir=\"$(basename \"$f\" .ctrf.json)/TestResults\"")}}
+              mkdir -p "$dir"
+              cp "$f" "$dir/"
             done
             exit "$code"
             """);
