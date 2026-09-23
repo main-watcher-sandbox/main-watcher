@@ -90,7 +90,7 @@ xUnit 4.x (MainWatcher#71, ADR-021): its CTRF option is `--report-xunit-ctrf`, i
 and its `suite` is an array, which the schema now accepts beside 3.x's string; the failure list shows the test class. The
 sandbox runs 4.0.0, as production does, and the full suite passed on it (`sandbox/issue-71-validation.md`). TS-S5 is now a
 suite unit of its own that runs as onboarding does, through `lock.yml` with the target disabled, so every release run
-dispatches that workflow; TS-S4 keeps a real lock (MainWatcher#66).
+dispatches that workflow; TS-S4 keeps a real lock (MainWatcher#66); both passed in the sandbox.
 
 ## Where things are
 
@@ -144,7 +144,7 @@ dispatches that workflow; TS-S4 keeps a real lock (MainWatcher#66).
   `sandbox/issue-20-validation.md`, `sandbox/issue-21-validation.md`,
   `sandbox/issue-22-validation.md`, `sandbox/issue-23-validation.md`, `sandbox/issue-24-validation.md`,
   `sandbox/issue-25-validation.md`, `sandbox/issue-26-validation.md`, `sandbox/issue-53-validation.md`,
-  `sandbox/issue-60-validation.md`, `sandbox/issue-65-validation.md`, `sandbox/issue-67-validation.md` and `sandbox/issue-71-validation.md`.
+  `sandbox/issue-60-validation.md`, `sandbox/issue-65-validation.md`, `sandbox/issue-66-validation.md`, `sandbox/issue-67-validation.md` and `sandbox/issue-71-validation.md`.
 - `sandbox/run-scenarios.sh` runs the scenario suite (`sandbox/scenarios/`, a .NET console app), which a release requires.
   Read `docs/release.md` for releasing and the release App's one-time setup.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs

@@ -23,6 +23,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-26-validation.md` | The dry run through its own workflow and the CLI, its resume path, both branches of the renamed `lock.yml`'s guard, and TS-S5 as the onboarding guide runs it, for #26 |
 | `issue-25-validation.md` | The scenario suite's first runs: what they found and how long they took, for #25 |
 | `issue-53-validation.md` | The replica's CI green on its own sandbox target list, once `CommittedTargetListParses` scoped its sandbox-target clause to this repo, for #53 |
+| `issue-66-validation.md` | TS-S5 as its own unit, through `lock.yml` with the target disabled, as the onboarding guide runs it, and TS-S4 with its real lock, for #66 |
 | `issue-67-validation.md` | TS-S19: a `watch.yml` cycle held for a listed reviewer, left alone by the worker and named in an alert; the target tested once it was cleared, for #67 |
 | `issue-71-validation.md` | xUnit 4.0.0's CTRF against 3.2.2's, a red and flaky 4.0.0 run, the dry run before and after, and the full scenario suite on 4.0.0 targets, for #71 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
