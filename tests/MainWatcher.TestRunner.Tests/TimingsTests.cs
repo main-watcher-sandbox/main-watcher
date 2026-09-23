@@ -31,6 +31,21 @@ public class TimingsTests
         Assert.Equal(2, timings["tests"]!["reports"]!.GetValue<int>());
     }
 
+    // ADR-021: the same run on xUnit 4.x in the sandbox, whose timings.json gave these figures.
+    [Fact]
+    public void Xunit4_reports_give_the_timings_the_sandbox_run_recorded()
+    {
+        var reports = CtrfReports.Load(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Xunit4ParallelWithRetry"), "*.ctrf.json", Log.Add);
+
+        var timings = Timings.Build(Input(), reports);
+
+        Assert.Equal(20294, timings["tests"]!["wallClockMs"]!.GetValue<long>());
+        Assert.Equal(22514, timings["tests"]!["summedMs"]!.GetValue<long>());
+        Assert.Equal(11, timings["tests"]!["count"]!.GetValue<int>());
+        Assert.Equal(2, timings["tests"]!["reports"]!.GetValue<int>());
+        Assert.True(timings["retried"]!.GetValue<bool>());
+    }
+
     [Fact]
     public void A_retry_recorded_in_the_reports_sets_the_retry_flag()
     {

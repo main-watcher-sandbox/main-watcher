@@ -21,12 +21,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
-    <!-- One CTRF report per project, matching the default results_glob **/TestResults/*.ctrf.json (ADR-007). -->
-    <TestingPlatformCommandLineArguments>$(TestingPlatformCommandLineArguments) --report-ctrf --report-ctrf-filename $(MSBuildProjectName).ctrf.json</TestingPlatformCommandLineArguments>
+    <!--
+      One CTRF report per project, matching the default results_glob **/TestResults/*.ctrf.json (ADR-007, ADR-021).
+      xUnit 4.x names the option after its result writer; 3.x used report-ctrf. Every project writes to the one
+      TestResults folder at the repo root, so the file name must differ per project.
+    -->
+    <TestingPlatformCommandLineArguments>$(TestingPlatformCommandLineArguments) --report-xunit-ctrf --report-xunit-ctrf-filename $(MSBuildProjectName).ctrf.json</TestingPlatformCommandLineArguments>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
     <Using Include="Xunit" />
     <Compile Include="$(MSBuildThisFileDirectory)tests/Shared/*.cs" LinkBase="Shared" />
   </ItemGroup>

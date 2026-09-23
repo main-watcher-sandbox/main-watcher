@@ -1,6 +1,6 @@
 # Sandbox target
 
-A synthetic .NET/xUnit v3 repo that Main Watcher's scenario tests (TS-001) run against.
+A synthetic .NET/xUnit repo, on the `xunit.v3` package at 4.0.0 as the production targets are (ADR-021), that Main Watcher's scenario tests (TS-001) run against.
 Everything it does is steered by committing a change to [`sandbox.json`](sandbox.json).
 
 This repo is seeded from `sandbox/sample-target` in the MainWatcher repo by
@@ -13,9 +13,9 @@ throwaway.
 dotnet test
 ```
 
-It uses Microsoft Testing Platform (`global.json`), so the xUnit v3 retry filter works:
-`dotnet test -- --filter-method <name>`. Each test project writes
-`TestResults/<project>.ctrf.json` (ADR-007). The exit code is non-zero when a test fails.
+It uses Microsoft Testing Platform (`global.json`), so the xUnit retry filter works:
+`dotnet test -- --filter-method <name>`. Each test project writes `TestResults/<project>.ctrf.json`
+at the repo root, through xUnit 4.x's `--report-xunit-ctrf` option (ADR-007, ADR-021). The exit code is non-zero when a test fails.
 
 Two test projects exist so a run produces two CTRF reports to merge:
 

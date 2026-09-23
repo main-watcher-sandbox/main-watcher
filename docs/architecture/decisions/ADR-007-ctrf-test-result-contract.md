@@ -14,6 +14,12 @@ supersedes: ADR-005
 
 # ADR-007 — Test script contract: exit code plus CTRF JSON (supersedes ADR-005)
 
+> **Amended by [ADR-021](ADR-021-xunit-4-ctrf.md) on 2026-09-23.** Targets may use xUnit 4.x (the
+> `xunit.v3` package at 4.x), whose Microsoft Testing Platform option is `--report-xunit-ctrf
+> --report-xunit-ctrf-filename` and which writes every project's report to one `TestResults/`
+> folder, so each project needs its own file name. The schema accepts `suite` as a string (3.x) or
+> an array of strings (4.x), and the failure list shows xUnit's test class as the suite.
+
 **Deciders:** requester, platform team · **Consulted:** —
 
 ## Context
