@@ -127,9 +127,11 @@ kubectl -n main-watcher-sandbox scale deploy/trigger-worker --replicas=0
 
 ## Hand-made locks
 
-Scenario tests that need a hand-made lock (TS-S4, TS-S5) open one with the
-`lock` workflow. It creates a `main-broken` issue authored by `main-watcher[bot]`
-with a `lease_until` marker, or closes the open ones:
+The scenario suite's TS-S5 unit opens a hand-made lock with the `lock` workflow, as
+onboarding does: it disables the target's entry first, so no cycle closes the lock, opens one
+with a 1-hour lease, and closes it as the App afterwards (#66). Every other unit that needs a
+lock gets a real one from a failing push. The workflow creates a `main-broken` issue authored by
+`main-watcher[bot]` with a `lease_until` marker, or closes the open ones:
 
 ```
 gh workflow run lock.yml -R main-watcher-sandbox/main-watcher -f target=sample-target -f action=open -f lease_hours=4

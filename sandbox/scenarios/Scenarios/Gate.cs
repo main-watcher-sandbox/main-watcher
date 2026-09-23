@@ -1,3 +1,4 @@
+using MainWatcher.Core;
 using MainWatcher.Scenarios.Infra;
 using MainWatcher.Scenarios.Sandbox;
 
@@ -24,14 +25,14 @@ public static class GateLog
 }
 
 /// <summary>
-/// TS-S4: while locked, an unlabelled PR is removed from the queue and a <c>fixes-main</c> PR merges. TS-S5: a batched group
-/// mixing a fix and a non-fix PR fails the gate. The lock is a real one, so the merges keep <c>main</c> red and it stays open.
+/// TS-S4: while locked, an unlabelled PR is removed from the queue and a <c>fixes-main</c> PR merges. The lock is a real one,
+/// so the merge keeps <c>main</c> red and it stays open.
 /// </summary>
 public sealed class LockedQueue : Scenario
 {
-    public override string[] Covers => ["TS-S4", "TS-S5"];
-    public override string Title => "While locked, the queue takes only fixes-main PRs, one at a time or batched";
-    public override TimeSpan Estimate => TimeSpan.FromMinutes(20);
+    public override string[] Covers => ["TS-S4"];
+    public override string Title => "While locked, the queue drops an unlabelled PR and merges a fixes-main one";
+    public override TimeSpan Estimate => TimeSpan.FromMinutes(14);
 
     public override async Task Run(ScenarioContext ctx)
     {
@@ -41,14 +42,13 @@ public sealed class LockedQueue : Scenario
         var lockIssue = await t.AwaitNewLock(since, TimeSpan.FromMinutes(3), ctx.Ct);
         ctx.Pass($"main is locked by #{lockIssue.Number}");
 
-        // TS-S4
         var plain = await t.OpenPullRequest("ts-s4-plain", ctx.Ct);
         var queued = DateTimeOffset.UtcNow;
         await t.Enqueue(plain, ctx.Ct);
         await t.AwaitRemovedFromQueue(plain, TimeSpan.FromMinutes(8), ctx.Ct);
         var (run, log) = await GateLog.Verdict(ctx, plain, queued);
         ctx.Require(run.Conclusion == "failure" && GateLog.Has(log, $"`main` is locked by #{lockIssue.Number}")
-            && GateLog.Has(log, $"Not labelled: #{plain.Number}"), $"TS-S4: the gate failed unlabelled #{plain.Number}'s group, and the queue removed it", run.ToString());
+            && GateLog.Has(log, $"Not labelled: #{plain.Number}"), $"the gate failed unlabelled #{plain.Number}'s group, and the queue removed it", run.ToString());
 
         var fix = await t.OpenPullRequest("ts-s4-fix", ctx.Ct, [SandboxOrg.FixLabel]);
         queued = DateTimeOffset.UtcNow;
@@ -56,23 +56,58 @@ public sealed class LockedQueue : Scenario
         await t.AwaitMerged(fix, TimeSpan.FromMinutes(8), ctx.Ct);
         (run, log) = await GateLog.Verdict(ctx, fix, queued);
         ctx.Require(run.Conclusion == "success" && GateLog.Has(log, "every PR in this merge group is labelled `fixes-main`"),
-            $"TS-S4: fixes-main #{fix.Number} passed the gate and merged");
+            $"fixes-main #{fix.Number} passed the gate and merged");
+    }
+}
 
-        // TS-S5: queued back to back, the second group is built on the first, so it holds both.
-        var fix2 = await t.OpenPullRequest("ts-s5-fix", ctx.Ct, [SandboxOrg.FixLabel]);
-        var plain2 = await t.OpenPullRequest("ts-s5-plain", ctx.Ct);
-        queued = DateTimeOffset.UtcNow;
-        await t.Enqueue(fix2, ctx.Ct);
-        await t.Enqueue(plain2, ctx.Ct);
-        await t.AwaitMerged(fix2, TimeSpan.FromMinutes(10), ctx.Ct);
-        await t.AwaitRemovedFromQueue(plain2, TimeSpan.FromMinutes(10), ctx.Ct);
-        var fixRun = (await t.GateRuns(fix2.Number, queued, ctx.Ct)).Last();
-        (run, log) = await GateLog.Verdict(ctx, plain2, queued);
-        var baseSha = run.HeadBranch[(run.HeadBranch.LastIndexOf('-') + 1)..];
-        ctx.Require(baseSha == fixRun.HeadSha, $"TS-S5: #{plain2.Number}'s group was built on #{fix2.Number}'s, so it held both",
-            $"its base {Target.Short(baseSha)}, #{fix2.Number}'s group head {Target.Short(fixRun.HeadSha)}");
-        ctx.Require(run.Conclusion == "failure" && GateLog.Has(log, $"Not labelled: #{plain2.Number}"),
-            $"TS-S5: the gate failed the mixed group for #{plain2.Number}, and #{fix2.Number} merged on its own");
+/// <summary>
+/// TS-S5: a batched group mixing a fix and a non-fix PR fails the gate. It runs as the onboarding guide runs it
+/// (docs/onboarding.md): with the target disabled, so no cycle closes the lock or reconciles against it, <c>lock.yml</c> opens
+/// an App-authored lock with a short lease and closes it as the App afterwards. So every release run also dispatches
+/// <c>lock.yml</c>, which holds the main App key.
+/// </summary>
+public sealed class BatchedGroup : Scenario
+{
+    public override string[] Covers => ["TS-S5"];
+    public override string Title => "Under a lock.yml lock, a batched group mixing a fixes-main PR and an unlabelled one fails the gate";
+    public override TimeSpan Estimate => TimeSpan.FromMinutes(14);
+
+    // No cycle runs for a disabled target, so nothing here waits on the worker.
+    public override bool NeedsWorker => false;
+
+    public override async Task Run(ScenarioContext ctx)
+    {
+        var t = ctx.Target;
+        await ctx.Replica.EditTarget(t, e => e with { Enabled = false }, ctx.Ct);
+        ctx.Step("disabled the target's entry, as onboarding does before its TS-S5");
+        var lockIssue = await ctx.Replica.OpenHandMadeLock(t, leaseHours: 1, ctx.Ct);
+        try
+        {
+            ctx.Require(lockIssue.Author == SandboxOrg.BotLogin && lockIssue.Body.Contains(Lease.Until, StringComparison.Ordinal),
+                $"lock.yml opened App-authored lock #{lockIssue.Number} with a lease");
+
+            // Queued back to back, the second group is built on the first, so it holds both.
+            var fix = await t.OpenPullRequest("ts-s5-fix", ctx.Ct, [SandboxOrg.FixLabel]);
+            var plain = await t.OpenPullRequest("ts-s5-plain", ctx.Ct);
+            var queued = DateTimeOffset.UtcNow;
+            await t.Enqueue(fix, ctx.Ct);
+            await t.Enqueue(plain, ctx.Ct);
+            await t.AwaitMerged(fix, TimeSpan.FromMinutes(10), ctx.Ct);
+            await t.AwaitRemovedFromQueue(plain, TimeSpan.FromMinutes(10), ctx.Ct);
+            var fixRun = (await t.GateRuns(fix.Number, queued, ctx.Ct)).Last();
+            var (run, log) = await GateLog.Verdict(ctx, plain, queued);
+            var baseSha = run.HeadBranch[(run.HeadBranch.LastIndexOf('-') + 1)..];
+            ctx.Require(baseSha == fixRun.HeadSha, $"#{plain.Number}'s group was built on #{fix.Number}'s, so it held both",
+                $"its base {Target.Short(baseSha)}, #{fix.Number}'s group head {Target.Short(fixRun.HeadSha)}");
+            ctx.Require(run.Conclusion == "failure" && GateLog.Has(log, $"`main` is locked by #{lockIssue.Number}")
+                && GateLog.Has(log, $"Not labelled: #{plain.Number}"),
+                $"the gate failed the mixed group for #{plain.Number}, and #{fix.Number} merged on its own", run.ToString());
+        }
+        finally { await ctx.Replica.CloseHandMadeLocks(t, ctx.Ct); }
+
+        var closed = await t.Issue(lockIssue.Number, ctx.Ct);
+        ctx.Require(closed.State == "closed" && closed.ClosedBy == SandboxOrg.BotLogin,
+            $"lock.yml closed #{lockIssue.Number} as the App, so no override is recorded", $"{closed.State}, closed by {closed.ClosedBy}");
     }
 }
 

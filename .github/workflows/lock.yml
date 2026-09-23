@@ -1,7 +1,7 @@
-# Opens or closes a hand-made, App-authored lock on a target. It serves the scenario tests that
-# need a lock before watch.yml exists (TS-S4, TS-S5, TS-S7), and the lock TS-S5 needs when a
+# Opens or closes a hand-made, App-authored lock on a target: the lock TS-S5 needs when a
 # repository is onboarded, since the gate passes every merge group while no lock is open
-# (docs/onboarding.md). It was sandbox-lock.yml until #26, when onboarding started using it.
+# (docs/onboarding.md). The scenario suite's TS-S5 unit dispatches it the same way on every release
+# run (#66). It was sandbox-lock.yml until #26, when onboarding started using it.
 #
 # A lock blocks a repository's merge queue, so only two kinds of target may be given one by hand:
 # a main-watcher-sandbox target, and a repository this watcher already watches, which it could
