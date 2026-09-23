@@ -88,7 +88,9 @@ cancels it, force-cancels it and alerts, unless a gate lists a reviewer, which i
 `reporter` environment must have none (ADR-020). TS-S19 passed with a cycle held for a real reviewer. Targets may use
 xUnit 4.x (MainWatcher#71, ADR-021): its CTRF option is `--report-xunit-ctrf`, its reports share the root `TestResults/`,
 and its `suite` is an array, which the schema now accepts beside 3.x's string; the failure list shows the test class. The
-sandbox runs 4.0.0, as production does, and the full suite passed on it (`sandbox/issue-71-validation.md`).
+sandbox runs 4.0.0, as production does, and the full suite passed on it (`sandbox/issue-71-validation.md`). TS-S5 is now a
+suite unit of its own that runs as onboarding does, through `lock.yml` with the target disabled, so every release run
+dispatches that workflow; TS-S4 keeps a real lock (MainWatcher#66).
 
 ## Where things are
 
@@ -153,7 +155,7 @@ sandbox runs 4.0.0, as production does, and the full suite passed on it (`sandbo
 - `src/MainWatcher.Core/DryRun.cs` is the onboarding dry run; `.github/workflows/dry-run.yml` runs it.
 - `.github/workflows/` — `ci.yml` (`dotnet test`, `targets.yml` validation and actionlint on every PR),
   `lock.yml` (hand-made App-authored locks, for a sandbox target or one listed in
-  `targets.yml`; it opens the lock TS-S5 needs at onboarding),
+  `targets.yml`; it opens the lock TS-S5 needs at onboarding and in the scenario suite),
   `app-installations.yml` (lists `main-watcher`'s installed repositories for TS-S8), `release.yml` (moves the workflow
   tag and pushes the worker image, only for a commit with a passing `scenario-suite` status), and
   `run-integration-tests.yml`, the reusable test workflow targets call;
