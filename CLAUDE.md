@@ -1,6 +1,6 @@
 # Main Watcher — project context
 
-Main Watcher is a reusable component that continuously runs a repo's .NET/xUnit v3
+Main Watcher is a reusable component that continuously runs a repo's .NET/xUnit (3.x or 4.x)
 integration tests on `main`. On failure it opens a GitHub issue listing the failing tests
 and every push since the last green run. While that issue is open, it blocks the repo's
 GitHub merge queue; only PRs labelled `fixes-main` can still merge. It also reports test
@@ -85,12 +85,15 @@ was reported neutral with no lock (MainWatcher#65). A sandbox capture reproduced
 (`sandbox/issue-65-validation.md`), and ADR-019 now waits up to 5 minutes for the steps to become final. A `watch.yml`
 run that has not started 20 minutes after it was created no longer blocks its target (MainWatcher#67): the worker
 cancels it, force-cancels it and alerts, unless a gate lists a reviewer, which it names in an alert instead; the
-`reporter` environment must have none (ADR-020). TS-S19 passed with a cycle held for a real reviewer.
+`reporter` environment must have none (ADR-020). TS-S19 passed with a cycle held for a real reviewer. Targets may use
+xUnit 4.x (MainWatcher#71, ADR-021): its CTRF option is `--report-xunit-ctrf`, its reports share the root `TestResults/`,
+and its `suite` is an array, which the schema now accepts beside 3.x's string; the failure list shows the test class. The
+sandbox runs 4.0.0, as production does, and the full suite passed on it (`sandbox/issue-71-validation.md`).
 
 ## Where things are
 
 - `docs/architecture/architecture.md` — the main document (ARCH-001). Start here.
-- `docs/architecture/decisions/` — ADR-001 to ADR-020.
+- `docs/architecture/decisions/` — ADR-001 to ADR-021.
   - ADR-005 is superseded by ADR-007; ADR-006 is superseded by ADR-009.
   - ADR-013 to ADR-017 were accepted on 2026-09-15 (CQ-10 to CQ-14). They amend
     ADR-002, ADR-003, ADR-008 and ADR-010, which carry a note saying so.
@@ -101,6 +104,9 @@ cancels it, force-cancels it and alerts, unless a gate lists a reviewer, which i
   - ADR-020 (2026-09-23, MainWatcher#67) amends ADR-010 and ADR-013: the worker
     cancels a `watch.yml` run for a target that has not started 20 minutes after it was created, and
     the `reporter` environment must have no required reviewers.
+  - ADR-021 (2026-09-23, MainWatcher#71) amends ADR-007: targets may use xUnit 4.x, whose CTRF
+    option is `--report-xunit-ctrf` and whose reports share one root `TestResults/` folder; the
+    schema accepts `suite` as a string or an array, and the failure list shows the test class.
   - Accepted ADRs are never edited. A changed decision gets a new ADR that supersedes or
     amends the old one, plus a note at the top of the old one.
 - `docs/architecture/test-strategy.md` — TS-001: scenario tests TS-S1–S19, unit tests
@@ -136,7 +142,7 @@ cancels it, force-cancels it and alerts, unless a gate lists a reviewer, which i
   `sandbox/issue-20-validation.md`, `sandbox/issue-21-validation.md`,
   `sandbox/issue-22-validation.md`, `sandbox/issue-23-validation.md`, `sandbox/issue-24-validation.md`,
   `sandbox/issue-25-validation.md`, `sandbox/issue-26-validation.md`, `sandbox/issue-53-validation.md`,
-  `sandbox/issue-60-validation.md`, `sandbox/issue-65-validation.md` and `sandbox/issue-67-validation.md`.
+  `sandbox/issue-60-validation.md`, `sandbox/issue-65-validation.md`, `sandbox/issue-67-validation.md` and `sandbox/issue-71-validation.md`.
 - `sandbox/run-scenarios.sh` runs the scenario suite (`sandbox/scenarios/`, a .NET console app), which a release requires.
   Read `docs/release.md` for releasing and the release App's one-time setup.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
