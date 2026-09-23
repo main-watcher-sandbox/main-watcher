@@ -1156,7 +1156,7 @@ public class WatcherTests
     public void OutcomeTable(OutcomeKind expected, params string[] steps)
     {
         var job = new WorkflowJob("caller / main-watcher", "completed", steps.Select(s => s.Split('=')).Select(p => new JobStep(p[0], p[1] == "-" ? null : p[1])).ToArray());
-        var outcome = Outcomes.Read([new("caller / report", "queued", []), job])!;
+        var outcome = Outcomes.Read([new("caller / report", "queued", []), job], Now)!;
         Assert.Equal(expected, outcome.Kind);
         Assert.Equal(expected switch { OutcomeKind.Passed => "success", OutcomeKind.Failed => "failure", _ => "neutral" }, outcome.Conclusion);
     }
@@ -1164,12 +1164,95 @@ public class WatcherTests
     [Fact]
     public void OutcomeTableForRunsAndJobs()
     {
-        Assert.Equal(OutcomeKind.Unknown, Outcomes.Read(null)!.Kind);
-        Assert.Null(Outcomes.Read([new("caller / main-watcher", "in_progress", [new("main-watcher-test", "failure"), new("main-watcher-tests-finished", "success")])]));
-        Assert.Equal(OutcomeKind.ContractBroken, Outcomes.Read([])!.Kind);
-        Assert.Equal(OutcomeKind.ContractBroken, Outcomes.Read([new("a / main-watcher", "completed", []), new("b / main-watcher", "completed", [])])!.Kind);
-        var infra = Outcomes.Read([new("caller / main-watcher", "completed", [new("Restore", "failure"), new("main-watcher-test", "skipped"), new("@team `x`", null)])])!;
+        Assert.Equal(OutcomeKind.Unknown, Outcomes.Read(null, Now)!.Kind);
+        Assert.Null(Outcomes.Read([new("caller / main-watcher", "in_progress", [new("main-watcher-test", "failure"), new("main-watcher-tests-finished", "success")])], Now));
+        Assert.Equal(OutcomeKind.ContractBroken, Outcomes.Read([], Now)!.Kind);
+        Assert.Equal(OutcomeKind.ContractBroken, Outcomes.Read([new("a / main-watcher", "completed", []), new("b / main-watcher", "completed", [])], Now)!.Kind);
+        var infra = Outcomes.Read([new("caller / main-watcher", "completed", [new("Restore", "failure"), new("main-watcher-test", "skipped"), new("@team `x`", null)])], Now)!;
         Assert.Contains("- Restore: failure\n- main-watcher-test: skipped\n- &#64;team \\`x\\`: no conclusion", infra.Description);
+    }
+
+    /// <summary>
+    /// Run 11's <c>main-watcher</c> job as the Reporter read it the moment it completed (#65): its tests had failed, but GitHub
+    /// had written down only its first steps, so the marker step was missing.
+    /// </summary>
+    static WorkflowJob Run11(DateTimeOffset completedAt) => new("main-watcher-tests / main-watcher", "completed",
+        [new("Build the test runner", "success"), new("Run actions/checkout@v4", "success"), new("Run actions/setup-dotnet@v4", "success"),
+            new("Restore", null), new("Post Run actions/setup-dotnet@v4", null), new("Post Run actions/checkout@v4", null)],
+        completedAt, Conclusion: "failure");
+
+    // TS-U11, ADR-019: a completed job whose steps are not yet written down is not judged for five minutes after it completed.
+    [Theory]
+    [InlineData(0, OutcomeKind.StepsNotFinal)]
+    [InlineData(299, OutcomeKind.StepsNotFinal)]
+    [InlineData(300, OutcomeKind.InfrastructureError)]
+    public void StepsNotYetWrittenDownAreWaitedOutForFiveMinutes(int seconds, OutcomeKind expected)
+    {
+        var outcome = Outcomes.Read([Run11(Now.AddSeconds(-seconds))], Now)!;
+        Assert.Equal(expected, outcome.Kind);
+        if (expected == OutcomeKind.StepsNotFinal) Assert.Throws<InvalidOperationException>(() => outcome.Conclusion);
+        else
+        {
+            Assert.Equal("neutral", outcome.Conclusion);
+            Assert.StartsWith("Infrastructure error: the tests did not finish. GitHub had still not written down every step 5 minutes "
+                + "after the job completed.", outcome.Description);
+            Assert.Contains("- Restore: no conclusion", outcome.Description);
+        }
+    }
+
+    // TS-U11, ADR-019: only the "tests did not finish" row waits, and only for a list GitHub has not finished.
+    [Fact]
+    public void AFinalListIsJudgedAtOnceAndOnlyTheDidNotFinishRowWaits()
+    {
+        static WorkflowJob Job(params JobStep[] steps) => new("tests / main-watcher", "completed", steps, Now.AddSeconds(-1));
+        // Every step concluded and Complete job listed last: the tests did not finish, and that is final.
+        Assert.Equal(OutcomeKind.InfrastructureError, Outcomes.Read([Job(new("main-watcher-test", "cancelled"),
+            new("main-watcher-tests-finished", "skipped"), new("Complete job", "success"))], Now)!.Kind);
+        // Every listed step concluded, but Complete job is not listed yet.
+        Assert.Equal(OutcomeKind.StepsNotFinal, Outcomes.Read([Job(new("main-watcher-test", "cancelled"),
+            new("main-watcher-tests-finished", "skipped"))], Now)!.Kind);
+        // Steps GitHub still lists as running or pending, even with Complete job listed.
+        Assert.Equal(OutcomeKind.StepsNotFinal, Outcomes.Read([Job(new("main-watcher-test", null, "in_progress"),
+            new("main-watcher-tests-finished", null, "pending"), new("Complete job", "success"))], Now)!.Kind);
+        // Cancelled before it got a runner: no steps at all, and that is final.
+        Assert.Equal(OutcomeKind.InfrastructureError, Outcomes.Read([Job()], Now)!.Kind);
+        // A marker that shows finished tests is proof, whatever GitHub still has to write down.
+        Assert.Equal(OutcomeKind.Failed, Outcomes.Read([Job(new("main-watcher-test", "failure"), new("main-watcher-tests-finished", "success"),
+            new("Upload CTRF reports", null, "in_progress"))], Now)!.Kind);
+        Assert.Equal(OutcomeKind.Passed, Outcomes.Read([Job(new("main-watcher-test", "success"), new("main-watcher-tests-finished", "success"))], Now)!.Kind);
+        // Two markers are a broken contract before anything is waited for.
+        Assert.Equal(OutcomeKind.ContractBroken, Outcomes.Read([Job(new("main-watcher-tests-finished", null), new("main-watcher-tests-finished", null))], Now)!.Kind);
+        // A job GitHub gives no completed_at cannot be timed, so it is judged as it stands.
+        Assert.Equal(OutcomeKind.InfrastructureError, Outcomes.Read([Job(new JobStep("Restore", null)) with { CompletedAt = null }], Now)!.Kind);
+    }
+
+    // ADR-019: the Reporter writes nothing while the steps are not final, and judges the job as it stands once the wait is over.
+    [Fact]
+    public async Task StepsNotYetFinalLeaveTheCheckInProgressUntilTheWaitIsOver()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var fake = new FakeGitHub { JobList = [Run11(Now.AddSeconds(-2))] };
+        var check = Pending(Sha('b')) with { Id = 7 };
+        Assert.False(await new Reporter(fake, new Alerts(fake, "owner/watcher"), clock: () => Now).Report(Watched, check, ct));
+        Assert.Empty(fake.Order);
+        Assert.Null(fake.Conclusion);
+
+        Assert.True(await new Reporter(fake, new Alerts(fake, "owner/watcher"), clock: () => Now.AddMinutes(5)).Report(Watched, check, ct));
+        Assert.Equal(new[] { "create:owner/watcher", "complete:neutral" }, fake.Order);
+        Assert.Contains("5 minutes after the job completed", fake.Summary);
+    }
+
+    // ADR-019: a dry run waits out steps not yet final like a job still running, and fails on the neutral result after the wait.
+    [Fact]
+    public async Task DryRunWaitsOutStepsNotYetFinal()
+    {
+        var fake = new FakeGitHub { JobList = [Run11(Now)] };
+        fake.Files[GatePath] = GateBody;
+        var report = await Dry(fake);
+
+        Assert.False(report.Passed);
+        Assert.Equal("Test outcome", report.Steps[^1].Name);
+        Assert.Contains("5 minutes after the job completed", report.Steps[^1].Detail);
     }
 
     [Fact]
@@ -1179,10 +1262,10 @@ public class WatcherTests
         var jobs = json.RootElement.GetProperty("jobs").EnumerateArray().Select(j => new WorkflowJob(
             j.GetProperty("name").GetString()!, j.GetProperty("status").GetString()!,
             j.GetProperty("steps").EnumerateArray().Select(s => new JobStep(s.GetProperty("name").GetString()!, s.GetProperty("conclusion").GetString())).ToArray())).ToArray();
-        Assert.Equal("failure", Outcomes.Read(jobs)!.Conclusion);
-        Assert.Null(Outcomes.Read([new("caller / main-watcher", "in_progress", [])]));
-        Assert.Equal("neutral", Outcomes.Read(null)!.Conclusion);
-        Assert.Equal("neutral", Outcomes.Read([new("main-watcher", "completed", [new("main-watcher-test", "success"), new("main-watcher-test", "failure")])])!.Conclusion);
+        Assert.Equal("failure", Outcomes.Read(jobs, Now)!.Conclusion);
+        Assert.Null(Outcomes.Read([new("caller / main-watcher", "in_progress", [])], Now));
+        Assert.Equal("neutral", Outcomes.Read(null, Now)!.Conclusion);
+        Assert.Equal("neutral", Outcomes.Read([new("main-watcher", "completed", [new("main-watcher-test", "success"), new("main-watcher-test", "failure")])], Now)!.Conclusion);
     }
 
     [Fact]

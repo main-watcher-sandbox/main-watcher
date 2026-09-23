@@ -43,8 +43,9 @@ public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, strin
     {
         var repo = target.Repo;
         if (check.Status == "completed" || !long.TryParse(check.ExternalId, out var runId)) return false;
-        var outcome = Outcomes.Read(await github.Jobs(repo, runId, ct));
-        if (outcome is null) return false;
+        var outcome = Outcomes.Read(await github.Jobs(repo, runId, ct), Now);
+        // A job GitHub is still writing down is read again next cycle; the check run stays in progress (ADR-019).
+        if (outcome is null or { Kind: OutcomeKind.StepsNotFinal }) return false;
         var runUrl = $"https://github.com/{repo}/actions/runs/{runId}";
         var summary = outcome.Description + $"\n\n[Target run]({runUrl})";
         // The Planner records a stale run's stopping in this same output (ADR-013 point 5). Say so, because the step

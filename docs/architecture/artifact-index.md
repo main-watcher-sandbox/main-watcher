@@ -4,7 +4,7 @@ type: architecture
 status: draft
 state: current
 owner: platform-team
-reviewed: 2026-09-16
+reviewed: 2026-09-23
 review_by: 2027-03-15
 sources: [ARCH-001]
 confidence: confirmed
@@ -27,12 +27,13 @@ confidence: confirmed
 | ADR-010 | [Self-hosted trigger worker](decisions/ADR-010-self-hosted-trigger-worker.md) | adr | target | accepted (amended by ADR-012, ADR-013, ADR-014, ADR-017) | platform-team | 2026-09-15 | Webhook hosting available |
 | ADR-011 | [Test-duration metrics, phase 1](decisions/ADR-011-test-duration-metrics-phase-1.md) | adr | target | accepted (amended by ADR-018) | platform-team | 2026-09-15 | Cross-repo views needed |
 | ADR-012 | [Worker alerts via GitHub issues](decisions/ADR-012-worker-alerts-via-github-issues.md) | adr | target | accepted | platform-team | 2026-09-15 | Monitoring stack adopted |
-| ADR-013 | [Reporter completes the check run last](decisions/ADR-013-reporter-completes-check-run-last.md) | adr | target | accepted | platform-team | 2026-09-15 | "Reporting pending" alerts recur |
+| ADR-013 | [Reporter completes the check run last](decisions/ADR-013-reporter-completes-check-run-last.md) | adr | target | accepted (amended by ADR-019) | platform-team | 2026-09-15 | "Reporting pending" alerts recur |
 | ADR-014 | [Lock lease](decisions/ADR-014-lock-lease.md) | adr | target | accepted | platform-team | 2026-09-15 | Locks lapse more than once a quarter |
 | ADR-015 | [Reconcile through closure, labels at merge time](decisions/ADR-015-reconcile-through-closure.md) | adr | target | accepted | platform-team | 2026-09-15 | Closed lock left unreconciled |
 | ADR-016 | [Re-check queued groups when a lock opens](decisions/ADR-016-recheck-queued-groups-on-lock.md) | adr | target | accepted | platform-team | 2026-09-15 | TS-S17 disproves A-7 |
 | ADR-017 | [Retry neutral results](decisions/ADR-017-retry-neutral-results.md) | adr | target | accepted | platform-team | 2026-09-15 | "Head untestable" alerts recur |
 | ADR-018 | [Reporter history and test job token](decisions/ADR-018-reporter-history-and-test-job-token.md) | adr | target | accepted | platform-team | 2026-09-16 | Reporter pin updated |
+| ADR-019 | [Wait for final job steps](decisions/ADR-019-wait-for-final-job-steps.md) | adr | target | accepted | platform-team | 2026-09-23 | Steps slow to become final |
 | TS-001 | [Test strategy](test-strategy.md) | test-strategy | target | draft | platform-team | 2026-09-16 | 2027-03-15 |
 
 ### Superseded (kept for history)

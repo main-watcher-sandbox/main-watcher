@@ -142,7 +142,8 @@ public sealed class DryRun(IGitHubGateway github, Func<DateTimeOffset>? clock = 
                     // An empty list is a completed run with no `main-watcher` job, which the gateway distinguishes from a run
                     // whose job GitHub has not created yet: that one comes back as a queued job. So it is judged at once, as
                     // the broken contract it is, rather than waited out.
-                    if (Outcomes.Read(await github.Jobs(repo, runId, token)) is { } outcome)
+                    // Steps GitHub is still writing down are waited out like a job still running (ADR-019).
+                    if (Outcomes.Read(await github.Jobs(repo, runId, token), now()) is { Kind: not OutcomeKind.StepsNotFinal } outcome)
                         return outcome.Kind switch
                         {
                             OutcomeKind.Passed => (true, $"Run {runId}: the tests passed."),
