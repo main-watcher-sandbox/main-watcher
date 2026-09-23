@@ -1,0 +1,59 @@
+{
+  "read_at": "2026-09-23T17:26:24.9651328\u002B00:00",
+  "jobs": [
+    {
+      "id": 107298430635,
+      "run_id": 35895539448,
+      "workflow_name": "main-watcher-tests 2e7ce2e1867c2557b8453d98df9070735e0ad179",
+      "head_branch": "capture-jobs-65",
+      "run_url": "https://api.github.com/repos/main-watcher-sandbox/sample-target-7/actions/runs/35895539448",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOUkSRr88AAAAY-3weqw",
+      "head_sha": "2e7ce2e1867c2557b8453d98df9070735e0ad179",
+      "url": "https://api.github.com/repos/main-watcher-sandbox/sample-target-7/actions/jobs/107298430635",
+      "html_url": "https://github.com/main-watcher-sandbox/sample-target-7/actions/runs/35895539448/job/107298430635",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "created_at": "2026-09-23T17:25:53Z",
+      "started_at": "2026-09-23T17:25:53Z",
+      "completed_at": "2026-09-23T17:26:23Z",
+      "name": "main-watcher-tests / main-watcher",
+      "steps": [],
+      "check_run_url": "https://api.github.com/repos/main-watcher-sandbox/sample-target-7/check-runs/107298430635",
+      "labels": [
+        "main-watcher-no-such-runner"
+      ],
+      "runner_id": 0,
+      "runner_name": "",
+      "runner_group_id": 0,
+      "runner_group_name": ""
+    },
+    {
+      "id": 107298626393,
+      "run_id": 35895539448,
+      "workflow_name": "main-watcher-tests 2e7ce2e1867c2557b8453d98df9070735e0ad179",
+      "head_branch": "capture-jobs-65",
+      "run_url": "https://api.github.com/repos/main-watcher-sandbox/sample-target-7/actions/runs/35895539448",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOUkSRr88AAAAY-38bWQ",
+      "head_sha": "2e7ce2e1867c2557b8453d98df9070735e0ad179",
+      "url": "https://api.github.com/repos/main-watcher-sandbox/sample-target-7/actions/jobs/107298626393",
+      "html_url": "https://github.com/main-watcher-sandbox/sample-target-7/actions/runs/35895539448/job/107298626393",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "created_at": "2026-09-23T17:26:24Z",
+      "started_at": "2026-09-23T17:26:24Z",
+      "completed_at": "2026-09-23T17:26:23Z",
+      "name": "main-watcher-tests / report",
+      "steps": [],
+      "check_run_url": "https://api.github.com/repos/main-watcher-sandbox/sample-target-7/check-runs/107298626393",
+      "labels": [
+        "main-watcher-no-such-runner"
+      ],
+      "runner_id": null,
+      "runner_name": null,
+      "runner_group_id": null,
+      "runner_group_name": null
+    }
+  ]
+}

@@ -42,6 +42,21 @@ public class WorkerTests
         Assert.Contains("main-watcher job of target run 41 has completed", work!.Reason);
     }
 
+    // TS-U5 (b), ADR-019: a completed job whose steps GitHub has not finished writing down is not yet a report owed, so no
+    // watch.yml run is started for it; once the wait is over it is, dated from the job's completion.
+    [Theory]
+    [InlineData(4, false)]
+    [InlineData(5, true)]
+    public async Task StepsNotYetFinalAreWorkOnlyOnceTheWaitIsOver(int minutes, bool expected)
+    {
+        var target = new FakeGitHub { CheckList = [Pending()] };
+        var completed = Now.AddMinutes(-minutes);
+        target.JobsByRun[41] = [new("tests / main-watcher", "completed", [new("Restore", "success"), new("main-watcher-test", null, "pending")], completed)];
+        var work = await new WorkFinder(() => Now).Work(Watched(), target, Ct);
+        Assert.Equal(expected, work is not null);
+        if (expected) Assert.Equal((7L, completed), (work!.Check, work.Since));
+    }
+
     [Theory]
     [InlineData("in_progress")]
     [InlineData("queued")]

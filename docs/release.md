@@ -6,7 +6,7 @@ review_by: 2027-03-15
 
 # Releasing Main Watcher
 
-Three things reach targets and the cluster from this repo, and each needs the scenario suite (TS-S1–S18) to have passed on
+Three things reach targets and the cluster from this repo, and each needs the scenario suite (TS-S1–S19) to have passed on
 the exact commit being released (TS-001 §5). No one may override that.
 
 | What | How targets or the cluster pick it up | Released by |

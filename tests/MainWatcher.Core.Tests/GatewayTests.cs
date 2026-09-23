@@ -42,7 +42,65 @@ public class GatewayTests
         using var http = Client(handler);
         var jobs = await new GitHubGateway(http, 1).Jobs("owner/repo", 42, TestContext.Current.CancellationToken);
         Assert.Equal(101, jobs!.Count);
-        Assert.Equal("failure", Outcomes.Read(jobs)!.Conclusion);
+        Assert.Equal("failure", Outcomes.Read(jobs, DateTimeOffset.UtcNow)!.Conclusion);
+    }
+
+    [Fact]
+    public async Task ReadsStepStatusAndJobConclusion()
+    {
+        // Run 11's shape (#65): the job already completed, a later step not yet written down.
+        using var http = Client(new Handler(_ => Task.FromResult(Response("""
+            {"jobs":[{"name":"tests / main-watcher","status":"completed","conclusion":"failure","completed_at":"2026-09-23T14:36:34Z",
+              "steps":[{"name":"Restore","status":"completed","conclusion":"success","completed_at":"2026-09-23T14:35:02Z"},
+                       {"name":"Post Run actions/checkout","status":"pending","conclusion":null,"completed_at":null}]}]}
+            """))));
+        var job = (await new GitHubGateway(http, 1).Jobs("owner/repo", 1, TestContext.Current.CancellationToken))!.Single();
+        Assert.Equal("failure", job.Conclusion);
+        Assert.Equal(new JobStep("Restore", "success", "completed", DateTimeOffset.Parse("2026-09-23T14:35:02Z")), job.Steps[0]);
+        Assert.Equal(new JobStep("Post Run actions/checkout", null, "pending"), job.Steps[1]);
+    }
+
+    // Captured in the sandbox for #65 (sandbox/issue-65-validation.md). They pin what the rule rests on, not the rule itself.
+    [Theory]
+    [InlineData("jobs-failed-final.json", "failure", true)]
+    [InlineData("jobs-cancelled-final.json", "cancelled", true)]
+    [InlineData("jobs-force-cancelled-final.json", "cancelled", true)]
+    [InlineData("jobs-force-cancelled-unsettled.json", "cancelled", false)]
+    public async Task CapturedCompletedJobsAreFinalOnlyOnceEveryStepConcludesAndCompleteJobIsListed(string fixture, string conclusion, bool final)
+    {
+        var body = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", fixture));
+        using var http = Client(new Handler(_ => Task.FromResult(Response(body))));
+        var job = (await new GitHubGateway(http, 1).Jobs("owner/repo", 1, TestContext.Current.CancellationToken))!.Single(j => Outcomes.IsTestJob(j.Name));
+        Assert.Equal(("completed", conclusion), (job.Status, job.Conclusion));
+        Assert.Equal(final, job.Steps.All(s => s.Conclusion is not null && s.Status == "completed"));
+        Assert.Equal(final, job.Steps[^1].Name == "Complete job");
+    }
+
+    // TS-U11, ADR-019: the outcome table over the captured responses, each read when it was captured. Only the force-cancelled
+    // job read 1 s after it completed waits; its final form, 4 s later, is judged.
+    [Theory]
+    [InlineData("jobs-failed-final.json", 0, OutcomeKind.Failed)]
+    [InlineData("jobs-cancelled-final.json", 1, OutcomeKind.InfrastructureError)]
+    [InlineData("jobs-force-cancelled-unsettled.json", 1, OutcomeKind.StepsNotFinal)]
+    [InlineData("jobs-force-cancelled-final.json", 5, OutcomeKind.InfrastructureError)]
+    [InlineData("jobs-no-runner.json", 1, OutcomeKind.InfrastructureError)]
+    public async Task CapturedJobsGoThroughTheOutcomeTable(string fixture, int secondsAfterCompletion, OutcomeKind expected)
+    {
+        var body = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", fixture));
+        using var http = Client(new Handler(_ => Task.FromResult(Response(body))));
+        var jobs = (await new GitHubGateway(http, 1).Jobs("owner/repo", 1, TestContext.Current.CancellationToken))!;
+        var completed = jobs.Single(j => Outcomes.IsTestJob(j.Name)).CompletedAt!.Value;
+        Assert.Equal(expected, Outcomes.Read(jobs, completed.AddSeconds(secondsAfterCompletion))!.Kind);
+    }
+
+    [Fact]
+    public async Task CapturedJobCancelledBeforeARunnerHasNoSteps()
+    {
+        var body = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "jobs-no-runner.json"));
+        using var http = Client(new Handler(_ => Task.FromResult(Response(body))));
+        var job = (await new GitHubGateway(http, 1).Jobs("owner/repo", 1, TestContext.Current.CancellationToken))!.Single(j => Outcomes.IsTestJob(j.Name));
+        Assert.Equal(("completed", "cancelled"), (job.Status, job.Conclusion));
+        Assert.Empty(job.Steps);
     }
 
     [Theory]
@@ -230,7 +288,7 @@ public class GatewayTests
         using var http = Client(new Handler(request => Task.FromResult(Response(request.RequestUri!.AbsolutePath.EndsWith("/jobs")
             ? "{\"jobs\":[]}" : $"{{\"status\":\"{status}\"}}"))));
         var jobs = await new GitHubGateway(http, 1).Jobs("owner/repo", 1, TestContext.Current.CancellationToken);
-        Assert.Equal(conclusion, Outcomes.Read(jobs)?.Conclusion);
+        Assert.Equal(conclusion, Outcomes.Read(jobs, DateTimeOffset.UtcNow)?.Conclusion);
     }
 
     [Fact]
@@ -800,6 +858,30 @@ public class GatewayTests
             DateTimeOffset.Parse("2026-09-01T00:00:00Z"), TestContext.Current.CancellationToken));
         Assert.Equal(DateTimeOffset.Parse("2026-09-17T08:00:00Z"), issue.CreatedAt);
         Assert.Equal(DateTimeOffset.Parse("2026-09-17T10:00:00Z"), issue.ClosedAt);
+    }
+
+    // ADR-020: a waiting run's gates, with their wait timers and who may approve them; none listed means nobody can.
+    [Fact]
+    public async Task ReadsAWaitingRunsGatesAndTheirReviewers()
+    {
+        var path = "";
+        using var http = Client(new Handler(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            return Task.FromResult(Response("""
+                [{"environment":{"id":1,"name":"reporter"},"wait_timer":5,"wait_timer_started_at":"2026-09-23T15:34:47Z",
+                  "current_user_can_approve":false,
+                  "reviewers":[{"type":"User","reviewer":{"login":"octocat"}},{"type":"Team","reviewer":{"slug":"platform","name":"Platform"}}]},
+                 {"environment":{"id":2,"name":"other"},"wait_timer":0,"current_user_can_approve":false,"reviewers":[]}]
+                """));
+        }));
+        var gates = await new GitHubGateway(http, 1).PendingDeployments("owner/watcher", 42, TestContext.Current.CancellationToken);
+        Assert.Equal("/repos/owner/watcher/actions/runs/42/pending_deployments", path);
+        Assert.Equal(2, gates.Count);
+        Assert.Equal(("reporter", TimeSpan.FromMinutes(5)), (gates[0].Environment, gates[0].WaitTimer));
+        Assert.Equal(["octocat", "team platform"], gates[0].Reviewers);
+        Assert.Equal(("other", TimeSpan.Zero), (gates[1].Environment, gates[1].WaitTimer));
+        Assert.Empty(gates[1].Reviewers);
     }
 
     static HttpClient Client(HttpMessageHandler handler) => new(handler) { BaseAddress = new Uri("https://api.github.com/") };

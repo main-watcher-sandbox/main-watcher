@@ -558,8 +558,10 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         {
             var jobs = await Pages($"repos/{repo}/actions/runs/{runId}/jobs?filter=latest", "jobs", ct);
             var parsed = jobs.Select(j => new WorkflowJob(Text(j, "name")!, Text(j, "status")!,
-                j.TryGetProperty("steps", out var steps) ? steps.EnumerateArray().Select(s => new JobStep(Text(s, "name")!, Text(s, "conclusion"))).ToArray() : [],
-                Date(j, "completed_at"), Date(j, "started_at"))).ToArray();
+                j.TryGetProperty("steps", out var steps)
+                    ? steps.EnumerateArray().Select(s => new JobStep(Text(s, "name")!, Text(s, "conclusion"), Text(s, "status"), Date(s, "completed_at"))).ToArray()
+                    : [],
+                Date(j, "completed_at"), Date(j, "started_at"), Text(j, "conclusion"))).ToArray();
             if (!parsed.Any(j => Outcomes.IsTestJob(j.Name)))
             {
                 var run = await Send(HttpMethod.Get, $"repos/{repo}/actions/runs/{runId}", null, ct);
@@ -611,6 +613,22 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         // here is fatal: the check run stays in_progress, the next cycle asks again, and the 15-minute steps escalate.
         catch (HttpRequestException e) { return e.StatusCode is { } status ? $"HTTP {(int)status}" : e.Message; }
         catch (TaskCanceledException e) when (!ct.IsCancellationRequested) { return $"timed out ({e.Message})"; }
+    }
+
+    public async Task<IReadOnlyList<PendingDeployment>> PendingDeployments(string repo, long runId, CancellationToken ct) =>
+        (await Send(HttpMethod.Get, $"repos/{repo}/actions/runs/{runId}/pending_deployments", null, ct)).EnumerateArray()
+        .Select(d => new PendingDeployment(
+            d.TryGetProperty("environment", out var environment) ? Text(environment, "name") ?? "" : "",
+            TimeSpan.FromMinutes(d.TryGetProperty("wait_timer", out var wait) && wait.ValueKind == JsonValueKind.Number ? wait.GetInt32() : 0),
+            d.TryGetProperty("reviewers", out var reviewers) && reviewers.ValueKind == JsonValueKind.Array
+                ? reviewers.EnumerateArray().Select(Reviewer).ToArray() : [])).ToArray();
+
+    /// <summary>A user by login, a team as <c>team &lt;slug&gt;</c>.</summary>
+    static string Reviewer(JsonElement entry)
+    {
+        var who = entry.TryGetProperty("reviewer", out var reviewer) && reviewer.ValueKind == JsonValueKind.Object ? reviewer : default;
+        if (who.ValueKind != JsonValueKind.Object) return "unknown";
+        return Text(entry, "type") == "Team" ? $"team {Text(who, "slug") ?? Text(who, "name")}" : Text(who, "login") ?? "unknown";
     }
 
     public async Task Output(string repo, long checkId, string title, string summary, CancellationToken ct) =>

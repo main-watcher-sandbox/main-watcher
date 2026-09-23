@@ -28,7 +28,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |
 | `upload-switches.yml` | The `fail_upload`, `hang_upload` and `hang_upload_forever` steps that `publish-public.sh` inserts into the sandbox build of the test workflow |
 | `ts-s8-credential-scope.sh` | TS-S8: proves `mw-observer` and `mw-doorbell` are refused (403) outside their scope, and checks where the keys live, each App's installed repositories (R-11), who can read the worker's Secret and that nothing exposes the worker inbound |
-| `run-scenarios.sh`, `scenarios/` | The scenario suite: TS-S1 to TS-S18 from one entry point, which a release requires. See "The scenario suite" below |
+| `run-scenarios.sh`, `scenarios/` | The scenario suite: TS-S1 to TS-S19 from one entry point, which a release requires. See "The scenario suite" below |
 | `seed-target.sh` | Pushes the template and the gate and test workflows to a sandbox repo, creates the `main-broken` and `fixes-main` labels, and applies the ruleset. Re-run it to reset a repo |
 
 Seed or reset both targets (needs `gh` logged in as a sandbox org admin):
@@ -174,6 +174,7 @@ others run.
 | `MW_SANDBOX_REFUSE_CANCEL` | `true` | Every cancel and force-cancel fails without asking GitHub | TS-S16 (h) |
 | `MW_QUEUE_DEADLINE_MINUTES` | 1 to 30 | Shortens the 30-minute ADR-013 queue deadline | TS-S16 (g) |
 | `MW_SANDBOX_READ_ONLY_ISSUES` | A plain list of targets | Their cycles get an App token that can only read issues, so every lock write fails with a real 403 | TS-S14 (c) |
+| `MW_SANDBOX_REVIEWED_TARGETS` | A plain list of targets | Their cycles wait at the `reporter-reviewed` environment, which has a required reviewer and no secrets, instead of `reporter` (ADR-020). The suite creates the environment, with the operator as reviewer | TS-S19 |
 
 ```
 gh variable set MW_SANDBOX_EXIT_AFTER -R main-watcher-sandbox/main-watcher --body main-watcher-sandbox/sample-target=create
@@ -207,7 +208,7 @@ and `timeout-minutes`, so the extra input is accepted.
 
 ## The scenario suite
 
-`run-scenarios.sh` runs TS-S1 to TS-S18 against the sandbox from one entry point, and a release
+`run-scenarios.sh` runs TS-S1 to TS-S19 against the sandbox from one entry point, and a release
 requires it (TS-001 §5, [docs/release.md](../docs/release.md)). Run it from a clean checkout of
 the commit under test, on the machine whose cluster runs the sandbox worker:
 
@@ -285,9 +286,22 @@ wait for it to end.
 - `report.md`: what each unit checked and saw;
 - `results.json`;
 - the log of the suite, of each unit and of each target;
-- TS-S8's table.
+- TS-S8's table;
+- `jobs/<target>/`: the raw jobs API response of every target test run the suite read. For each
+  run, `<run>-first-completed.json` is the first response in which the `main-watcher` job had
+  completed, and `<run>-latest.json` the newest (#65).
 
 The exit code is 0 only if every unit passed.
+
+**Capturing jobs responses.** `sandbox/run-scenarios.sh capture-jobs [--target sample-target-7]
+[--repeat 3]` records how GitHub's jobs API reports a test job around the moment it completes: a run
+that fails on its own (three times by default), one cancelled during its tests, one force-cancelled,
+and one cancelled before it got a runner. It runs the target's `main-watcher-tests.yml` by hand from a
+side branch, so the watcher opens no check run and no lock. It polls every second from when the
+tests end until a minute after the job completes, then every 15 s for five minutes. Each distinct
+response and a `summary.md` go to `sandbox/scenarios/out/capture-jobs-<time>/`. It deploys nothing,
+and its default target is outside the suite's pool. It is the evidence for #65; see
+`sandbox/issue-65-validation.md`.
 
 **Commit statuses.** A full run posts `scenario-suite` on the commit, `success` or `failure`. It
 does so only when the commit is pushed to GitHub and the working tree has no uncommitted changes.

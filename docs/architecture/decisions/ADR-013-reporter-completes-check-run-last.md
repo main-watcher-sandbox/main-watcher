@@ -14,6 +14,18 @@ amends: [ADR-003, ADR-010]
 
 # ADR-013 — The Reporter completes the check run last, so an interrupted report is replayed (amends ADR-003 and ADR-010)
 
+> **Amended by [ADR-019](ADR-019-wait-for-final-job-steps.md) on 2026-09-23.** A completed job
+> can still have steps GitHub has not written down. Where the table would give "the tests did not
+> finish", a job whose steps are not final (a step without a conclusion, or no `Complete job` step
+> last) is not judged for up to 5 minutes after it completed. Until then, the check run stays
+> `in_progress` and the worker flags no report. After that, the job is judged as it stands.
+
+> **Amended by [ADR-020](ADR-020-stuck-watch-runs.md) on 2026-09-23.** Point 5's stale-run
+> lifecycle also applies to the watcher's own runs. A `watch.yml` run for a target that has not
+> started 20 minutes after it was created (plus any wait timer) is cancelled by the worker, then
+> force-cancelled, then alerted about, unless it is waiting for a listed reviewer. Sweep runs are
+> left alone.
+
 **Deciders:** requester (confirmed 2026-09-15, CQ-10), platform team · **Consulted:** —
 
 ## Context

@@ -1,0 +1,188 @@
+{
+  "read_at": "2026-09-23T16:55:32.1838842\u002B00:00",
+  "jobs": [
+    {
+      "id": 107286483015,
+      "run_id": 35891997126,
+      "workflow_name": "main-watcher-tests 39a7cf7358e45f3475bf225ca7041cc4627db9d0",
+      "head_branch": "capture-jobs-65",
+      "run_url": "https://api.github.com/repos/main-watcher-sandbox/sample-target-7/actions/runs/35891997126",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOUkSRr88AAAAY-sXQRw",
+      "head_sha": "39a7cf7358e45f3475bf225ca7041cc4627db9d0",
+      "url": "https://api.github.com/repos/main-watcher-sandbox/sample-target-7/actions/jobs/107286483015",
+      "html_url": "https://github.com/main-watcher-sandbox/sample-target-7/actions/runs/35891997126/job/107286483015",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-09-23T16:54:39Z",
+      "started_at": "2026-09-23T16:54:42Z",
+      "completed_at": "2026-09-23T16:55:32Z",
+      "name": "main-watcher-tests / main-watcher",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-09-23T16:54:43Z",
+          "completed_at": "2026-09-23T16:54:44Z"
+        },
+        {
+          "name": "Build the test runner",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-09-23T16:54:44Z",
+          "completed_at": "2026-09-23T16:54:57Z"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-09-23T16:54:57Z",
+          "completed_at": "2026-09-23T16:54:59Z"
+        },
+        {
+          "name": "Run actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-09-23T16:54:59Z",
+          "completed_at": "2026-09-23T16:55:00Z"
+        },
+        {
+          "name": "Restore",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-09-23T16:55:00Z",
+          "completed_at": "2026-09-23T16:55:02Z"
+        },
+        {
+          "name": "main-watcher-test",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 6,
+          "started_at": "2026-09-23T16:55:02Z",
+          "completed_at": "2026-09-23T16:55:27Z"
+        },
+        {
+          "name": "main-watcher-tests-finished",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-23T16:55:27Z",
+          "completed_at": "2026-09-23T16:55:27Z"
+        },
+        {
+          "name": "Write timings",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-09-23T16:55:27Z",
+          "completed_at": "2026-09-23T16:55:28Z"
+        },
+        {
+          "name": "sandbox upload switches",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-09-23T16:55:28Z",
+          "completed_at": "2026-09-23T16:55:28Z"
+        },
+        {
+          "name": "sandbox upload hang",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-09-23T16:55:28Z",
+          "completed_at": "2026-09-23T16:55:28Z"
+        },
+        {
+          "name": "Upload CTRF reports",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-09-23T16:55:28Z",
+          "completed_at": "2026-09-23T16:55:29Z"
+        },
+        {
+          "name": "Summary",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-09-23T16:55:29Z",
+          "completed_at": "2026-09-23T16:55:29Z"
+        },
+        {
+          "name": "Post Run actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 22,
+          "started_at": "2026-09-23T16:55:29Z",
+          "completed_at": "2026-09-23T16:55:29Z"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23,
+          "started_at": "2026-09-23T16:55:29Z",
+          "completed_at": "2026-09-23T16:55:29Z"
+        },
+        {
+          "name": "Post Build the test runner",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24,
+          "started_at": "2026-09-23T16:55:29Z",
+          "completed_at": "2026-09-23T16:55:29Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25,
+          "started_at": "2026-09-23T16:55:29Z",
+          "completed_at": "2026-09-23T16:55:29Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/main-watcher-sandbox/sample-target-7/check-runs/107286483015",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000006642,
+      "runner_name": "GitHub Actions 1000006642",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 107286827506,
+      "run_id": 35891997126,
+      "workflow_name": "main-watcher-tests 39a7cf7358e45f3475bf225ca7041cc4627db9d0",
+      "head_branch": "capture-jobs-65",
+      "run_url": "https://api.github.com/repos/main-watcher-sandbox/sample-target-7/actions/runs/35891997126",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOUkSRr88AAAAY-ssR8g",
+      "head_sha": "39a7cf7358e45f3475bf225ca7041cc4627db9d0",
+      "url": "https://api.github.com/repos/main-watcher-sandbox/sample-target-7/actions/jobs/107286827506",
+      "html_url": "https://github.com/main-watcher-sandbox/sample-target-7/actions/runs/35891997126/job/107286827506",
+      "status": "queued",
+      "conclusion": null,
+      "created_at": "2026-09-23T16:55:32Z",
+      "started_at": "2026-09-23T16:55:32Z",
+      "completed_at": null,
+      "name": "main-watcher-tests / report",
+      "steps": [],
+      "check_run_url": "https://api.github.com/repos/main-watcher-sandbox/sample-target-7/check-runs/107286827506",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": null,
+      "runner_name": null,
+      "runner_group_id": null,
+      "runner_group_name": null
+    }
+  ]
+}

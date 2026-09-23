@@ -11,14 +11,24 @@ public sealed record CheckRun(long Id, string Sha, string Status, string? Conclu
 /// null when GitHub did not say.
 /// </summary>
 public sealed record WorkflowRun(long Id, string Title, DateTimeOffset CreatedAt, string Status, DateTimeOffset? UpdatedAt = null);
-public sealed record JobStep(string Name, string? Conclusion);
+/// <summary>
+/// An environment gate a <c>waiting</c> run is held at (ADR-020). <see cref="WaitTimer"/> is the environment's wait timer, and
+/// <see cref="Reviewers"/> who may approve it: a user's login or <c>team &lt;slug&gt;</c>. None means nobody ever can.
+/// </summary>
+public sealed record PendingDeployment(string Environment, TimeSpan WaitTimer, IReadOnlyList<string> Reviewers);
+/// <summary>
+/// A step of a job. <see cref="Status"/> and <see cref="CompletedAt"/> are GitHub's own, null when it did not say; they record
+/// whether GitHub has finished writing the step down, which a step's conclusion alone does not (#65).
+/// </summary>
+public sealed record JobStep(string Name, string? Conclusion, string? Status = null, DateTimeOffset? CompletedAt = null);
 /// <summary>
 /// A job of a workflow run. <see cref="CompletedAt"/> is null while it is queued or running, and is how long a report has been
 /// pending once the check run's own <c>main-watcher</c> job has finished (ADR-013). <see cref="StartedAt"/> dates the run
 /// deadline; GitHub fills it in for a queued job too, so <see cref="StaleRun.Started"/> reads the status instead.
+/// <see cref="Conclusion"/> is the job's own, such as <c>cancelled</c>; null while it runs or when GitHub did not say.
 /// </summary>
 public sealed record WorkflowJob(string Name, string Status, IReadOnlyList<JobStep> Steps, DateTimeOffset? CompletedAt = null,
-    DateTimeOffset? StartedAt = null);
+    DateTimeOffset? StartedAt = null, string? Conclusion = null);
 /// <summary>
 /// An issue. <see cref="StateReason"/> is GitHub's <c>state_reason</c>, such as <c>duplicate</c>; <see cref="UpdatedAt"/> is null
 /// when unknown. <see cref="Id"/> is the database ID, which <c>duplicate_issue_id</c> takes, not the number.
