@@ -91,7 +91,12 @@ public sealed class WorkFinder(Func<DateTimeOffset>? clock = null, Func<string, 
                 var jobs = await github.Jobs(repo, runId, ct);
                 // A deleted run leaves nothing to date the work by: only the worker's own clock can, and only from now on.
                 if (jobs is null) return new($"check {check.Id}: target run {runId} was deleted", Check: check.Id);
-                if (Outcomes.Read(jobs) is not null)
+                var outcome = Outcomes.Read(jobs, now);
+                // Not owed yet: GitHub is still writing the job's steps down. The worker reads the job again next cycle rather
+                // than start a watch.yml run that would find nothing to report; once the steps are final or the wait is over,
+                // the report is owed, dated from the job's completion as before (ADR-019).
+                if (outcome is { Kind: OutcomeKind.StepsNotFinal }) continue;
+                if (outcome is not null)
                     return new($"check {check.Id}: the main-watcher job of target run {runId} has completed",
                         jobs.Where(j => Outcomes.IsTestJob(j.Name)).Select(j => j.CompletedAt).FirstOrDefault(), check.Id);
                 // A job that has not completed has two deadlines, and past either one the Planner must stop the run before it

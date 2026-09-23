@@ -136,8 +136,23 @@ public sealed class Target(GitHub github, string repo, Templates templates)
         var check = await Poll.Until($"a completed check run on {Short(sha)} in {Repo}", timeout,
             async () => (await Checks(sha, ct)).LastOrDefault() is { Completed: true } done ? done : null, ct);
         if (check.Conclusion != conclusion)
-            throw new ScenarioFailure($"{Repo} {Short(sha)}: expected {conclusion}, got {check}: {Excerpt(check.Summary)}");
+            throw new ScenarioFailure($"{Repo} {Short(sha)}: expected {conclusion}, got {check}: {Excerpt(check.Summary)}"
+                + await Misread(check, conclusion, ct));
         return check;
+    }
+
+    /// <summary>
+    /// Names #65 when a result the suite expected red or green came out neutral although the target run's marker step now shows
+    /// the tests finished: the Reporter judged a job whose steps GitHub had not yet written down, which ADR-019 exists to prevent.
+    /// </summary>
+    async Task<string> Misread(CheckRun check, string expected, CancellationToken ct)
+    {
+        if (expected is not ("success" or "failure") || check.Conclusion != "neutral" || check.RunId is not { } runId) return "";
+        var job = await TestJob(runId, ct);
+        return job?.StepNamed("main-watcher-tests-finished")?.Conclusion == "success"
+            ? $" The target run's `main-watcher-tests-finished` step now shows success, so the Reporter judged steps GitHub had not "
+                + $"yet written down: the #65 regression (ADR-019). Its job now reads: {job}"
+            : "";
     }
 
     // ---- issues ----

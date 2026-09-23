@@ -80,17 +80,21 @@ procedure, `ci.yml`'s `targets` job validates every `targets.yml` entry through 
 target's whole path — entry, caller, gate workflow, one dispatched test, its CTRF against the schema — creating no check run,
 so nothing it does can lock a repository still being onboarded. Rollback is documented in the same guide. Validated in the sandbox (`sandbox/issue-26-validation.md`): the dry run
 through its workflow and the CLI, a red suite that passed it while creating no check run and no lock, a resume that
-started no second test, both branches of the renamed `lock.yml`'s guard, and TS-S5 as the guide runs it.
+started no second test, both branches of the renamed `lock.yml`'s guard, and TS-S5 as the guide runs it. A red `main` read the instant its job completed, before GitHub had written the job's steps down,
+was reported neutral with no lock (MainWatcher#65). A sandbox capture reproduced that
+(`sandbox/issue-65-validation.md`), and ADR-019 now waits up to 5 minutes for the steps to become final.
 
 ## Where things are
 
 - `docs/architecture/architecture.md` — the main document (ARCH-001). Start here.
-- `docs/architecture/decisions/` — ADR-001 to ADR-018.
+- `docs/architecture/decisions/` — ADR-001 to ADR-019.
   - ADR-005 is superseded by ADR-007; ADR-006 is superseded by ADR-009.
   - ADR-013 to ADR-017 were accepted on 2026-09-15 (CQ-10 to CQ-14). They amend
     ADR-002, ADR-003, ADR-008 and ADR-010, which carry a note saying so.
   - ADR-018 (2026-09-16, MainWatcher#8) amends ADR-011: the job summary's history artifact
     and the test job's `actions: read`.
+  - ADR-019 (2026-09-23, MainWatcher#65) amends ADR-013: a completed job whose steps GitHub has
+    not yet written down is not judged for up to 5 minutes.
   - Accepted ADRs are never edited. A changed decision gets a new ADR that supersedes or
     amends the old one, plus a note at the top of the old one.
 - `docs/architecture/test-strategy.md` — TS-001: scenario tests TS-S1–S18, unit tests
@@ -179,7 +183,9 @@ is work, it starts `watch.yml` in the watcher repo through the `mw-doorbell` App
     interrupted reports without undoing a human override. The test outcome comes from the
     `main-watcher-test` step, counted only when the `main-watcher-tests-finished` marker
     step shows the tests ran to completion. A failure stays red without CTRF, and a
-    timeout is neutral (ADR-013);
+    timeout is neutral (ADR-013). A completed job whose steps GitHub has not finished writing
+    down (a step without a conclusion, or no `Complete job` step last) is read again rather than
+    judged, for up to 5 minutes after it completed (ADR-019);
   - the watcher renews a 4 h lease on each open lock (ADR-014);
   - reconciliation continues after a lock closes, until merges up to its closure are
     checked, and judges each PR's `fixes-main` label as it was at merge time (ADR-015);

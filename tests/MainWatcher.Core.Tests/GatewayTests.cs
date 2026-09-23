@@ -42,7 +42,7 @@ public class GatewayTests
         using var http = Client(handler);
         var jobs = await new GitHubGateway(http, 1).Jobs("owner/repo", 42, TestContext.Current.CancellationToken);
         Assert.Equal(101, jobs!.Count);
-        Assert.Equal("failure", Outcomes.Read(jobs)!.Conclusion);
+        Assert.Equal("failure", Outcomes.Read(jobs, DateTimeOffset.UtcNow)!.Conclusion);
     }
 
     [Fact]
@@ -74,6 +74,23 @@ public class GatewayTests
         Assert.Equal(("completed", conclusion), (job.Status, job.Conclusion));
         Assert.Equal(final, job.Steps.All(s => s.Conclusion is not null && s.Status == "completed"));
         Assert.Equal(final, job.Steps[^1].Name == "Complete job");
+    }
+
+    // TS-U11, ADR-019: the outcome table over the captured responses, each read when it was captured. Only the force-cancelled
+    // job read 1 s after it completed waits; its final form, 4 s later, is judged.
+    [Theory]
+    [InlineData("jobs-failed-final.json", 0, OutcomeKind.Failed)]
+    [InlineData("jobs-cancelled-final.json", 1, OutcomeKind.InfrastructureError)]
+    [InlineData("jobs-force-cancelled-unsettled.json", 1, OutcomeKind.StepsNotFinal)]
+    [InlineData("jobs-force-cancelled-final.json", 5, OutcomeKind.InfrastructureError)]
+    [InlineData("jobs-no-runner.json", 1, OutcomeKind.InfrastructureError)]
+    public async Task CapturedJobsGoThroughTheOutcomeTable(string fixture, int secondsAfterCompletion, OutcomeKind expected)
+    {
+        var body = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", fixture));
+        using var http = Client(new Handler(_ => Task.FromResult(Response(body))));
+        var jobs = (await new GitHubGateway(http, 1).Jobs("owner/repo", 1, TestContext.Current.CancellationToken))!;
+        var completed = jobs.Single(j => Outcomes.IsTestJob(j.Name)).CompletedAt!.Value;
+        Assert.Equal(expected, Outcomes.Read(jobs, completed.AddSeconds(secondsAfterCompletion))!.Kind);
     }
 
     [Fact]
@@ -271,7 +288,7 @@ public class GatewayTests
         using var http = Client(new Handler(request => Task.FromResult(Response(request.RequestUri!.AbsolutePath.EndsWith("/jobs")
             ? "{\"jobs\":[]}" : $"{{\"status\":\"{status}\"}}"))));
         var jobs = await new GitHubGateway(http, 1).Jobs("owner/repo", 1, TestContext.Current.CancellationToken);
-        Assert.Equal(conclusion, Outcomes.Read(jobs)?.Conclusion);
+        Assert.Equal(conclusion, Outcomes.Read(jobs, DateTimeOffset.UtcNow)?.Conclusion);
     }
 
     [Fact]

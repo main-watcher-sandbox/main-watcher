@@ -14,6 +14,12 @@ amends: [ADR-003, ADR-010]
 
 # ADR-013 — The Reporter completes the check run last, so an interrupted report is replayed (amends ADR-003 and ADR-010)
 
+> **Amended by [ADR-019](ADR-019-wait-for-final-job-steps.md) on 2026-09-23.** A completed job
+> can still have steps GitHub has not written down. Where the table would give "the tests did not
+> finish", a job whose steps are not final (a step without a conclusion, or no `Complete job` step
+> last) is not judged for up to 5 minutes after it completed. Until then, the check run stays
+> `in_progress` and the worker flags no report. After that, the job is judged as it stands.
+
 **Deciders:** requester (confirmed 2026-09-15, CQ-10), platform team · **Consulted:** —
 
 ## Context
