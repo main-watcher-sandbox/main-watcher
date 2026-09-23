@@ -261,11 +261,16 @@ public sealed class Target(GitHub github, string repo, Templates templates)
 
     public async Task<Run> Run(long id, CancellationToken ct) => global::MainWatcher.Scenarios.Sandbox.Run.From((await github.Get($"repos/{Repo}/actions/runs/{id}", ct))!);
 
-    /// <summary>The run's jobs, or null once the run has been deleted.</summary>
+    /// <summary>The run's jobs, or null once the run has been deleted. A test run's raw response is kept (<see cref="JobsLog"/>).</summary>
     public async Task<List<Job>?> Jobs(long runId, CancellationToken ct, int? attempt = null)
     {
         var path = attempt is null ? $"repos/{Repo}/actions/runs/{runId}/jobs?filter=all" : $"repos/{Repo}/actions/runs/{runId}/attempts/{attempt}/jobs";
-        try { return (await github.All(path, ct, "jobs", 2)).Select(Job.From).ToList(); }
+        try
+        {
+            var jobs = await github.All(path, ct, "jobs", 2);
+            JobsLog.Save(Repo, runId, attempt, jobs);
+            return jobs.Select(Job.From).ToList();
+        }
         catch (GitHubException e) when (e.Status == System.Net.HttpStatusCode.NotFound) { return null; }
     }
 
@@ -284,10 +289,15 @@ public sealed class Target(GitHub github, string repo, Templates templates)
 
     public Task DeleteRun(long runId, CancellationToken ct) => github.Delete($"repos/{Repo}/actions/runs/{runId}", ct);
 
-    /// <summary>Starts a workflow in this repo, such as <c>sandbox-hold.yml</c>, and returns its run.</summary>
-    public async Task<long> Dispatch(string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct) =>
+    /// <summary>Starts a workflow in this repo, such as <c>sandbox-hold.yml</c>, from <paramref name="reference"/>, and returns its run.</summary>
+    public async Task<long> Dispatch(string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct,
+        string reference = "main") =>
         (await github.Post($"repos/{Repo}/actions/workflows/{workflow}/dispatches",
-            new { @ref = "main", inputs, return_run_details = true }, ct))!["workflow_run_id"]!.GetValue<long>();
+            new { @ref = reference, inputs, return_run_details = true }, ct))!["workflow_run_id"]!.GetValue<long>();
+
+    public Task ForceCancelRun(long runId, CancellationToken ct) => github.Post($"repos/{Repo}/actions/runs/{runId}/force-cancel", null, ct);
+
+    public Task DeleteBranch(string branch, CancellationToken ct) => github.Delete($"repos/{Repo}/git/refs/heads/{branch}", ct);
 
     /// <summary>The merge-group gate runs for a pull request, newest first.</summary>
     public async Task<List<Run>> GateRuns(int prNumber, DateTimeOffset since, CancellationToken ct) =>

@@ -5,11 +5,20 @@ using MainWatcher.Scenarios.Sandbox;
 // The scenario suite (TS-001 §5): TS-S1–S18 against the sandbox, from one entry point, sandbox/run-scenarios.sh.
 // A full run that passes marks the commit under test with the scenario-suite status, which release.yml requires.
 
+// The one-off jobs API capture for #65, which uses the suite's sandbox access but none of its units.
+if (args is ["capture-jobs", ..])
+{
+    using var cancel = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancel.Cancel(); };
+    return await JobsCapture.Run(args[1..], Repository.Root(), cancel.Token);
+}
+
 var options = Options.Parse(args);
 if (options is null)
 {
     Console.Error.WriteLine("""
         Usage: sandbox/run-scenarios.sh [--only TS-S13,TS-S4] [--no-deploy] [--targets N] [--no-status] [--list]
+               sandbox/run-scenarios.sh capture-jobs [--target sample-target-7] [--repeat 3]
 
           --only       run only the units covering these scenarios (a prefix: TS-S16 is every TS-S16 unit)
           --no-deploy  skip publishing, the replica push, the worker image and seeding: test what the sandbox already runs
@@ -18,6 +27,7 @@ if (options is null)
                        for each unit that starts at once; --only needs as many as its outage and early units
           --no-status  post no commit status, even when the run qualifies
           --list       list the units and exit
+          capture-jobs record raw jobs API responses around job completion, for #65; see JobsCapture.cs
         """);
     return 2;
 }
@@ -44,6 +54,7 @@ var root = Repository.Root();
 var commit = (await Shell.Run("git", ["rev-parse", "HEAD"], CancellationToken.None, root)).Trim();
 var dirty = (await Shell.Run("git", ["status", "--porcelain"], CancellationToken.None, root)).Trim().Length > 0;
 Directory.CreateDirectory(RunInfo.OutDir = Path.Combine(root, "sandbox", "scenarios", "out", $"{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{commit[..7]}"));
+JobsLog.OutDir = RunInfo.OutDir;
 var log = new Log("suite", Path.Combine(RunInfo.OutDir, "suite.log"));
 if (dirty && !options.NoDeploy)
 {

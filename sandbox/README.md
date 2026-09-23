@@ -285,9 +285,22 @@ wait for it to end.
 - `report.md`: what each unit checked and saw;
 - `results.json`;
 - the log of the suite, of each unit and of each target;
-- TS-S8's table.
+- TS-S8's table;
+- `jobs/<target>/`: the raw jobs API response of every target test run the suite read. For each
+  run, `<run>-first-completed.json` is the first response in which the `main-watcher` job had
+  completed, and `<run>-latest.json` the newest (#65).
 
 The exit code is 0 only if every unit passed.
+
+**Capturing jobs responses.** `sandbox/run-scenarios.sh capture-jobs [--target sample-target-7]
+[--repeat 3]` records how GitHub's jobs API reports a test job around the moment it completes: a run
+that fails on its own (three times by default), one cancelled during its tests, one force-cancelled,
+and one cancelled before it got a runner. It runs the target's `main-watcher-tests.yml` by hand from a
+side branch, so the watcher opens no check run and no lock. It polls every second from when the
+tests end until a minute after the job completes, then every 15 s for five minutes. Each distinct
+response and a `summary.md` go to `sandbox/scenarios/out/capture-jobs-<time>/`. It deploys nothing,
+and its default target is outside the suite's pool. It is the evidence for #65; see
+`sandbox/issue-65-validation.md`.
 
 **Commit statuses.** A full run posts `scenario-suite` on the commit, `success` or `failure`. It
 does so only when the commit is pushed to GitHub and the working tree has no uncommitted changes.
