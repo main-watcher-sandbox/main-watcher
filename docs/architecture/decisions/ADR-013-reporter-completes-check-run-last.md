@@ -20,6 +20,12 @@ amends: [ADR-003, ADR-010]
 > last) is not judged for up to 5 minutes after it completed. Until then, the check run stays
 > `in_progress` and the worker flags no report. After that, the job is judged as it stands.
 
+> **Amended by [ADR-020](ADR-020-stuck-watch-runs.md) on 2026-09-23.** Point 5's stale-run
+> lifecycle also applies to the watcher's own runs. A `watch.yml` run for a target that has not
+> started 20 minutes after it was created (plus any wait timer) is cancelled by the worker, then
+> force-cancelled, then alerted about, unless it is waiting for a listed reviewer. Sweep runs are
+> left alone.
+
 **Deciders:** requester (confirmed 2026-09-15, CQ-10), platform team · **Consulted:** —
 
 ## Context

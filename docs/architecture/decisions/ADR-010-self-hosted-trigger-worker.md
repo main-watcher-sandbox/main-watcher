@@ -34,6 +34,13 @@ amends: ADR-001
 >   is work again after `poll_interval`, up to 3 neutral results, under a rule shared with
 >   the Planner.
 
+> **Amended by [ADR-020](ADR-020-stuck-watch-runs.md) on 2026-09-23.** A `watch.yml` run for a
+> target that has not started 20 minutes after it was created no longer blocks the target
+> indefinitely. The worker alerts and cancels it through `mw-doorbell`, force-cancels it 15 minutes
+> later, and alerts again 15 minutes after that; the next cycle dispatches again. A run waiting for a
+> listed reviewer is only alerted about, since the `reporter` environment must have none. Sweep runs
+> are out of scope.
+
 **Deciders:** requester, platform team · **Consulted:** —
 
 ## Context
