@@ -26,7 +26,13 @@ public sealed class Replica(GitHub github, string repo)
     /// <summary>A plain list of targets whose cycles get a read-only Issues token (TS-S14 (c)).</summary>
     public const string ReadOnlyIssues = "MW_SANDBOX_READ_ONLY_ISSUES";
 
-    public static readonly string[] Switches = [ExitAfter, RefuseCancel, QueueDeadline, ReadOnlyIssues];
+    /// <summary>A plain list of targets whose cycles wait at <see cref="ReviewedEnvironment"/> (TS-S19).</summary>
+    public const string ReviewedTargets = "MW_SANDBOX_REVIEWED_TARGETS";
+
+    /// <summary>An environment with a required reviewer and no secrets, which <c>watch.yml</c> uses for <see cref="ReviewedTargets"/>.</summary>
+    public const string ReviewedEnvironment = "reporter-reviewed";
+
+    public static readonly string[] Switches = [ExitAfter, RefuseCancel, QueueDeadline, ReadOnlyIssues, ReviewedTargets];
 
     readonly SemaphoreSlim writes = new(1);
     readonly Dictionary<string, TargetEntry> entries = new(StringComparer.OrdinalIgnoreCase);
@@ -149,11 +155,39 @@ public sealed class Replica(GitHub github, string repo)
         if (on) entries.Add(target.Repo);
     }, ct);
 
+    /// <summary>Adds a target to, or removes it from, the list whose cycles wait for a reviewer (TS-S19).</summary>
+    public Task SetReviewed(Target target, bool on, CancellationToken ct) => EditVariable(ReviewedTargets, entries =>
+    {
+        entries.RemoveAll(e => e.Equals(target.Repo, StringComparison.OrdinalIgnoreCase));
+        if (on) entries.Add(target.Repo);
+    }, ct);
+
+    /// <summary>
+    /// Makes <see cref="ReviewedEnvironment"/> require <paramref name="login"/>'s approval, creating it if need be. Setting it on
+    /// every run keeps the scenario from depending on a hand-made setup.
+    /// </summary>
+    public async Task RequireReviewer(string login, CancellationToken ct)
+    {
+        var id = (await github.Get($"users/{login}", ct))!["id"]!.GetValue<long>();
+        await github.Put($"repos/{Repo}/environments/{ReviewedEnvironment}",
+            new { reviewers = new[] { new { type = "User", id } }, prevent_self_review = false }, ct);
+    }
+
+    /// <summary>The reviewers a waiting run's gates list, as logins or team slugs.</summary>
+    public async Task<List<string>> GateReviewers(long runId, CancellationToken ct) =>
+        (await github.Get($"repos/{Repo}/actions/runs/{runId}/pending_deployments", ct))!.AsArray()
+            .SelectMany(d => d!["reviewers"]!.AsArray())
+            .Select(r => r!["reviewer"]?["login"]?.GetValue<string>() ?? r!["reviewer"]?["slug"]?.GetValue<string>() ?? "")
+            .ToList();
+
+    public Task CancelRun(long runId, CancellationToken ct) => github.Post($"repos/{Repo}/actions/runs/{runId}/cancel", null, ct);
+
     /// <summary>Removes every switch entry naming a target, for a reset.</summary>
     public async Task ClearSwitches(Target target, CancellationToken ct)
     {
         foreach (var name in new[] { ExitAfter, RefuseCancel }) await SetSwitch(name, target, [], ct);
         await SetReadOnlyIssues(target, false, ct);
+        await SetReviewed(target, false, ct);
     }
 
     public async Task<string?> Variable(string name, CancellationToken ct) =>

@@ -1,6 +1,6 @@
 ---
 owner: platform-team
-reviewed: 2026-09-22
+reviewed: 2026-09-23
 review_by: 2027-03-15
 ---
 
@@ -29,7 +29,10 @@ runners the team owns (A-4), and produce **CTRF** JSON (ADR-007) — xUnit v3 on
 it directly. A suite that finishes in well under 30 minutes keeps detection quick (A-2, NFR-1).
 
 The watcher repository must also allow its reusable workflows to be used by other repositories in the
-organisation (ARCH-001 §8); that is set once for the organisation, not per target.
+organisation (ARCH-001 §8); that is set once for the organisation, not per target. So is its `reporter`
+environment, which must have **no required reviewers** ([watcher.md](watcher.md), ADR-020): every cycle for every
+target passes through it, and the trigger worker cancels a cycle that has not started after 20 minutes, unless it is
+waiting for a listed reviewer, in which case it only raises an alert.
 
 ## 1. Install the Apps
 

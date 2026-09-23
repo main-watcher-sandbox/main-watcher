@@ -32,6 +32,16 @@ public sealed record CycleObservations
     public bool WatchRunStarted { get; init; }
     /// <summary>When the newest completed <c>watch.yml</c> run in <see cref="TriggerCycle.ActiveRunWindow"/> finished.</summary>
     public DateTimeOffset? WatchRunCompleted { get; init; }
+    /// <summary>
+    /// <c>watch.yml</c> runs past their deadline without starting (ADR-020); null when the run list could not be read, which
+    /// says nothing about them either way.
+    /// </summary>
+    public IReadOnlyList<StuckRun>? StuckRuns { get; init; }
+    /// <summary>
+    /// Targets with a run whose gates could not be read, so it was not judged (ADR-020). Their stuck-run alerts are neither
+    /// raised nor cleared, which keeps the hourly repeat limit (PR #72 review).
+    /// </summary>
+    public IReadOnlyCollection<string> StuckUnjudged { get; init; } = [];
 }
 
 /// <summary>
@@ -43,7 +53,9 @@ public sealed record CycleObservations
 ///   <item>a credential GitHub refuses;</item>
 ///   <item>less than 20% of a rate-limit budget left (R-13);</item>
 ///   <item>a report pending for more than 15 minutes (ADR-013 point 6);</item>
-///   <item>a queue sweep owed for more than 15 minutes (ADR-016 point 2).</item>
+///   <item>a queue sweep owed for more than 15 minutes (ADR-016 point 2);</item>
+///   <item>a <c>watch.yml</c> run that has not started 20 minutes after it was created, one that could not be stopped, and one
+///   held for a reviewer (ADR-020).</item>
 /// </list>
 /// A condition that still holds raises nothing again until <see cref="Repeat"/> has passed, and <see cref="Core.Alerts"/> then
 /// comments on the open issue rather than opening a second one (TS-U7). A condition that clears is forgotten, so its next
@@ -73,6 +85,8 @@ public sealed class WorkerAlerts(Alerts alerts, IAccessHealth access, ILogger lo
     readonly Dictionary<string, DateTimeOffset> firing = new(StringComparer.Ordinal);
     readonly Dictionary<string, OwedWork> reports = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, OwedWork> sweeps = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The stuck-run alerts that last held, with the target each is about.</summary>
+    readonly Dictionary<string, string> stuckTitles = new(StringComparer.Ordinal);
     readonly List<string> streak = [];
     int consecutiveErrors;
     DateTimeOffset lastCompletedRun = started;
@@ -140,6 +154,58 @@ public sealed class WorkerAlerts(Alerts alerts, IAccessHealth access, ILogger lo
                 + "re-running its gate (ADR-016). Until the sweep finishes, such a group can still merge onto a red `main`, "
                 + "and it would be reported afterwards rather than blocked. The sweep stops for a gate run that is still "
                 + "going, and for one GitHub refuses to re-run: the watcher's own run log says which.", ct);
+
+        if (seen.StuckRuns is { } stuck) await Stuck(stuck, seen.StuckUnjudged, now, ct);
+    }
+
+    /// <summary>
+    /// One alert per target, kind and state (ADR-020), so a second stuck target is not hidden by the first. A run the cycle no longer
+    /// lists as stuck has started, completed or aged out of the window, and its alert condition clears.
+    /// </summary>
+    async Task Stuck(IReadOnlyList<StuckRun> stuck, IReadOnlyCollection<string> unjudged, DateTimeOffset now, CancellationToken ct)
+    {
+        var alerts = new Dictionary<string, (string Repo, string Body)>(StringComparer.Ordinal);
+        foreach (var target in stuck.GroupBy(r => r.Repo, StringComparer.OrdinalIgnoreCase))
+        {
+            var held = target.Where(r => r.Stage == StuckStage.Reviewers).ToArray();
+            if (held.Length > 0)
+                alerts[$"`watch.yml` run waiting for a reviewer on {target.Key}"] =
+                    (target.Key, string.Join("\n", held.Select(r => $"- [Run {r.RunId}]({r.Url}), created {r.CreatedAt.UtcDateTime:yyyy-MM-dd HH:mm} UTC, "
+                        + $"is waiting for {string.Join(", ", r.Reviewers.Select(n => $"`{n}`"))} to approve it."))
+                    + $"\n\nWhile it waits, no cycle runs for `{target.Key}`: nothing is tested or reported. The worker leaves a run "
+                    + "a person can approve alone, but the `reporter` environment must have no required reviewers, since every "
+                    + "cycle would need an approval (ADR-020, `docs/watcher.md`). Remove the environment's required reviewers, "
+                    + "then approve or cancel this run.");
+            // The state is in the title, as ADR-020 names the alert; a run seldom changes state while it waits.
+            foreach (var stopping in target.Where(r => r.Stage != StuckStage.Reviewers).GroupBy(r => r.State, StringComparer.Ordinal))
+                alerts[$"`watch.yml` run stuck `{stopping.Key}` on {target.Key}"] =
+                    (target.Key, string.Join("\n", stopping.Select(r => $"- [Run {r.RunId}]({r.Url}) has been `{r.State}` since "
+                        + $"{r.CreatedAt.UtcDateTime:yyyy-MM-dd HH:mm} UTC ({(now - r.CreatedAt).TotalMinutes:0} minutes) without "
+                        + $"starting; the worker {(r.Stage == StuckStage.Cancel ? "cancelled" : "force-cancelled")} it."))
+                    + $"\n\nWhile a run for `{target.Key}` has not started, no other cycle for it starts, so nothing is tested or "
+                    + "reported. Once the run has stopped, the next cycle dispatches a new one (ADR-020). A run held at an "
+                    + "environment gate that lists no reviewers is waiting for an approval nobody can give, which GitHub has been "
+                    + "seen to do (MainWatcher#67).");
+            var unstoppable = target.Where(r => r.Stage == StuckStage.Unstoppable).ToArray();
+            if (unstoppable.Length > 0)
+                alerts[$"`watch.yml` run could not be stopped on {target.Key}"] =
+                    (target.Key, string.Join("\n", unstoppable.Select(r => $"- [Run {r.RunId}]({r.Url}) is still `{r.State}` "
+                        + $"{(now - r.Deadline).TotalMinutes:0} minutes after it was first cancelled."))
+                    + $"\n\nThe worker force-cancels it on each cycle. Until it stops, no cycle runs for `{target.Key}`. Deleting "
+                    + "the run releases the target at once (ADR-020).");
+        }
+        // A target whose gates went unread says nothing either way, so its alerts neither clear nor restart their hour.
+        foreach (var (gone, repo) in stuckTitles.Where(t => !alerts.ContainsKey(t.Key)).ToArray())
+        {
+            if (unjudged.Contains(repo, StringComparer.OrdinalIgnoreCase)) continue;
+            stuckTitles.Remove(gone);
+            await Judge(false, gone, "", now, ct);
+        }
+        foreach (var (title, (repo, body)) in alerts)
+        {
+            stuckTitles[title] = repo;
+            await Judge(true, title, body, now, ct);
+        }
     }
 
     /// <summary>One target's unpaid debt, as every one of these conditions is timed and worded.</summary>

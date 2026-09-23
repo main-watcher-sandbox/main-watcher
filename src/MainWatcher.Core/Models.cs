@@ -12,6 +12,11 @@ public sealed record CheckRun(long Id, string Sha, string Status, string? Conclu
 /// </summary>
 public sealed record WorkflowRun(long Id, string Title, DateTimeOffset CreatedAt, string Status, DateTimeOffset? UpdatedAt = null);
 /// <summary>
+/// An environment gate a <c>waiting</c> run is held at (ADR-020). <see cref="WaitTimer"/> is the environment's wait timer, and
+/// <see cref="Reviewers"/> who may approve it: a user's login or <c>team &lt;slug&gt;</c>. None means nobody ever can.
+/// </summary>
+public sealed record PendingDeployment(string Environment, TimeSpan WaitTimer, IReadOnlyList<string> Reviewers);
+/// <summary>
 /// A step of a job. <see cref="Status"/> and <see cref="CompletedAt"/> are GitHub's own, null when it did not say; they record
 /// whether GitHub has finished writing the step down, which a step's conclusion alone does not (#65).
 /// </summary>

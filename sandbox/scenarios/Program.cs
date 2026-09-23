@@ -2,7 +2,7 @@ using MainWatcher.Scenarios;
 using MainWatcher.Scenarios.Infra;
 using MainWatcher.Scenarios.Sandbox;
 
-// The scenario suite (TS-001 §5): TS-S1–S18 against the sandbox, from one entry point, sandbox/run-scenarios.sh.
+// The scenario suite (TS-001 §5): TS-S1–S19 against the sandbox, from one entry point, sandbox/run-scenarios.sh.
 // A full run that passes marks the commit under test with the scenario-suite status, which release.yml requires.
 
 // The one-off jobs API capture for #65, which uses the suite's sandbox access but none of its units.

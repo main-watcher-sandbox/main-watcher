@@ -1,6 +1,6 @@
 ---
 owner: platform-team
-reviewed: 2026-09-18
+reviewed: 2026-09-23
 review_by: 2027-03-15
 ---
 
@@ -25,14 +25,45 @@ Every `check_period` (default 60 s), the worker:
    run acts on the current state, so another dispatch would only queue a cycle with nothing
    left to do. `watch.yml`'s `run-name` is `watch <owner/repo>`, which is how the worker
    tells whose cycle it is. When that read fails, no target is skipped, because a duplicate
-   dispatch is harmless (ADR-010);
+   dispatch is harmless (ADR-010). That read covers runs created in the last two hours; runs
+   not yet started are also listed by status whatever their age, one request each for
+   `waiting`, `queued`, `pending` and `requested`, so four more requests a cycle from
+   `mw-observer`'s watcher-repo budget (R-13). A run that has not started by its deadline is
+   stopped first ([below](#a-cycle-that-does-not-start)), since until it completes it blocks
+   its target;
 3. for each enabled target, looks for work (below) through that target's `mw-observer`
    gateway, reusing one `GitHubGateway` per target so its check-run snapshot is kept;
 4. starts `watch.yml` once for each target with work, through `mw-doorbell`, passing
    `target`. The dispatch POST is never retried: a lost response may still have started the
    run, and the next cycle looks again.
 
-A target whose reads fail is logged and counted; the other targets are still processed. All
+A target whose reads fail is logged and counted; the other targets are still processed.
+
+### A cycle that does not start
+
+A `watch.yml` run for a target that is still not `in_progress` 20 minutes after it was
+created — `waiting` at an environment gate, or `queued`, `pending` or `requested` — blocks
+every later cycle for that target (ADR-020). Scenario suite run 11 found one held at the
+`reporter` gate for an approval nobody could give (MainWatcher#67). The worker stops it as the
+Planner stops a target run (ADR-013 point 5):
+
+| Time after the deadline | The worker |
+| --- | --- |
+| 0 | cancels the run through `mw-doorbell`, and raises "`watch.yml` run stuck `<state>` on `owner/repo`" |
+| 15 min | force-cancels it |
+| 30 min | force-cancels it on each cycle, and raises "`watch.yml` run could not be stopped on `owner/repo`" |
+
+The deadline is the run's `created_at` plus 20 minutes, plus the environment's wait timer for a
+`waiting` run, so every step follows from GitHub's own times and a restart resumes where it
+was. Before stopping a `waiting` run, the worker reads its `pending_deployments` through
+`mw-observer`. When a gate lists reviewers, a person can approve it, so the run is left alone
+and "`watch.yml` run waiting for a reviewer on `owner/repo`" names them; the `reporter`
+environment must have none ([watcher.md](watcher.md)). When that read fails, nothing is
+cancelled, the failure counts towards "cycles keep failing", and the target's stuck-run alerts
+are left as they were, neither cleared nor raised again before their hour is up. Once the run has completed,
+the next cycle dispatches again, as often as it takes. A `sweep` run names no target and is
+never stopped by this rule; a stuck one holds each target's concurrency group, so the targets'
+own runs show up here as stuck `pending` until a person cancels the sweep. All
 GitHub calls go through `GitHubGateway` (§9 of ARCH-001), including the App and installation
 token calls.
 
@@ -190,6 +221,9 @@ conditions are:
 | A response left less than 20% of a rate-limit budget (R-13) | GitHub rate limit below 20% |
 | A report has been owed for more than 15 min (ADR-013 point 6) | Reporting pending on `owner/repo` |
 | A queue sweep has been owed for more than 15 min (ADR-016 point 2) | Queue sweep unfinished on `owner/repo` |
+| A `watch.yml` run for the target has not started by its deadline, and the worker is stopping it (ADR-020) | `watch.yml` run stuck `<state>` on `owner/repo` |
+| Such a run is still not stopped 30 min after its deadline | `watch.yml` run could not be stopped on `owner/repo` |
+| Such a run is waiting at a gate that lists reviewers, so it is left alone | `watch.yml` run waiting for a reviewer on `owner/repo` |
 
 **De-duplication (TS-U7).** Each condition is raised once when it starts to hold, and at
 most once an hour while it goes on holding. An open `watcher-infra` issue with the same

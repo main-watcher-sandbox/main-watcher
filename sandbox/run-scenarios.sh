@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The scenario suite (TS-001 §5): TS-S1–S18 against the sandbox, from one entry point. It puts HEAD into
+# The scenario suite (TS-001 §5): TS-S1–S19 against the sandbox, from one entry point. It puts HEAD into
 # the sandbox (the gate repo, the watcher replica, the worker image and every pool target), runs the
 # scenarios side by side on the target pool, and writes a report under sandbox/scenarios/out/. A full
 # run that passes, of a commit pushed to GitHub with a clean working tree, posts the scenario-suite

@@ -1,6 +1,6 @@
 ---
 owner: platform-team
-reviewed: 2026-09-22
+reviewed: 2026-09-23
 review_by: 2027-03-15
 ---
 
@@ -18,9 +18,13 @@ the hourly backup sweep, which processes every enabled target and watches the wo
 #19 renews each open lock's lease, so the gate goes on enforcing it.
 #20 reconciles the merges made during a lock, following it through its closure.
 #21 sweeps the merge queue when a lock opens, re-running the gate for the groups queued before it.
+#67 has the worker stop a cycle of its own that has not started after 20 minutes (ADR-020).
 
 Configure the `reporter` environment with `MAIN_WATCHER_APP_ID` (variable) and
-`MAIN_WATCHER_PRIVATE_KEY` (secret). Install that App on each target with
+`MAIN_WATCHER_PRIVATE_KEY` (secret). Give it **no required reviewers** (ADR-020): the worker can
+start a cycle every minute, so an approval on each one would stop the watcher. A wait timer is
+allowed, and moves the worker's 20-minute deadline for a cycle that has not started by as long.
+The environment exists only to keep the key away from other workflows. Install that App on each target with
 Contents read, Actions write, Checks write and Issues write. Where a target's `notify`
 list, or the CODEOWNERS `*` rule it falls back to, names a team, the App also needs
 organisation Members read: without it the team mention renders as a team link but notifies

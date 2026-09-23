@@ -31,7 +31,15 @@ sealed class FakeGitHub : IGitHubGateway
     public Task<IReadOnlyList<WorkflowRun>> Runs(string repo, string workflow, DateTimeOffset since, CancellationToken ct)
     {
         Reads.Add($"runs:{repo}:{workflow}");
-        return RunsError ? throw new HttpRequestException("runs unavailable") : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList);
+        // As GitHub's created filter does, so a run older than the window is not listed (PR #72 review).
+        return RunsError ? throw new HttpRequestException("runs unavailable")
+            : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList.Where(r => r.CreatedAt >= since).ToArray());
+    }
+    public Task<IReadOnlyList<WorkflowRun>> RunsIn(string repo, string workflow, IReadOnlyList<string> statuses, CancellationToken ct)
+    {
+        Reads.Add($"runs-in:{string.Join(",", statuses)}");
+        return RunsError ? throw new HttpRequestException("runs unavailable")
+            : Task.FromResult<IReadOnlyList<WorkflowRun>>(RunList.Where(r => statuses.Contains(r.Status)).ToArray());
     }
     public Task<string?> File(string repo, string path, CancellationToken ct) => Task.FromResult(Files.GetValueOrDefault($"{repo}:{path}"));
     public Task DispatchWorkflow(string repo, string workflow, IReadOnlyDictionary<string, string> inputs, CancellationToken ct)
@@ -70,7 +78,24 @@ sealed class FakeGitHub : IGitHubGateway
     public Task<long?> Dispatch(string repo, string sha, long checkId, CancellationToken ct) => throw new NotSupportedException();
     public Task Link(string repo, long checkId, long runId, CancellationToken ct) => throw new NotSupportedException();
     public Task<CtrfResult> Reports(string repo, long runId, CancellationToken ct) => throw new NotSupportedException();
-    public Task<string?> CancelRun(string repo, long runId, bool force, CancellationToken ct) => throw new NotSupportedException();
+    /// <summary>Stop requests, as <c>cancel:&lt;run&gt;</c> or <c>force-cancel:&lt;run&gt;</c>.</summary>
+    public List<string> Cancels { get; } = [];
+    /// <summary>What GitHub says to a stop request; null means it accepted it.</summary>
+    public string? CancelRefusal { get; set; }
+    public Task<string?> CancelRun(string repo, long runId, bool force, CancellationToken ct)
+    {
+        Cancels.Add($"{(force ? "force-cancel" : "cancel")}:{runId}");
+        return Task.FromResult(CancelRefusal);
+    }
+    /// <summary>A waiting run's gates by run ID; a run not listed has none.</summary>
+    public Dictionary<long, IReadOnlyList<PendingDeployment>> GatesByRun { get; } = [];
+    public bool GatesError { get; set; }
+    public Task<IReadOnlyList<PendingDeployment>> PendingDeployments(string repo, long runId, CancellationToken ct)
+    {
+        Reads.Add($"gates:{runId}");
+        return GatesError ? throw new HttpRequestException("gates unavailable")
+            : Task.FromResult(GatesByRun.GetValueOrDefault(runId) ?? []);
+    }
     public Task Output(string repo, long checkId, string title, string summary, CancellationToken ct) => throw new NotSupportedException();
     public Task Complete(string repo, long checkId, string conclusion, string title, string summary, CancellationToken ct) => throw new NotSupportedException();
     /// <summary>Locks in any state, updated within the window: the closed-lock reconciliation rule reads these (ADR-015).</summary>
