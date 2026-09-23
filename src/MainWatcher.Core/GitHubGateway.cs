@@ -356,6 +356,16 @@ public sealed class GitHubGateway(HttpClient http, long appId,
         (await Pages($"repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&created={Uri.EscapeDataString(">=" + since.ToString("O"))}", "workflow_runs", ct))
         .Select(r => new WorkflowRun(r.GetProperty("id").GetInt64(), Text(r, "display_title")!, Date(r, "created_at")!.Value, Text(r, "status")!, Date(r, "updated_at"))).ToArray();
 
+    public async Task<IReadOnlyList<WorkflowRun>> RunsIn(string repo, string workflow, IReadOnlyList<string> statuses, CancellationToken ct)
+    {
+        // GitHub filters on one status per request.
+        var runs = new List<WorkflowRun>();
+        foreach (var status in statuses)
+            runs.AddRange((await Pages($"repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&status={status}", "workflow_runs", ct))
+                .Select(r => new WorkflowRun(r.GetProperty("id").GetInt64(), Text(r, "display_title")!, Date(r, "created_at")!.Value, Text(r, "status")!, Date(r, "updated_at"))));
+        return runs.DistinctBy(r => r.Id).ToArray();
+    }
+
     public async Task<IReadOnlyList<FailOpen>> FailOpens(string repo, DateTimeOffset since, CancellationToken ct)
     {
         List<JsonElement> runs;

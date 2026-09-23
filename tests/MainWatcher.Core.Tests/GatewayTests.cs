@@ -884,6 +884,27 @@ public class GatewayTests
         Assert.Empty(gates[1].Reviewers);
     }
 
+    // ADR-020, PR #72 review: runs not yet started are listed whatever their age, one status per request.
+    [Fact]
+    public async Task ListsUnstartedRunsOneStatusPerRequest()
+    {
+        var queries = new List<string>();
+        using var http = Client(new Handler(request =>
+        {
+            queries.Add(request.RequestUri!.Query);
+            var status = request.RequestUri.Query.Contains("status=waiting") ? "waiting" : "queued";
+            return Task.FromResult(Response($$"""
+                {"workflow_runs":[{"id":{{(status == "waiting" ? 1 : 2)}},"display_title":"watch owner/repo","created_at":"2026-09-23T10:00:00Z","status":"{{status}}"},
+                                  {"id":1,"display_title":"watch owner/repo","created_at":"2026-09-23T10:00:00Z","status":"waiting"}]}
+                """));
+        }));
+        var runs = await new GitHubGateway(http, 1).RunsIn("owner/watcher", "watch.yml", ["waiting", "queued"], TestContext.Current.CancellationToken);
+        Assert.Equal([1L, 2L], runs.Select(r => r.Id).Order());
+        Assert.Equal(2, queries.Count);
+        Assert.All(queries, q => Assert.DoesNotContain("created=", q));
+        Assert.Contains(queries, q => q.Contains("event=workflow_dispatch&status=queued"));
+    }
+
     static HttpClient Client(HttpMessageHandler handler) => new(handler) { BaseAddress = new Uri("https://api.github.com/") };
     static HttpResponseMessage Response(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
     sealed class Handler(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) : HttpMessageHandler

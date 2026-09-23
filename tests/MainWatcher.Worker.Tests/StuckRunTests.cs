@@ -163,6 +163,33 @@ public class StuckRunTests
         Assert.Empty(seen.StuckRuns!);
     }
 
+    // PR #72 review: a run older than the two-hour window is still seen. A two-hour wait timer puts the deadline at 140
+    // minutes, and a run that cannot be stopped is force-cancelled on every cycle until it stops.
+    [Theory]
+    [InlineData(139, 120, null)]
+    [InlineData(140, 120, "cancel:9")]
+    [InlineData(300, 0, "force-cancel:9")]
+    public async Task ARunOlderThanTheWindowIsStillJudged(int age, int waitTimer, string? request)
+    {
+        var setup = new Setup(Run("waiting", age));
+        setup.Watcher.GatesByRun[9] = [Gate(waitTimer)];
+        var seen = await setup.Run();
+        Assert.Equal(request is null ? [] : [request], setup.Doorbell.Cancels);
+        // It still marks its target active: it holds the target's concurrency group until it stops.
+        Assert.Empty(setup.Doorbell.Dispatches);
+        if (request is not null) Assert.Single(seen.StuckRuns!);
+        Assert.Contains("runs-in:waiting,queued,pending,requested", setup.Watcher.Reads);
+    }
+
+    // PR #72 review: a target whose gates went unread is named as unjudged, so its alert keeps its state.
+    [Fact]
+    public async Task UnreadableGatesLeaveTheTargetUnjudged()
+    {
+        var setup = new Setup(Run("waiting", 60));
+        setup.Watcher.GatesError = true;
+        Assert.Equal([Target], (await setup.Run()).StuckUnjudged);
+    }
+
     // An unreadable run list says nothing about stuck runs, so their alerts are neither raised nor cleared.
     [Fact]
     public async Task AnUnreadableRunListSaysNothingAboutStuckRuns()
@@ -179,7 +206,8 @@ public class StuckRunTests
         public DateTimeOffset At { get; set; } = Now;
         public WorkerAlerts Alerts { get; }
         public Alerting() => Alerts = new(new Alerts(Doorbell, WatcherRepo), new NoFailures(), NullLogger.Instance, Now, () => At);
-        public Task Cycle(IReadOnlyList<StuckRun>? stuck) => Alerts.Review(new() { StuckRuns = stuck }, null, Ct);
+        public Task Cycle(IReadOnlyList<StuckRun>? stuck, params string[] unjudged) =>
+            Alerts.Review(new() { StuckRuns = stuck, StuckUnjudged = unjudged }, null, Ct);
         public string[] Titles => Doorbell.IssueList.Select(i => i.Title).ToArray();
         public string Body(string title) => Doorbell.IssueList.Single(i => i.Title == title).Body ?? "";
         public int Comments(string title) => Doorbell.CommentsByIssue.GetValueOrDefault(Doorbell.IssueList.Single(i => i.Title == title).Number, []).Count;
@@ -246,5 +274,27 @@ public class StuckRunTests
         await setup.Cycle([Stuck(StuckStage.ForceCancel, "owner/a")]);
         Assert.Equal(1, setup.Comments("`watch.yml` run stuck `waiting` on owner/a"));
         Assert.Equal(0, setup.Comments("`watch.yml` run stuck `waiting` on owner/b"));
+    }
+
+    // PR #72 review: a cycle that could not read a target's gates neither clears its alert nor restarts the hour, so the
+    // next successful read two minutes later is not a second alert.
+    [Fact]
+    public async Task AnUnreadGateKeepsTheAlertsHourlyLimit()
+    {
+        var setup = new Alerting();
+        await setup.Cycle([Stuck(StuckStage.Cancel)]);
+        setup.At = Now.AddMinutes(1);
+        await setup.Cycle([], Target);
+        setup.At = Now.AddMinutes(2);
+        await setup.Cycle([Stuck(StuckStage.Cancel)]);
+        Assert.Equal(["`watch.yml` run stuck `waiting` on owner/repo"], setup.Titles);
+        Assert.Equal(0, setup.Comments("`watch.yml` run stuck `waiting` on owner/repo"));
+
+        // Another target's unread gates do not hold this one's alert: once its run is gone, it clears.
+        setup.At = Now.AddMinutes(3);
+        await setup.Cycle([], "owner/other");
+        setup.At = Now.AddMinutes(4);
+        await setup.Cycle([Stuck(StuckStage.Cancel)]);
+        Assert.Equal(1, setup.Comments("`watch.yml` run stuck `waiting` on owner/repo"));
     }
 }

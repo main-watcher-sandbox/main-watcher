@@ -21,7 +21,7 @@ confidence: confirmed
 | ADR-002 | [Merge-queue gate](decisions/ADR-002-merge-queue-gate.md) | adr | target | accepted (amended by ADR-008, ADR-014, ADR-016) | platform-team | 2026-09-15 | Native pause ships |
 | ADR-003 | [State in GitHub](decisions/ADR-003-state-in-github.md) | adr | target | accepted (amended by ADR-013, ADR-017) | platform-team | 2026-09-15 | Walk-back above 50 calls |
 | ADR-004 | [Resolution semantics](decisions/ADR-004-resolution-semantics.md) | adr | target | accepted | platform-team | 2026-09-15 | Override frequency |
-| ADR-007 | [Test result contract: CTRF](decisions/ADR-007-ctrf-test-result-contract.md) | adr | target | accepted | platform-team | 2026-09-15 | A non-xUnit-v3 target appears |
+| ADR-007 | [Test result contract: CTRF](decisions/ADR-007-ctrf-test-result-contract.md) | adr | target | accepted (amended by ADR-021) | platform-team | 2026-09-15 | A non-xUnit target appears |
 | ADR-008 | [Gate fails open, with reconciliation](decisions/ADR-008-gate-fails-open-with-reconciliation.md) | adr | target | accepted (amended by ADR-014, ADR-015) | platform-team | 2026-09-15 | Unlabelled merges during a lock |
 | ADR-009 | [Tests run in target repos](decisions/ADR-009-tests-run-in-target-repos.md) | adr | target | accepted | platform-team | 2026-09-15 | `actions: write` rejected |
 | ADR-010 | [Self-hosted trigger worker](decisions/ADR-010-self-hosted-trigger-worker.md) | adr | target | accepted (amended by ADR-012, ADR-013, ADR-014, ADR-017) | platform-team | 2026-09-15 | Webhook hosting available |
@@ -35,6 +35,7 @@ confidence: confirmed
 | ADR-018 | [Reporter history and test job token](decisions/ADR-018-reporter-history-and-test-job-token.md) | adr | target | accepted | platform-team | 2026-09-16 | Reporter pin updated |
 | ADR-019 | [Wait for final job steps](decisions/ADR-019-wait-for-final-job-steps.md) | adr | target | accepted | platform-team | 2026-09-23 | Steps slow to become final |
 | ADR-020 | [Stuck watch.yml runs](decisions/ADR-020-stuck-watch-runs.md) | adr | target | accepted | platform-team | 2026-09-23 | "watch.yml run stuck" alerts recur |
+| ADR-021 | [xUnit 4.x CTRF](decisions/ADR-021-xunit-4-ctrf.md) | adr | target | accepted | platform-team | 2026-09-23 | A target on another xUnit major version |
 | TS-001 | [Test strategy](test-strategy.md) | test-strategy | target | draft | platform-team | 2026-09-16 | 2027-03-15 |
 
 ### Superseded (kept for history)

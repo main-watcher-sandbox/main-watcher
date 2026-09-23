@@ -56,7 +56,12 @@
               "duration": { "type": "integer" },
               "start": { "type": "integer" },
               "stop": { "type": "integer" },
-              "suite": { "type": "string" },
+              "suite": {
+                "oneOf": [
+                  { "type": "string" },
+                  { "type": "array", "minItems": 1, "items": { "type": "string" } }
+                ]
+              },
               "message": { "type": "string" },
               "trace": { "type": "string" },
               "snippet": { "type": "string" },

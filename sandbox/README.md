@@ -23,6 +23,7 @@ Material for the scenario-test sandbox, the `main-watcher-sandbox` organisation 
 | `issue-26-validation.md` | The dry run through its own workflow and the CLI, its resume path, both branches of the renamed `lock.yml`'s guard, and TS-S5 as the onboarding guide runs it, for #26 |
 | `issue-25-validation.md` | The scenario suite's first runs: what they found and how long they took, for #25 |
 | `issue-53-validation.md` | The replica's CI green on its own sandbox target list, once `CommittedTargetListParses` scoped its sandbox-target clause to this repo, for #53 |
+| `issue-67-validation.md` | TS-S19: a `watch.yml` cycle held for a listed reviewer, left alone by the worker and named in an alert; the target tested once it was cleared, for #67 |
 | `sample-target/` | Template for the synthetic target repos. Its [README](sample-target/README.md) lists the `sandbox.json` switches |
 | `rulesets/main-merge-queue.json` | The merge-queue ruleset applied to `main` in each sandbox target |
 | `publish-public.sh` | Publishes the gate action, the reusable test workflow and their .NET projects to the public `main-watcher-sandbox/gate` repo |

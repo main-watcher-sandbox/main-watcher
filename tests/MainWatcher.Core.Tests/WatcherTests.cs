@@ -16,7 +16,48 @@ public class WatcherTests
     {
         var result = CtrfReader.Read([Fixture("project-0.json"), Fixture("project-1.json"), Fixture("failed-project.json")]);
         Assert.True(result.Known);
-        Assert.Contains(result.Failures, f => f.Name.Contains("Alpha") && f.Suite.Length > 0);
+        Assert.Contains(result.Failures, f => f.Name.Contains("Alpha") && f.Suite == "SampleTarget.Tests.OutcomeTests");
+    }
+
+    // ADR-021: xUnit 4.x writes suite as an array led by two hashes, and a retry leaves an empty report for a project with
+    // nothing to retry. The reports are the sandbox's, merged by the test runner: Beta failed twice, Flaky passed on its retry.
+    [Fact]
+    public void MergesRealXunit4ProjectsAndListsFailuresUnderTheirClass()
+    {
+        var result = CtrfReader.Read([Fixture("xunit4-project.json"), Fixture("xunit4-failed-project.json"), Fixture("xunit4-empty-retry.json")]);
+        Assert.True(result.Known);
+        var failure = Assert.Single(result.Failures);
+        Assert.Equal("SampleTarget.Tests.OutcomeTests.Beta", failure.Name);
+        Assert.Equal("SampleTarget.Tests.OutcomeTests", failure.Suite);
+        Assert.Equal("sandbox.json failing_tests includes Beta", failure.Message);
+        Assert.Equal(2, result.Timing!.Retried);
+        Assert.Equal("SampleTarget.Timing.Tests.Duration20Seconds.Takes20Seconds", result.Timing.Slowest[0].Name);
+        Assert.Equal(20_103, result.Timing.Slowest[0].DurationMs);
+    }
+
+    [Theory]
+    [InlineData("\"GUID\"", "GUID")]
+    [InlineData("[\"hash\",\"Ns.Class\"]", "Ns.Class")]
+    [InlineData(null, "unknown suite")]
+    public void WithoutXunitsTypeTheSuiteIsTheCtrfSuiteOrItsImmediateParent(string? suite, string expected)
+    {
+        var json = JsonNode.Parse(Fixture("xunit4-failed-project.json"))!;
+        var failed = json["results"]!["tests"]!.AsArray().First(t => t!["status"]!.GetValue<string>() == "failed")!.AsObject();
+        failed["extra"]!.AsObject().Remove("type");
+        failed.Remove("suite");
+        if (suite is not null) failed["suite"] = JsonNode.Parse(suite);
+        Assert.Equal(expected, Assert.Single(CtrfReader.Read([json.ToJsonString()]).Failures).Suite);
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("[\"hash\",1]")]
+    [InlineData("{\"name\":\"Ns.Class\"}")]
+    public void ASuiteThatIsNeitherAStringNorAPathOfStringsIsInvalid(string suite)
+    {
+        var json = JsonNode.Parse(Fixture("xunit4-failed-project.json"))!;
+        json["results"]!["tests"]![0]!["suite"] = JsonNode.Parse(suite);
+        Assert.False(CtrfReader.Read([json.ToJsonString()]).Known);
     }
 
     [Fact]
@@ -3116,6 +3157,8 @@ public class WatcherTests
             return Task.FromResult(CancelRefusal);
         }
         public Task<IReadOnlyList<PendingDeployment>> PendingDeployments(string repo, long runId, CancellationToken ct) =>
+            throw new NotSupportedException();
+        public Task<IReadOnlyList<WorkflowRun>> RunsIn(string repo, string workflow, IReadOnlyList<string> statuses, CancellationToken ct) =>
             throw new NotSupportedException();
         public Task Output(string repo, long checkId, string title, string summary, CancellationToken ct)
         {

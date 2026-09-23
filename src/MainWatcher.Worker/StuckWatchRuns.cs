@@ -49,6 +49,13 @@ public static class StuckWatchRuns
     /// </summary>
     public static bool Unstarted(WorkflowRun run) => run.Status is not ("in_progress" or "completed");
 
+    /// <summary>
+    /// The statuses a run has before it starts, which the worker lists whatever the run's age: a wait timer can put the
+    /// deadline past <see cref="TriggerCycle.ActiveRunWindow"/>, and a run that cannot be stopped is force-cancelled until it
+    /// stops (PR #72 review).
+    /// </summary>
+    public static readonly string[] UnstartedStatuses = ["waiting", "queued", "pending", "requested"];
+
     /// <summary>Whether the run is old enough for its gates to be worth reading. Nothing is read for a younger one.</summary>
     public static bool Due(WorkflowRun run, DateTimeOffset now) => Unstarted(run) && now - run.CreatedAt >= Deadline;
 

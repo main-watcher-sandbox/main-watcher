@@ -25,8 +25,23 @@ ARCH-001 §10 is the same list in one paragraph; this is the working copy.
 
 The target must already merge through a **GitHub merge queue** on `main`: the gate is a required check of that
 queue and does nothing without one (ADR-002). Its integration tests must run on GitHub-hosted runners, or on
-runners the team owns (A-4), and produce **CTRF** JSON (ADR-007) — xUnit v3 on Microsoft Testing Platform writes
-it directly. A suite that finishes in well under 30 minutes keeps detection quick (A-2, NFR-1).
+runners the team owns (A-4), and produce **CTRF** JSON (ADR-007), one report per test project. xUnit (the
+`xunit.v3` package, 3.x or 4.x) on Microsoft Testing Platform writes it directly. A suite that finishes in well
+under 30 minutes keeps detection quick (A-2, NFR-1).
+
+The option depends on the xUnit version (ADR-021). Set it once for every test project, in the repository's
+`Directory.Build.props`:
+
+```xml
+<PropertyGroup>
+  <!-- xUnit 4.x. On 3.x the options are --report-ctrf and --report-ctrf-filename. -->
+  <TestingPlatformCommandLineArguments>$(TestingPlatformCommandLineArguments) --report-xunit-ctrf --report-xunit-ctrf-filename $(MSBuildProjectName).ctrf.json</TestingPlatformCommandLineArguments>
+</PropertyGroup>
+```
+
+Keep the file name per project. xUnit 4.x writes every project's report to the one `TestResults/` folder at the
+repository root, so a fixed name leaves only the last project's report, and the others' failures go unlisted.
+The wrong option for the version is rejected: the test run exits with code 5 and writes no report.
 
 The watcher repository must also allow its reusable workflows to be used by other repositories in the
 organisation (ARCH-001 §8); that is set once for the organisation, not per target. So is its `reporter`
@@ -168,7 +183,7 @@ What the failures mean:
 | Gate workflow | The gate was not copied, or was edited until it no longer runs the gate action |
 | Test run | Actions is disabled in the target, the caller is not on `main`, or its `run-name` was changed |
 | Test outcome | A neutral result: setup failed before the tests, or they did not finish. The detail lists the job's steps. A completed run with no `main-watcher` job is a renamed job in the caller |
-| CTRF reports | `results_glob` does not match what the suite writes, or the reports are not CTRF |
+| CTRF reports | `results_glob` does not match what the suite writes, or the reports are not CTRF. A test log ending in exit code 5 ("Zero tests ran") is the CTRF option of the other xUnit version (section "Before you start") |
 
 Fix and dry-run again; it is repeatable and leaves nothing behind.
 

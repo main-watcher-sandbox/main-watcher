@@ -25,9 +25,12 @@ Every `check_period` (default 60 s), the worker:
    run acts on the current state, so another dispatch would only queue a cycle with nothing
    left to do. `watch.yml`'s `run-name` is `watch <owner/repo>`, which is how the worker
    tells whose cycle it is. When that read fails, no target is skipped, because a duplicate
-   dispatch is harmless (ADR-010). A run that has not started by its deadline is stopped
-   first ([below](#a-cycle-that-does-not-start)), since until it completes it blocks its
-   target;
+   dispatch is harmless (ADR-010). That read covers runs created in the last two hours; runs
+   not yet started are also listed by status whatever their age, one request each for
+   `waiting`, `queued`, `pending` and `requested`, so four more requests a cycle from
+   `mw-observer`'s watcher-repo budget (R-13). A run that has not started by its deadline is
+   stopped first ([below](#a-cycle-that-does-not-start)), since until it completes it blocks
+   its target;
 3. for each enabled target, looks for work (below) through that target's `mw-observer`
    gateway, reusing one `GitHubGateway` per target so its check-run snapshot is kept;
 4. starts `watch.yml` once for each target with work, through `mw-doorbell`, passing
@@ -56,7 +59,8 @@ was. Before stopping a `waiting` run, the worker reads its `pending_deployments`
 `mw-observer`. When a gate lists reviewers, a person can approve it, so the run is left alone
 and "`watch.yml` run waiting for a reviewer on `owner/repo`" names them; the `reporter`
 environment must have none ([watcher.md](watcher.md)). When that read fails, nothing is
-cancelled and the failure counts towards "cycles keep failing". Once the run has completed,
+cancelled, the failure counts towards "cycles keep failing", and the target's stuck-run alerts
+are left as they were, neither cleared nor raised again before their hour is up. Once the run has completed,
 the next cycle dispatches again, as often as it takes. A `sweep` run names no target and is
 never stopped by this rule; a stuck one holds each target's concurrency group, so the targets'
 own runs show up here as stuck `pending` until a person cancels the sweep. All
