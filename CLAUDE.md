@@ -87,7 +87,7 @@ was reported neutral with no lock (MainWatcher#65). A sandbox capture reproduced
 ## Where things are
 
 - `docs/architecture/architecture.md` — the main document (ARCH-001). Start here.
-- `docs/architecture/decisions/` — ADR-001 to ADR-019.
+- `docs/architecture/decisions/` — ADR-001 to ADR-020.
   - ADR-005 is superseded by ADR-007; ADR-006 is superseded by ADR-009.
   - ADR-013 to ADR-017 were accepted on 2026-09-15 (CQ-10 to CQ-14). They amend
     ADR-002, ADR-003, ADR-008 and ADR-010, which carry a note saying so.
@@ -95,10 +95,13 @@ was reported neutral with no lock (MainWatcher#65). A sandbox capture reproduced
     and the test job's `actions: read`.
   - ADR-019 (2026-09-23, MainWatcher#65) amends ADR-013: a completed job whose steps GitHub has
     not yet written down is not judged for up to 5 minutes.
+  - ADR-020 (2026-09-23, MainWatcher#67, not yet built) amends ADR-010 and ADR-013: the worker
+    cancels a `watch.yml` run for a target that has not started 20 minutes after it was created, and
+    the `reporter` environment must have no required reviewers.
   - Accepted ADRs are never edited. A changed decision gets a new ADR that supersedes or
     amends the old one, plus a note at the top of the old one.
-- `docs/architecture/test-strategy.md` — TS-001: scenario tests TS-S1–S18, unit tests
-  TS-U1–U15.
+- `docs/architecture/test-strategy.md` — TS-001: scenario tests TS-S1–S19, unit tests
+  TS-U1–U17.
 - `docs/architecture/artifact-index.md` — what exists, what was deliberately not produced,
   and why.
 - `docs/architecture/diagrams/` — PNG renders. The Mermaid sources inside the markdown are
