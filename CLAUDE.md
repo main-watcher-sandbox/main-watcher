@@ -82,7 +82,10 @@ so nothing it does can lock a repository still being onboarded. Rollback is docu
 through its workflow and the CLI, a red suite that passed it while creating no check run and no lock, a resume that
 started no second test, both branches of the renamed `lock.yml`'s guard, and TS-S5 as the guide runs it. A red `main` read the instant its job completed, before GitHub had written the job's steps down,
 was reported neutral with no lock (MainWatcher#65). A sandbox capture reproduced that
-(`sandbox/issue-65-validation.md`), and ADR-019 now waits up to 5 minutes for the steps to become final.
+(`sandbox/issue-65-validation.md`), and ADR-019 now waits up to 5 minutes for the steps to become final. A `watch.yml`
+run that has not started 20 minutes after it was created no longer blocks its target (MainWatcher#67): the worker
+cancels it, force-cancels it and alerts, unless a gate lists a reviewer, which it names in an alert instead; the
+`reporter` environment must have none (ADR-020). TS-S19 passed with a cycle held for a real reviewer.
 
 ## Where things are
 
@@ -95,7 +98,7 @@ was reported neutral with no lock (MainWatcher#65). A sandbox capture reproduced
     and the test job's `actions: read`.
   - ADR-019 (2026-09-23, MainWatcher#65) amends ADR-013: a completed job whose steps GitHub has
     not yet written down is not judged for up to 5 minutes.
-  - ADR-020 (2026-09-23, MainWatcher#67, not yet built) amends ADR-010 and ADR-013: the worker
+  - ADR-020 (2026-09-23, MainWatcher#67) amends ADR-010 and ADR-013: the worker
     cancels a `watch.yml` run for a target that has not started 20 minutes after it was created, and
     the `reporter` environment must have no required reviewers.
   - Accepted ADRs are never edited. A changed decision gets a new ADR that supersedes or
@@ -133,7 +136,7 @@ was reported neutral with no lock (MainWatcher#65). A sandbox capture reproduced
   `sandbox/issue-20-validation.md`, `sandbox/issue-21-validation.md`,
   `sandbox/issue-22-validation.md`, `sandbox/issue-23-validation.md`, `sandbox/issue-24-validation.md`,
   `sandbox/issue-25-validation.md`, `sandbox/issue-26-validation.md`, `sandbox/issue-53-validation.md`,
-  `sandbox/issue-60-validation.md` and `sandbox/issue-65-validation.md`.
+  `sandbox/issue-60-validation.md`, `sandbox/issue-65-validation.md` and `sandbox/issue-67-validation.md`.
 - `sandbox/run-scenarios.sh` runs the scenario suite (`sandbox/scenarios/`, a .NET console app), which a release requires.
   Read `docs/release.md` for releasing and the release App's one-time setup.
 - `templates/main-watcher-gate.yml` — the gate workflow targets copy. It runs
