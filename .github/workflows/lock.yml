@@ -79,6 +79,8 @@ jobs:
           REPO: ${{ steps.target.outputs.repo }}
           ACTION: ${{ inputs.action }}
           LEASE_HOURS: ${{ inputs.lease_hours }}
+          # The App's own slug: main-watcher in the sandbox, actium-main-watcher in production.
+          APP_SLUG: ${{ steps.token.outputs.app-slug }}
         run: |
           set -euo pipefail
           if [ "$ACTION" = open ]; then
@@ -89,6 +91,6 @@ jobs:
               "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$lease_until")"
             gh issue create -R "$REPO" --title "main is broken (hand-made lock)" --label main-broken --body "$body"
           else
-            gh issue list -R "$REPO" --state open --label main-broken --author 'app/main-watcher' --json number --jq '.[].number' |
+            gh issue list -R "$REPO" --state open --label main-broken --author "app/$APP_SLUG" --json number --jq '.[].number' |
               while read -r number; do gh issue close "$number" -R "$REPO" --comment "Closed by the lock workflow."; done
           fi
