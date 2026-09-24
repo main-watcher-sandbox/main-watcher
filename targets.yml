@@ -12,10 +12,10 @@ targets:
   - repo: main-watcher-sandbox/sample-target-10
     test_command: dotnet test --no-restore
     results_glob: '**/TestResults/*.ctrf.json'
-    timeout: 2
+    timeout: 30
     poll_interval: 1
     notify: [pat-actium]
-    enabled: false
+    enabled: true
   - repo: main-watcher-sandbox/sample-target-2
     test_command: dotnet test --no-restore
     results_glob: '**/TestResults/*.ctrf.json'
