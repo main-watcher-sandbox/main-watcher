@@ -96,6 +96,17 @@ whose caller has drifted, so a mismatch means the repository is never tested.
 
 The gate workflow is copied as it is and updated from the template, never edited in place.
 
+**Create the `fixes-main` label** in the target repository. Nothing in Main Watcher creates it: the gate and
+reconciliation only read it, and a pull request cannot carry a label that does not exist, so without it nothing can
+merge while `main` is locked. Step 7 needs it too.
+
+```bash
+gh label create fixes-main -R acme/checkout --color 0e8a16 --description "Fixes main; can merge while main is locked"
+```
+
+The lock's own label, `main-broken`, needs nothing: `main-watcher` creates it with the first lock it opens, whether
+a cycle's or `lock.yml`'s.
+
 ## 3. Set up the tests' secrets
 
 The tests run in the target repository, under its own secrets, and the watcher never sees them (ADR-009, FR-5).
