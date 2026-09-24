@@ -43,6 +43,13 @@ sed -i "/# sandbox: upload switches are inserted here/r $root/sandbox/upload-swi
 grep -q "uses: $runner_uses$" "$workflow"
 grep -q "name: sandbox upload switches" "$workflow"
 
+# The gate's default lock author is the production App. The sandbox's App is main-watcher, the name
+# the sandbox org registered first, so its targets' gate must trust that login instead.
+gate_action=.github/actions/gate/action.yml
+sed -i 's/\r$//' "$gate_action"
+sed -i 's/^    default: actium-main-watcher\[bot\]$/    default: main-watcher[bot]/' "$gate_action"
+grep -q "^    default: main-watcher\[bot\]$" "$gate_action"
+
 cat > README.md <<README
 # Main Watcher sandbox parts
 

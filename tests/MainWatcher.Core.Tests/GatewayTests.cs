@@ -407,7 +407,7 @@ public class GatewayTests
                 return Response("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"" + Convert.ToBase64String(Encoding.UTF8.GetBytes("* @team")) + "\\n\"}");
             if (path.Contains("/contents/")) return new HttpResponseMessage(HttpStatusCode.NotFound);
             if (path.EndsWith("/labels")) return new HttpResponseMessage(HttpStatusCode.UnprocessableEntity);
-            const string issue = """{"number":5,"title":"main is broken","body":"b","html_url":"https://github.com/owner/repo/issues/5","user":{"login":"main-watcher[bot]","type":"Bot"}}""";
+            const string issue = """{"number":5,"title":"main is broken","body":"b","html_url":"https://github.com/owner/repo/issues/5","user":{"login":"actium-main-watcher[bot]","type":"Bot"}}""";
             return Response(request.Method == HttpMethod.Get
                 ? $$$"""[{{{issue}}},{"number":6,"title":"pr","html_url":"u","user":{"login":"x","type":"User"},"pull_request":{}}]"""
                 : issue);
@@ -418,7 +418,7 @@ public class GatewayTests
         Assert.Equal("", await gateway.File("owner/repo", "empty", ct));
         Assert.Equal("* @team", await gateway.File("owner/repo", "owners", ct));
         var open = Assert.Single(await gateway.OpenIssues("owner/repo", "main-broken", ct));
-        Assert.Equal(new Issue(5, "main is broken", "b", "main-watcher[bot]", "Bot", "https://github.com/owner/repo/issues/5"), open);
+        Assert.Equal(new Issue(5, "main is broken", "b", "actium-main-watcher[bot]", "Bot", "https://github.com/owner/repo/issues/5"), open);
         Assert.Equal(5, (await gateway.CreateIssue("owner/repo", "t", "body", "main-broken", ct)).Number);
         await gateway.Close("owner/repo", 5, "completed", null, ct);
         Assert.Contains(requests, r => r.StartsWith("GET /repos/owner/repo/issues?state=open&labels=main-broken"));
@@ -435,17 +435,17 @@ public class GatewayTests
             var path = request.RequestUri!.PathAndQuery;
             requests.Add($"{request.Method} {path} {(request.Content is null ? "" : await request.Content.ReadAsStringAsync())}");
             if (request.Method == HttpMethod.Patch) return Response("{}");
-            if (path.Contains("/comments")) return Response("""[{"body":"x","user":{"login":"main-watcher[bot]","type":"Bot"}},{"body":"y","user":null}]""");
-            if (path.Contains("/issues?")) return Response("""[{"number":5,"title":"t","body":"b","html_url":"u","state":"closed","state_reason":"duplicate","updated_at":"2026-09-16T18:00:00Z","id":5488651743,"user":{"login":"main-watcher[bot]","type":"Bot"}}]""");
+            if (path.Contains("/comments")) return Response("""[{"body":"x","user":{"login":"actium-main-watcher[bot]","type":"Bot"}},{"body":"y","user":null}]""");
+            if (path.Contains("/issues?")) return Response("""[{"number":5,"title":"t","body":"b","html_url":"u","state":"closed","state_reason":"duplicate","updated_at":"2026-09-16T18:00:00Z","id":5488651743,"user":{"login":"actium-main-watcher[bot]","type":"Bot"}}]""");
             return Response(path.EndsWith("/5")
-                ? """{"number":5,"closed_by":{"login":"alice","type":"User"},"user":{"login":"main-watcher[bot]","type":"Bot"}}"""
-                : """{"number":6,"closed_by":null,"user":{"login":"main-watcher[bot]","type":"Bot"}}""");
+                ? """{"number":5,"closed_by":{"login":"alice","type":"User"},"user":{"login":"actium-main-watcher[bot]","type":"Bot"}}"""
+                : """{"number":6,"closed_by":null,"user":{"login":"actium-main-watcher[bot]","type":"Bot"}}""");
         }));
         var gateway = new GitHubGateway(http, 1);
         var ct = TestContext.Current.CancellationToken;
         var issue = Assert.Single(await gateway.Issues("owner/repo", "main-broken", DateTimeOffset.Parse("2026-08-17T19:00:00Z"), ct));
-        Assert.Equal(new Issue(5, "t", "b", "main-watcher[bot]", "Bot", "u", "closed", "duplicate", DateTimeOffset.Parse("2026-09-16T18:00:00Z"), 5488651743), issue);
-        Assert.Equal(new IssueComment[] { new("x", "main-watcher[bot]", "Bot"), new("y", "", "") }, await gateway.Comments("owner/repo", 5, null, ct));
+        Assert.Equal(new Issue(5, "t", "b", "actium-main-watcher[bot]", "Bot", "u", "closed", "duplicate", DateTimeOffset.Parse("2026-09-16T18:00:00Z"), 5488651743), issue);
+        Assert.Equal(new IssueComment[] { new("x", "actium-main-watcher[bot]", "Bot"), new("y", "", "") }, await gateway.Comments("owner/repo", 5, null, ct));
         Assert.Equal(new Account("alice", "User"), await gateway.ClosedBy("owner/repo", 5, ct));
         Assert.Null(await gateway.ClosedBy("owner/repo", 6, ct));
         await gateway.EditBody("owner/repo", 5, "new", ct);
@@ -852,7 +852,7 @@ public class GatewayTests
     public async Task IssuesCarryTheirCreationAndClosureTimes()
     {
         using var http = Client(new Handler(_ => Task.FromResult(Response(
-            "[{\"number\":1,\"title\":\"main is broken\",\"body\":\"\",\"user\":{\"login\":\"main-watcher[bot]\",\"type\":\"Bot\"},"
+            "[{\"number\":1,\"title\":\"main is broken\",\"body\":\"\",\"user\":{\"login\":\"actium-main-watcher[bot]\",\"type\":\"Bot\"},"
             + "\"state\":\"closed\",\"created_at\":\"2026-09-17T08:00:00Z\",\"closed_at\":\"2026-09-17T10:00:00Z\"}]"))));
         var issue = Assert.Single(await new GitHubGateway(http, 1).Issues("owner/repo", "main-broken",
             DateTimeOffset.Parse("2026-09-01T00:00:00Z"), TestContext.Current.CancellationToken));

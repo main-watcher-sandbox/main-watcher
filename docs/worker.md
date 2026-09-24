@@ -1,6 +1,6 @@
 ---
 owner: platform-team
-reviewed: 2026-09-23
+reviewed: 2026-09-24
 review_by: 2027-03-15
 ---
 
@@ -171,7 +171,7 @@ the worker exits with code 2 without starting a cycle.
 | `MW_DOORBELL_APP_ID`, `MW_DOORBELL_KEY_FILE` | `mw-doorbell`'s App ID and PEM private key file | Required |
 | `MW_CHECK_PERIOD_SECONDS` | Cycle interval, 10 to 3600 | 60 |
 | `MW_TARGETS_PATH` | Path of the target list in the watcher repo | `targets.yml` |
-| `MW_BOT_LOGIN` | The App that authors lock issues, whose leases the worker reads | `main-watcher[bot]` |
+| `MW_BOT_LOGIN` | The App that authors lock issues, whose leases the worker reads | `actium-main-watcher[bot]`, the production App; the sandbox overlay sets `main-watcher[bot]` |
 | `MW_GITHUB_API_URL` | GitHub REST base URL | `https://api.github.com/` |
 | `ASPNETCORE_HTTP_PORTS` | The port `/healthz` listens on | 8080 in the image |
 

@@ -1,6 +1,6 @@
 ---
 owner: platform-team
-reviewed: 2026-09-23
+reviewed: 2026-09-24
 review_by: 2027-03-15
 ---
 
@@ -57,6 +57,8 @@ Add the repository to the **selected repositories** of:
 | --- | --- | --- |
 | `main-watcher` | Metadata R, Contents R, Checks W, Issues W, Actions W | Check runs, the lock issue, starting and stopping test runs |
 | `mw-observer` | Metadata R, Contents R, Checks R, Actions R, Issues R | The trigger worker's reads |
+
+The table names each App by its role. In production they are registered as `actium-main-watcher`, and so on, because GitHub App names are global and the sandbox organisation holds the short ones. The lock author the gate trusts is `actium-main-watcher[bot]`, which the gate action has as its default, so the copied gate workflow needs no input for it.
 
 **Never install either App on all repositories** (R-11): a leaked key then reaches every repository in the
 organisation. `mw-doorbell` is installed on the watcher repository only and needs nothing here.
