@@ -176,7 +176,7 @@ public class WorkerTests
         Assert.Null(await new WorkFinder(() => Now).Work(Watched(), target, Ct));
     }
 
-    static Issue Lock(int number, DateTimeOffset? until, string author = "main-watcher[bot]", string type = "Bot") =>
+    static Issue Lock(int number, DateTimeOffset? until, string author = "actium-main-watcher[bot]", string type = "Bot") =>
         new(number, "main is broken", until is null ? "Locked." : Markers.Set("Locked.", (Lease.Until, Markers.Stamp(until.Value))),
             author, type, $"https://github.com/owner/repo/issues/{number}");
 
@@ -233,7 +233,7 @@ public class WorkerTests
         Assert.NotNull(await new WorkFinder(() => Now, botLogin: "other-app[bot]").Work(Watched(), target, Ct));
     }
 
-    static Issue ClosedLock(int number, DateTimeOffset closed, string? body = "Locked.", string author = "main-watcher[bot]") =>
+    static Issue ClosedLock(int number, DateTimeOffset closed, string? body = "Locked.", string author = "actium-main-watcher[bot]") =>
         new(number, "main is broken", body, author, "Bot", $"https://github.com/owner/repo/issues/{number}",
             "closed", "completed", closed, Id: number, CreatedAt: closed.AddHours(-1), ClosedAt: closed);
 
@@ -425,12 +425,12 @@ public class WorkerTests
         stuck.IssueList.Add(new(1, "main is broken",
             Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(200))),
                 (QueueSweep.Required, Markers.Stamp(Now.AddMinutes(-30)))),
-            "main-watcher[bot]", "Bot", "https://github.com/owner/stuck/issues/1"));
+            "actium-main-watcher[bot]", "Bot", "https://github.com/owner/stuck/issues/1"));
         setup.Targets["owner/stuck"] = stuck;
         // An idle target with a lock that owes nothing: it is examined, so its sweep clock would be cleared, not started.
         var idle = new FakeGitHub { CheckList = [Done()] };
         idle.IssueList.Add(new(2, "main is broken", Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(200)))),
-            "main-watcher[bot]", "Bot", "https://github.com/owner/idle/issues/2"));
+            "actium-main-watcher[bot]", "Bot", "https://github.com/owner/idle/issues/2"));
         setup.Targets["owner/idle"] = idle;
 
         var seen = (await setup.Cycle.Run(Ct)).Observations;

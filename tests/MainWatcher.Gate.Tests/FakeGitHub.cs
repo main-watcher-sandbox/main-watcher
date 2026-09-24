@@ -56,7 +56,7 @@ sealed class FakeGitHub : HttpMessageHandler
 
     public static string Sha(char c) => new(c, 40);
 
-    public static object Issue(int number, string body, string login = "main-watcher[bot]", string type = "Bot") =>
+    public static object Issue(int number, string body, string login = "actium-main-watcher[bot]", string type = "Bot") =>
         new { number, html_url = $"https://github.test/{Repo}/issues/{number}", body, user = new { login, type } };
 
     public static object Lock(int number, DateTimeOffset leaseUntil) =>

@@ -39,7 +39,8 @@ public sealed record GateEvent(string Name, string? BaseSha = null, string? Head
 /// </summary>
 public sealed class Gate(GitHubApi api, string repository, string botLogin = Gate.DefaultBotLogin)
 {
-    public const string DefaultBotLogin = "main-watcher[bot]";
+    /// <summary>The production App; <c>sandbox/publish-public.sh</c> sets the sandbox's in the published action.</summary>
+    public const string DefaultBotLogin = "actium-main-watcher[bot]";
     public const string LockLabel = "main-broken";
     public const string FixLabel = "fixes-main";
     public const string LockStatusUnknown = "LOCK STATUS UNKNOWN — failed open";

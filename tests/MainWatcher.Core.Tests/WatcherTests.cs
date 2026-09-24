@@ -229,7 +229,7 @@ public class WatcherTests
         var ct = TestContext.Current.CancellationToken;
         var capped = EligibilityFixtures.Named("head neutral three times reaches the cap");
         var fake = new FakeGitHub { CheckList = capped.Checks.ToList() };
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken: tests failed on head", "main-watcher[bot]", "Bot");
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken: tests failed on head", "actium-main-watcher[bot]", "Bot");
         // Not a lock the gate enforces, so not a lock the alert should name.
         fake.Seed("owner/repo", Reporter.LockLabel, "main is broken: opened by hand", "alice", "User");
         var watcher = new FakeGitHub();
@@ -275,10 +275,10 @@ public class WatcherTests
         var ct = TestContext.Current.CancellationToken;
         var fake = new FakeGitHub();
         var body = Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(30))));
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot", body);
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot", body);
         // Neither of these is a lock the gate enforces, so neither is a lease to keep alive.
         fake.Seed("owner/repo", Reporter.LockLabel, "main is broken: opened by hand", "alice", "User", body);
-        var closed = fake.Seed("owner/repo", Reporter.LockLabel, "an older lock", "main-watcher[bot]", "Bot", body);
+        var closed = fake.Seed("owner/repo", Reporter.LockLabel, "an older lock", "actium-main-watcher[bot]", "Bot", body);
         closed.Issue = closed.Issue with { State = "closed", StateReason = "completed" };
 
         var lines = await new Planner(fake, () => Now).Renew(new() { Repo = "owner/repo" }, ct);
@@ -295,7 +295,7 @@ public class WatcherTests
     {
         var ct = TestContext.Current.CancellationToken;
         var fake = new FakeGitHub();
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot", "Locked, with no marker.");
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot", "Locked, with no marker.");
         var target = TargetConfiguration.Parse("lock_lease: 10\ntargets:\n  - repo: owner/repo").Targets.Single();
         await new Planner(fake, () => Now).Renew(target, ct);
         var body = fake.Find("owner/repo", 1).Body;
@@ -312,7 +312,7 @@ public class WatcherTests
         var ct = TestContext.Current.CancellationToken;
         var expiry = Now.AddMinutes(-90);
         var fake = new FakeGitHub();
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot",
             Markers.Set("Locked.", (Lease.Until, Markers.Stamp(expiry))));
         var watcher = new FakeGitHub();
         var planner = new Planner(fake, () => Now, alerts: new Alerts(watcher, "owner/watcher"));
@@ -345,7 +345,7 @@ public class WatcherTests
     {
         var ct = TestContext.Current.CancellationToken;
         var fake = new FakeGitHub { StopAfterWrites = stopAfter };
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot",
             Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(-90)))));
         var watcher = new FakeGitHub();
         Planner Cycle() => new(fake, () => Now, alerts: new Alerts(watcher, "owner/watcher"));
@@ -367,7 +367,7 @@ public class WatcherTests
         var ct = TestContext.Current.CancellationToken;
         var first = Now.AddMinutes(-90);
         var fake = new FakeGitHub { StopAfterWrites = 1 };
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot",
             Markers.Set("Locked.", (Lease.Until, Markers.Stamp(first))));
         var watcher = new FakeGitHub();
         var target = new Target { Repo = "owner/repo" };
@@ -402,7 +402,7 @@ public class WatcherTests
         var ct = TestContext.Current.CancellationToken;
         var lapse = $"{Markers.Stamp(Now.AddMinutes(-90))}..{Markers.Stamp(Now.AddMinutes(-60))}";
         var fake = new FakeGitHub();
-        var closed = fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+        var closed = fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot",
             Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddHours(3))), (Lease.Lapsed, lapse)));
         closed.Issue = closed.Issue with { State = "closed", StateReason = "completed" };
         var watcher = new FakeGitHub();
@@ -429,7 +429,7 @@ public class WatcherTests
     {
         var ct = TestContext.Current.CancellationToken;
         var fake = new FakeGitHub();
-        var closed = fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+        var closed = fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot",
             Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(-90)))));
         closed.Issue = closed.Issue with { State = "closed", StateReason = "completed" };
         Assert.Empty(await new Planner(fake, () => Now).Renew(new() { Repo = "owner/repo" }, ct));
@@ -466,7 +466,7 @@ public class WatcherTests
         var ct = TestContext.Current.CancellationToken;
         var fake = new FakeGitHub();
         var span = new Lease.Lapse(Now.AddHours(-9), Now.AddHours(-2), 4);
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot",
             Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddHours(3))), (Lease.Lapsed, Lease.Field([span]))));
         var watcher = new FakeGitHub();
 
@@ -483,7 +483,7 @@ public class WatcherTests
     public async Task ALapseCannotBeReportedWithoutAnAlertSink()
     {
         var fake = new FakeGitHub();
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot",
             Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(-1)))));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             new Planner(fake, () => Now).Renew(new() { Repo = "owner/repo" }, TestContext.Current.CancellationToken));
@@ -557,7 +557,7 @@ public class WatcherTests
 
     /// <summary>A lock owing a sweep for <paramref name="minutesAgo"/> ago, swept to <paramref name="swept"/> if at all.</summary>
     static FakeIssue SeedSweep(FakeGitHub fake, int minutesAgo, int? swept = null) =>
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot",
             Markers.Set("Locked.", [(QueueSweep.Required, Markers.Stamp(Now.AddMinutes(-minutesAgo))),
                 .. swept is { } s ? new[] { (QueueSweep.Swept, Markers.Stamp(Now.AddMinutes(-s))) } : []]));
 
@@ -627,7 +627,7 @@ public class WatcherTests
     {
         var ct = TestContext.Current.CancellationToken;
         var fake = new FakeGitHub { StopAfterWrites = 1, Rerunning = Now };
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot",
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot",
             Markers.Set("Locked.", (Lease.Until, Markers.Stamp(Now.AddMinutes(-90))),
                 (QueueSweep.Required, Markers.Stamp(Now.AddHours(-5))), (QueueSweep.Swept, Markers.Stamp(Now.AddHours(-5)))));
         var watcher = new FakeGitHub();
@@ -722,7 +722,7 @@ public class WatcherTests
 
     /// <summary>A lock opened <paramref name="openedMinutesAgo"/> ago, with the body a real one carries.</summary>
     static FakeIssue SeedWindow(FakeGitHub fake, int openedMinutesAgo) =>
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot", LockBody(1, 'a'),
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot", LockBody(1, 'a'),
             Now.AddMinutes(-openedMinutesAgo));
 
     // TS-U4 (ADR-008): every unlabelled merge during an open lock is reported, each exactly once across runs.
@@ -774,7 +774,7 @@ public class WatcherTests
 
     // TS-U10 (ADR-015): a closed lock is reconciled up to its closure, however it closed, and then marked complete.
     [Theory]
-    [InlineData("main-watcher[bot]")]
+    [InlineData("actium-main-watcher[bot]")]
     [InlineData("alice")]
     public async Task AClosedLockIsReconciledUpToItsClosureAndThenMarkedComplete(string closer)
     {
@@ -1139,7 +1139,7 @@ public class WatcherTests
     {
         var ct = TestContext.Current.CancellationToken;
         var fake = new FakeGitHub { JobConclusion = "success", ReportResult = new(true, []) };
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot", "", Now.AddHours(-2));
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot", "", Now.AddHours(-2));
         fake.Blocked.Add(new(9001, 12, $"gh-readonly-queue/main/pr-12-{Sha('a')}", Now.AddHours(-1)));
         // The same pull request removed twice is named once; one removed before the lock opened is not this lock's doing.
         fake.Blocked.Add(new(9002, 12, $"gh-readonly-queue/main/pr-12-{Sha('b')}", Now.AddMinutes(-30)));
@@ -1163,7 +1163,7 @@ public class WatcherTests
     {
         var ct = TestContext.Current.CancellationToken;
         var fake = new FakeGitHub { JobConclusion = "success", ReportResult = new(true, []), BlockedError = true };
-        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "main-watcher[bot]", "Bot", "", Now.AddHours(-2));
+        fake.Seed("owner/repo", Reporter.LockLabel, "main is broken", "actium-main-watcher[bot]", "Bot", "", Now.AddHours(-2));
         await new Reporter(fake, clock: () => Now).Report(Locked, Pending(), ct);
         Assert.Contains("could not be read", fake.Comments.Single());
         Assert.Equal(new[] { "comment:1", "close:1", "complete:success" }, fake.Order);
@@ -1782,7 +1782,7 @@ public class WatcherTests
     public async Task GreenResultClosesEveryOpenAppLockBeforeCompletingTheCheck()
     {
         var fake = new FakeGitHub { JobConclusion = "success", ReportResult = new(true, []) };
-        fake.Seed("owner/repo", "main-broken", "main is broken", "main-watcher[bot]", "Bot");
+        fake.Seed("owner/repo", "main-broken", "main is broken", "actium-main-watcher[bot]", "Bot");
         fake.Seed("owner/repo", "main-broken", "hand-made", "someone", "User");
         await new Reporter(fake).Report(new() { Repo = "owner/repo" }, Pending(), TestContext.Current.CancellationToken);
         Assert.Equal(new[] { "comment:1", "close:1", "complete:success" }, fake.Order);
@@ -1794,7 +1794,7 @@ public class WatcherTests
     public async Task FailedCloseLeavesTheCheckInProgress()
     {
         var fake = new FakeGitHub { JobConclusion = "success", ReportResult = new(true, []), IssueError = true };
-        fake.Seed("owner/repo", "main-broken", "main is broken", "main-watcher[bot]", "Bot");
+        fake.Seed("owner/repo", "main-broken", "main is broken", "actium-main-watcher[bot]", "Bot");
         await Assert.ThrowsAsync<HttpRequestException>(() => new Reporter(fake)
             .Report(new() { Repo = "owner/repo" }, Pending(), TestContext.Current.CancellationToken));
         Assert.Null(fake.Conclusion);
@@ -1966,7 +1966,7 @@ public class WatcherTests
     public async Task ALaterFailingRunAddsOneCommentThatMentionsNobody()
     {
         var fake = new FakeGitHub { ReportResult = new(true, [new("Beta", "suite", "@owner broke it")]) };
-        fake.Seed("owner/repo", "main-broken", "main is broken", "main-watcher[bot]", "Bot", "@team\n\nfirst failure");
+        fake.Seed("owner/repo", "main-broken", "main is broken", "actium-main-watcher[bot]", "Bot", "@team\n\nfirst failure");
         await new Reporter(fake).Report(new() { Repo = "owner/repo", Notify = ["team"] }, Pending(Sha('e')) with { Id = 77 }, TestContext.Current.CancellationToken);
         Assert.Equal(new[] { "comment:1", "update:1", "complete:failure" }, fake.Order);
         var comment = Assert.Single(fake.Comments);
@@ -2033,7 +2033,7 @@ public class WatcherTests
     static readonly Target Watched = new() { Repo = "owner/repo", Notify = ["team"] };
     static string LockBody(long check, char sha) =>
         $"@team\n\nfirst failure\n\n<!-- main-watcher first_red={Sha(sha)} lease_until=2026-09-16T23:00:00Z reported_check={check} reported_sha={Sha(sha)} -->";
-    static FakeIssue SeedLock(FakeGitHub fake, long check, char sha) => fake.Seed("owner/repo", "main-broken", "main is broken", "main-watcher[bot]", "Bot", LockBody(check, sha));
+    static FakeIssue SeedLock(FakeGitHub fake, long check, char sha) => fake.Seed("owner/repo", "main-broken", "main is broken", "actium-main-watcher[bot]", "Bot", LockBody(check, sha));
 
     // TS-U8 (ADR-013): create, update and close sequences, each stopped after every issue write.
     [Theory]
@@ -2192,7 +2192,7 @@ public class WatcherTests
         var fake = new FakeGitHub();
         var closed = SeedLock(fake, 1, 'a');
         closed.Issue = closed.Issue with { State = "closed", StateReason = "completed" };
-        closed.ClosedBy = closerType == "Bot" ? new("main-watcher[bot]", "Bot") : new("alice", "User");
+        closed.ClosedBy = closerType == "Bot" ? new("actium-main-watcher[bot]", "Bot") : new("alice", "User");
         await new Reporter(fake).Report(Watched, Pending(Sha(sha)) with { Id = 5 }, TestContext.Current.CancellationToken);
         Assert.Equal("failure", fake.Conclusion);
         Assert.Equal(locks ? new[] { "create:owner/repo", "complete:failure" } : ["complete:failure"], fake.Order);
@@ -2251,7 +2251,7 @@ public class WatcherTests
         // Closed by the App before closing comments carried a marker.
         var legacy = SeedLock(fake, 4, 'd');
         legacy.Issue = legacy.Issue with { State = "closed" };
-        legacy.ClosedBy = new("main-watcher[bot]", "Bot");
+        legacy.ClosedBy = new("actium-main-watcher[bot]", "Bot");
         fake.Seed("owner/repo", "main-broken", "hand-made", "someone", "User");
         fake.CloseByHand("owner/repo", 4, "bob");
         SeedLock(fake, 6, 'e');
@@ -3030,7 +3030,7 @@ public class WatcherTests
         public Task<Issue> CreateIssue(string repo, string title, string body, string label, CancellationToken ct)
         {
             if (IssueError) throw new HttpRequestException("issues unavailable");
-            var issue = Seed(repo, label, title, "main-watcher[bot]", "Bot", body);
+            var issue = Seed(repo, label, title, "actium-main-watcher[bot]", "Bot", body);
             if (ListLags) unlisted.Add(issue.Issue.Number);
             Wrote($"create:{repo}");
             return Task.FromResult(issue.Issue);
@@ -3039,7 +3039,7 @@ public class WatcherTests
         {
             if (IssueError) throw new HttpRequestException("issues unavailable");
             if (Issues.TryGetValue(repo, out var list) && list.FirstOrDefault(i => i.Issue.Number == number) is { } issue)
-                issue.Comments.Add(new(body, "main-watcher[bot]", "Bot", ++commentIds));
+                issue.Comments.Add(new(body, "actium-main-watcher[bot]", "Bot", ++commentIds));
             if (ListLags) unlistedComments.Add(commentIds);
             Comments.Add(body);
             Wrote($"comment:{number}");
@@ -3058,7 +3058,7 @@ public class WatcherTests
             if (IssueError) throw new HttpRequestException("issues unavailable");
             var issue = Find(repo, number);
             issue.Issue = issue.Issue with { State = "closed", StateReason = reason };
-            issue.ClosedBy = new("main-watcher[bot]", "Bot");
+            issue.ClosedBy = new("actium-main-watcher[bot]", "Bot");
             Wrote($"close:{number}" + (reason == "completed" ? "" : $":{reason}") + (duplicateOf is null ? "" : $":{duplicateOf}"));
             return Task.CompletedTask;
         }
