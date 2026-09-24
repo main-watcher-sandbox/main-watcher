@@ -43,4 +43,4 @@ targets:
     timeout: 30
     poll_interval: 1
     notify: [pat-actium]
-    enabled: false
+    enabled: true
