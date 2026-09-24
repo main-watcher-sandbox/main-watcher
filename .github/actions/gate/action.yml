@@ -10,7 +10,8 @@ inputs:
     default: ${{ github.token }}
   bot-login:
     description: Login of the App that authors lock issues.
-    default: main-watcher[bot]
+    # The production App. sandbox/publish-public.sh sets the sandbox App's, main-watcher[bot].
+    default: actium-main-watcher[bot]
 
 outputs:
   fail-open-reason:

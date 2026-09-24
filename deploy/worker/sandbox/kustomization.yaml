@@ -25,6 +25,8 @@ configMapGenerator:
       - MW_MAIN_WATCHER_APP_ID=4966469
       - MW_OBSERVER_APP_ID=4966600
       - MW_DOORBELL_APP_ID=4966655
+      # The sandbox main-watcher App's login; the worker's default is the production App's.
+      - MW_BOT_LOGIN=main-watcher[bot]
       - MW_CHECK_PERIOD_SECONDS=60
       # The scenario suite shortens the ADR-013 queue deadline for one target only (TS-S16 (g)); watch.yml reads the same
       # setting from the replica's MW_QUEUE_DEADLINE_MINUTES variable, which the suite sets. See SandboxSwitch.

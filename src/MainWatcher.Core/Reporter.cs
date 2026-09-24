@@ -11,7 +11,8 @@ namespace MainWatcher.Core;
 public sealed class Reporter(IGitHubGateway github, Alerts? alerts = null, string botLogin = Reporter.DefaultBotLogin,
     Func<DateTimeOffset>? clock = null, Action<string>? afterWrite = null)
 {
-    public const string DefaultBotLogin = "main-watcher[bot]";
+    /// <summary>The production App. The sandbox's is <c>main-watcher[bot]</c>, a name the sandbox org already held.</summary>
+    public const string DefaultBotLogin = "actium-main-watcher[bot]";
     public const string LockLabel = "main-broken";
     /// <summary><c>reconcile_lookback</c> (ADR-015): closed locks updated within it are read before any write.</summary>
     public static readonly TimeSpan ReconcileLookback = TimeSpan.FromDays(30);

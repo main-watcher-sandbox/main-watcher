@@ -47,7 +47,7 @@ public class GateTests
     [Theory]
     [InlineData("maintainer", "User")]
     [InlineData("other-app[bot]", "Bot")]
-    [InlineData("main-watcher[bot]", "User")]
+    [InlineData("actium-main-watcher[bot]", "User")]
     [InlineData("main-watcher", "User")]
     public async Task Issues_not_authored_by_the_App_never_lock(string login, string type)
     {
@@ -64,7 +64,7 @@ public class GateTests
     [Fact]
     public async Task A_pull_request_labelled_main_broken_is_not_a_lock()
     {
-        var pr = new { number = 4, html_url = "u", body = "", user = new { login = "main-watcher[bot]", type = "Bot" }, pull_request = new { url = "u" } };
+        var pr = new { number = 4, html_url = "u", body = "", user = new { login = "actium-main-watcher[bot]", type = "Bot" }, pull_request = new { url = "u" } };
 
         var verdict = await new FakeGitHub().LockIssues(pr).Gate().DecideAsync(MergeGroup(), Now, TestContext.Current.CancellationToken);
 
