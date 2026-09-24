@@ -117,6 +117,7 @@ public sealed class Outage(Replica replica, Worker worker)
             log!.Info("Outage: stopping the trigger worker and disabling watch.yml.");
             await replica.DisableWatch(ct);
             await worker.Scale(0, ct);
+            await AwaitInFlightCycles();
             Began = DateTimeOffset.UtcNow;
             log.Info("Outage: begun.");
         }
@@ -130,6 +131,35 @@ public sealed class Outage(Replica replica, Worker worker)
         bool end;
         lock (gate) end = done.IsSupersetOf(participants);
         if (end) _ = Task.Run(Restore);
+    }
+
+    /// <summary>
+    /// Waits for the <c>watch.yml</c> runs the worker started before it stopped. Disabling the workflow stops none of them, and
+    /// one that renews a lease after the outage began breaks a scenario waiting for that lease to lapse (2026-09-24: cycles
+    /// dispatched 3 s before the outage renewed two locks). A run still <c>queued</c> after 10 minutes is one GitHub accepted
+    /// and never queued (<see cref="Replica.Started"/>); it cannot run, so it is left behind.
+    /// </summary>
+    async Task AwaitInFlightCycles()
+    {
+        var since = DateTimeOffset.UtcNow.AddHours(-1);
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(10);
+        var seen = new HashSet<long>();
+        while (true)
+        {
+            var open = (await replica.WatchRuns(since, ct)).Where(r => !r.Completed).ToList();
+            var running = open.Where(r => r.Status != "queued").ToList();
+            if (open.Count == 0) return;
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                if (running.Count > 0)
+                    throw new InvalidOperationException($"watch.yml runs still running 10 minutes after the worker stopped: {string.Join(", ", running.Select(r => r.Id))}");
+                log!.Warn($"Outage: leaving behind watch.yml runs that never left queued: {string.Join(", ", open.Select(r => r.Id))}.");
+                return;
+            }
+            foreach (var run in open.Where(r => seen.Add(r.Id)))
+                log!.Info($"Outage: waiting for watch.yml run {run.Id} ({run.Title}), started before the worker stopped.");
+            await Task.Delay(TimeSpan.FromSeconds(15), ct);
+        }
     }
 
     async Task Restore()
