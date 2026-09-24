@@ -1,0 +1,37 @@
+# The production trigger worker in namespace main-watcher, watching Actium-Group-Corporation/MainWatcher (ARCH-001 §10).
+# Apply with: kubectl apply -k deploy/worker/production
+#
+# Created outside these manifests, in the namespace, before the first apply:
+#   - trigger-worker-keys: observer.pem and doorbell.pem, the actium-mw-observer and actium-mw-doorbell private keys, from
+#     the secret store (docs/worker.md);
+#   - github-registry: a docker-registry Secret that can pull the private image from ghcr.io.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: main-watcher
+resources:
+  - ../base
+images:
+  # Pushed by release.yml, tagged with the commit the scenario suite passed. Deploy by commit SHA, never by :v1, so a
+  # rollback is redeploying the previous SHA.
+  - name: main-watcher-worker
+    newName: ghcr.io/actium-group-corporation/main-watcher-worker
+    newTag: 4c37fda3e84719124f75fc7a0e98d6b14107155a
+patches:
+  - target:
+      kind: Deployment
+      name: trigger-worker
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: github-registry
+configMapGenerator:
+  - name: trigger-worker
+    literals:
+      - MW_WATCHER_REPO=Actium-Group-Corporation/MainWatcher
+      - MW_MAIN_WATCHER_APP_ID=5061051
+      - MW_OBSERVER_APP_ID=5061490
+      - MW_DOORBELL_APP_ID=5061550
+      # The default since 4c37fda. Named here as well, so a rollback to an older image still trusts the production App.
+      - MW_BOT_LOGIN=actium-main-watcher[bot]
+      - MW_CHECK_PERIOD_SECONDS=60

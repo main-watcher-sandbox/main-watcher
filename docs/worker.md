@@ -318,9 +318,12 @@ To stop the worker for a scenario test that needs it down (TS-S7, TS-S11):
 kubectl -n main-watcher-sandbox scale deploy/trigger-worker --replicas=0
 ```
 
-Production uses the same base with the organisation's registry and secret store, and the
-production watcher repo and App IDs (ARCH-001 §10). Rolling back means redeploying the
-previous image tag.
+`deploy/worker/production` is the production overlay: namespace `main-watcher`, the
+`actium-*` App IDs, and the image `release.yml` pushed to `ghcr.io`, pinned by commit SHA and
+pulled with the `github-registry` docker-registry Secret. It needs that Secret and
+`trigger-worker-keys` in the namespace first, both from the secret store (ARCH-001 §10).
+Deploying a release means setting `newTag` to its SHA and applying the overlay; rolling back
+means redeploying the previous SHA.
 
 ## Validation
 
