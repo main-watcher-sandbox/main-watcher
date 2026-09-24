@@ -90,7 +90,11 @@ public sealed class Timings : Scenario
                 && summary.Contains(Target.Short(before.Sha), StringComparison.Ordinal),
                 $"check {check.Id}: the change is measured against the last green run, {Target.Short(before.Sha)}");
 
-        var report = (await t.Jobs(runId, ctx.Ct))?.SingleOrDefault(j => j.Name.EndsWith("/ report", StringComparison.Ordinal));
+        // The check run completes with the test job; the report job runs after it, so it may still be uploading
+        // (2026-09-24: read 3 s before it finished).
+        var report = await Poll.Until($"target run {runId}'s report job to finish", TimeSpan.FromMinutes(5), async () =>
+            (await t.Jobs(runId, ctx.Ct))?.SingleOrDefault(j => j.Name.EndsWith("/ report", StringComparison.Ordinal)) is { Completed: true } job
+                ? job : null, ctx.Ct, TimeSpan.FromSeconds(10));
         ctx.Require(report?.Conclusion == "success", $"target run {runId}: the report job, which writes the job summary, succeeded", report?.ToString());
         ctx.Require((await t.Artifact(runId, "main-watcher-report", ctx.Ct)).Count > 0, $"target run {runId}: the reporter saved its history artifact");
 
