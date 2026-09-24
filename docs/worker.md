@@ -120,7 +120,7 @@ two-hour `lock_lease`, which in practice means the sandbox's ten minutes: a fixe
 ask for the renewal only once the lease had expired, so every renewal would follow a window in
 which the gate had stopped enforcing a lock nobody had abandoned. Only locks
 authored by the App count, as they do for the gate and the Reporter; `MW_BOT_LOGIN` names that App
-where it is not `main-watcher[bot]`. The work is dated by the moment renewal became due, and it
+where it is not `actium-main-watcher[bot]`, as in the sandbox. The work is dated by the moment renewal became due, and it
 carries no check ID: it is not a report owed. `watch.yml` does the renewing, and
 [watcher.md](watcher.md#lock-lease) describes the lease and what a lapse records.
 

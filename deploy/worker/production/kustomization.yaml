@@ -15,7 +15,7 @@ images:
   # rollback is redeploying the previous SHA.
   - name: main-watcher-worker
     newName: ghcr.io/actium-group-corporation/main-watcher-worker
-    newTag: 4c37fda3e84719124f75fc7a0e98d6b14107155a
+    newTag: 0ad3e9c0c2151ec61a13158c02d677e15fbe4f04
 patches:
   - target:
       kind: Deployment
